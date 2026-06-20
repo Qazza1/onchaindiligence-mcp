@@ -1,0 +1,30 @@
+{
+  "name": "onchaindiligence-mcp",
+  "version": "1.0.0",
+  "description": "x402-paid MCP server for OnchainDiligence — sanctions screening and UK company verification as paid agent tools.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/local.ts",
+    "start": "tsx src/local.ts",
+    "typecheck": "tsc --noEmit",
+    "test:client": "tsx test/client.ts"
+  },
+  "dependencies": {
+    "@coinbase/x402": "^2.1.0",
+    "@hono/node-server": "^1.19.14",
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "ai": "^5.0.0",
+    "dotenv": "^16.6.1",
+    "hono": "^4.6.3",
+    "viem": "2.52.2",
+    "x402": "^0.5.3",
+    "x402-mcp": "^0.1.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
