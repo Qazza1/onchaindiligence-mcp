@@ -1,23 +1,13 @@
 /**
  * local.ts — run the MCP server locally for testing.
  *
- * Vercel uses api/index.ts; locally we wrap the same web-standard handler in a
- * tiny Node HTTP server via Hono so the test client can reach it at
- * http://localhost:3000/mcp.
+ * Imports the SAME Hono app that Vercel uses (../index.ts) and wraps it in a
+ * Node HTTP server so the test client can reach it at http://localhost:3000/mcp.
+ * This keeps local and production identical — one app definition.
  */
 import 'dotenv/config'
-import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
-import { handler } from './server.js'
-
-const app = new Hono()
-
-// Route all methods on /mcp to the x402 MCP handler (Streamable HTTP uses POST
-// for JSON-RPC, may use GET for streaming).
-app.all('/mcp', (c) => handler(c.req.raw))
-
-// Simple liveness check.
-app.get('/', (c) => c.text('OnchainDiligence MCP server — POST /mcp'))
+import app from '../index.js'
 
 const port = Number(process.env.PORT || 3000)
 serve({ fetch: app.fetch, port }, (info) => {
