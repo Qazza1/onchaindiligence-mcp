@@ -107,6 +107,10 @@ A few decisions worth explaining, since they reflect real constraints rather tha
 
 OnchainDiligence returns factual checks and signed attestations. It is **not** legal or compliance advice and is not a substitute for a full compliance program. The sanctions oracle returns a match flag, not rich case detail. Results are never cached.
 
+## Security
+
+Found a vulnerability? Please report it to **security@onchaindiligence.com**. Responsible disclosure is appreciated. See [onchaindiligence.com/.well-known/security.txt](https://onchaindiligence.com/.well-known/security.txt).
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
