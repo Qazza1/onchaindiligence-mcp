@@ -3,3 +3,9 @@ node_modules/
 .vercel/
 *.log
 dist/
+
+mcp-key.pem
+mcp-publisher
+mcp-publisher.exe
+mcp-publisher.tar.gz
+*.tar.gz
