@@ -1,153 +1,112 @@
-# MCP Registry
+# OnchainDiligence — MCP Server
 
-The MCP registry provides MCP clients with a list of MCP servers, like an app store for MCP servers.
+A paid, non-custodial **Model Context Protocol** server that exposes on-chain compliance checks as tools AI agents can discover and pay for autonomously. Sanctions screening and UK company verification, billed per call in **USDC on Base** via the [x402](https://x402.org) protocol — no API keys, no accounts, no subscriptions.
 
-[**📤 Publish my MCP server**](docs/modelcontextprotocol-io/quickstart.mdx) | [**⚡️ Live API docs**](https://registry.modelcontextprotocol.io/docs) | [**👀 Ecosystem vision**](docs/design/ecosystem-vision.md) | 📖 **[Full documentation](./docs)**
+Live at **`https://mcp.onchaindiligence.com/mcp`** · Listed in the [official MCP Registry](https://registry.modelcontextprotocol.io/v0/servers?search=onchaindiligence) as `com.onchaindiligence/compliance` · Part of [onchaindiligence.com](https://onchaindiligence.com).
 
-## Development Status
+---
 
-**2025-10-24 update**: The Registry API has entered an **API freeze (v0.1)** 🎉. For the next month or more, the API will remain stable with no breaking changes, allowing integrators to confidently implement support. This freeze applies to v0.1 while development continues on v0. We'll use this period to validate the API in real-world integrations and gather feedback to shape v1 for general availability. Thank you to everyone for your contributions and patience—your involvement has been key to getting us here!
+## What it does
 
-**2025-09-08 update**: The registry has launched in preview 🎉 ([announcement blog post](https://blog.modelcontextprotocol.io/posts/2025-09-08-mcp-registry-preview/)). While the system is now more stable, this is still a preview release and breaking changes or data resets may occur. A general availability (GA) release will follow later. We'd love your feedback in [GitHub discussions](https://github.com/modelcontextprotocol/registry/discussions/new?category=ideas) or in the [#registry-dev Discord](https://discord.com/channels/1358869848138059966/1369487942862504016) ([joining details here](https://modelcontextprotocol.io/community/communication)).
+An agent connects over Streamable HTTP and finds three tools:
 
-Current key maintainers:
-- **Adam Jones** (Anthropic) [@domdomegg](https://github.com/domdomegg)  
-- **Tadas Antanavicius** (PulseMCP) [@tadasant](https://github.com/tadasant)
-- **Toby Padilla** (GitHub) [@toby](https://github.com/toby)
-- **Radoslav (Rado) Dimitrov** (Stacklok) [@rdimitrov](https://github.com/rdimitrov)
+| Tool | Description | Price |
+|------|-------------|-------|
+| `screen_wallet` | Screen a wallet address against the Chainalysis on-chain sanctions oracle (US/EU/UN lists). | $0.01 |
+| `verify_uk_company` | Look up a UK company by registration number: status, type, incorporation, registered address, and people with significant control. | $0.01 |
+| `diligence` | Run both checks in parallel, with an explicit disclaimer that no link between wallet and company is established. | $0.015 |
 
-## Contributing
+Each result is the same factual data the [HTTP API](https://api.onchaindiligence.com) returns — the check logic is shared byte-for-byte, so an agent calling via MCP gets results identical to one calling over HTTP.
 
-We use multiple channels for collaboration - see [modelcontextprotocol.io/community/communication](https://modelcontextprotocol.io/community/communication).
+## How payment works
 
-Often (but not always) ideas flow through this pipeline:
+Payment rides on [x402](https://x402.org), the open agent-payment standard built on HTTP `402 Payment Required`:
 
-- **[Discord](https://modelcontextprotocol.io/community/communication)** - Real-time community discussions
-- **[Discussions](https://github.com/modelcontextprotocol/registry/discussions)** - Propose and discuss product/technical requirements
-- **[Issues](https://github.com/modelcontextprotocol/registry/issues)** - Track well-scoped technical work  
-- **[Pull Requests](https://github.com/modelcontextprotocol/registry/pulls)** - Contribute work towards issues
+1. The agent calls a tool with no payment attached.
+2. The server returns the payment requirements (amount, asset, recipient, network).
+3. The agent signs a USDC payment authorization from its own wallet.
+4. The agent retries the call with the payment in the tool-call `_meta`.
+5. The server verifies and settles via the Coinbase facilitator, runs the check, and returns the result.
 
-### Quick start:
+The flow is **non-custodial**: USDC moves directly from the agent's wallet to the recipient. This server never holds funds and runs no billing system — which is deliberate, given the product is about *not* being a trusted intermediary.
 
-#### Pre-requisites
+## Two payment rails by design
 
-- **Docker**
-- **Go 1.24.x**
-- **ko** - Container image builder for Go ([installation instructions](https://ko.build/install/))
-- **golangci-lint v2.4.0**
+OnchainDiligence settles two ways, because the agent-payment landscape is split between two standards:
 
-#### Running the server
+| | HTTP API | MCP server (this repo) |
+|---|---|---|
+| Protocol | Machine Payments Protocol (Stripe/Tempo) | x402 (Coinbase/Base) |
+| Chain | Tempo | Base mainnet |
+| Currency | pathUSD | USDC |
+| Settlement | session-based | per-call, on-chain |
 
-```bash
-# Start full development environment
-make dev-compose
-```
-
-This starts the registry at [`localhost:8080`](http://localhost:8080) with PostgreSQL. The database uses ephemeral storage and is reset each time you restart the containers, ensuring a clean state for development and testing.
-
-**Note:** The registry uses [ko](https://ko.build) to build container images. The `make dev-compose` command automatically builds the registry image with ko and loads it into your local Docker daemon before starting the services.
-
-By default, the registry seeds from the production API with a filtered subset of servers (to keep startup fast). This ensures your local environment mirrors production behavior and all seed data passes validation. For offline development you can seed from a file without validation with `MCP_REGISTRY_SEED_FROM=data/seed.json MCP_REGISTRY_ENABLE_REGISTRY_VALIDATION=false make dev-compose`.
-
-The setup can be configured with environment variables in [docker-compose.yml](./docker-compose.yml) - see [.env.example](./.env.example) for a reference.
-
-<details>
-<summary>Alternative: Running a pre-built Docker image</summary>
-
-Pre-built Docker images are automatically published to GitHub Container Registry. Note that the image does not bundle PostgreSQL, so you need to run your own and point the registry at it via `MCP_REGISTRY_DATABASE_URL` (see [docker-compose.yml](./docker-compose.yml) for a working example):
-
-```bash
-# Run latest stable release
-docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:latest
-
-# Run latest from main branch (continuous deployment)
-docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:main
-
-# Run specific release version
-docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:v1.0.0
-
-# Run development build from main branch
-docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:main-20250906-abc123d
-```
-
-**Available tags:** 
-- **Releases**: `latest`, `v1.0.0`, `v1.1.0`, etc.
-- **Continuous**: `main` (latest main branch build)
-- **Development**: `main-<date>-<sha>` (specific commit builds)
-
-</details>
-
-#### Publishing a server
-
-To publish a server, we've built a simple CLI. You can use it with:
-
-```bash
-# Build the latest CLI
-make publisher
-
-# Use it!
-./bin/mcp-publisher --help
-```
-
-See [the publisher guide](./docs/modelcontextprotocol-io/quickstart.mdx) for more details.
-
-#### Other commands
-
-```bash
-# Run lint, unit tests and integration tests
-make check
-```
-
-There are also a few more helpful commands for development. Run `make help` to learn more, or look in [Makefile](./Makefile).
-
-<!--
-For Claude and other AI tools: Always prefer make targets over custom commands where possible.
--->
+Same checks, same signed results, different rails for different ecosystems.
 
 ## Architecture
 
-### Project Structure
-
 ```
-├── cmd/                     # Application entry points
-│   └── publisher/           # Server publishing tool
-├── data/                    # Seed data
-├── deploy/                  # Deployment configuration (Pulumi)
-├── docs/                    # Documentation
-├── internal/                # Private application code
-│   ├── api/                 # HTTP handlers and routing
-│   ├── auth/                # Authentication (GitHub OAuth, JWT, namespace blocking)
-│   ├── config/              # Configuration management
-│   ├── database/            # Data persistence (PostgreSQL)
-│   ├── service/             # Business logic
-│   ├── telemetry/           # Metrics and monitoring
-│   └── validators/          # Input validation
-├── pkg/                     # Public packages
-│   ├── api/                 # API types and structures
-│   │   └── v0/              # Version 0 API types
-│   └── model/               # Data models for server.json
-├── scripts/                 # Development and testing scripts
-├── tests/                   # Integration tests
-└── tools/                   # CLI tools and utilities
-    └── validate-*.sh        # Schema validation tools
+agent (MCP client + x402 wallet)
+      │  Streamable HTTP
+      ▼
+index.ts ──────────── Hono app, routes /mcp to the handler
+      ▼
+src/server.ts ─────── createPaidMcpHandler: 3 paidTools, x402 gating
+      │
+      ├── src/chainalysis.ts ──── sanctions oracle read (viem, Ethereum mainnet)
+      └── src/companiesHouse.ts ─ UK Companies House lookup
 ```
 
-### Authentication
+- **`src/server.ts`** — defines the three `paidTool`s with their prices and Zod schemas, wired to the Coinbase facilitator for x402 settlement.
+- **`src/chainalysis.ts` / `src/companiesHouse.ts`** — the check logic, reused unchanged from the HTTP API so results stay consistent across rails.
+- **`index.ts`** — a Hono app exposing the handler at `/mcp`; deployed as a Vercel function, and the same app is served locally by `src/local.ts`.
+- **`test/client.ts`** — a low-level test client that performs the full x402 pay-and-retry loop by hand (see *Design notes*).
 
-Publishing supports multiple authentication methods:
-- **GitHub OAuth** - For publishing by logging into GitHub
-- **GitHub OIDC** - For publishing from GitHub Actions
-- **DNS verification** - For proving ownership of a domain and its subdomains
-- **HTTP verification** - For proving ownership of a domain
+### Sanctions data
 
-The registry validates namespace ownership when publishing. E.g. to publish...:
-- `io.github.domdomegg/my-cool-mcp` you must login to GitHub as `domdomegg`, or be in a GitHub Action on domdomegg's repos
-- `me.adamjones/my-cool-mcp` you must prove ownership of `adamjones.me` via DNS or HTTP challenge
+Screening reads the **Chainalysis on-chain sanctions oracle** — a free, public smart contract on Ethereum mainnet (`0x40C57923924B5c5c5455c48D93317139ADDaC8fb`), queried with a read-only `isSanctioned()` call via [viem](https://viem.sh). No Chainalysis API key or commercial relationship is required; the oracle is a public good reflecting US/EU/UN sanctions lists. The per-call fee covers infrastructure, not the data.
 
-## Community Projects
+## Running locally
 
-Check out [community projects](docs/community-projects.md) to explore notable registry-related work created by the community.
+Requires Node 22+.
 
-## More documentation
+```bash
+npm install
+cp .env.example .env   # fill in the values below
+npm run dev            # serves http://localhost:3000/mcp
+```
 
-See the [documentation](./docs) for more details if your question has not been answered here!
+Environment variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `COMPANIES_HOUSE_API_KEY` | UK Companies House API key (free). |
+| `SANCTIONS_ORACLE_RPC_URL` | Ethereum RPC for the oracle read. |
+| `X402_RECIPIENT_ADDRESS` | Base address that receives USDC. |
+| `X402_NETWORK` | `base-sepolia` (testnet) or `base` (mainnet). |
+| `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` | Coinbase Developer Platform keys for the x402 facilitator. |
+
+To exercise the full paid loop against the running server:
+
+```bash
+# in .env, also set PAYER_PRIVATE_KEY to a wallet funded with testnet USDC + ETH
+npm run test:client
+```
+
+## Design notes
+
+A few decisions worth explaining, since they reflect real constraints rather than preference:
+
+- **Why Base and not Tempo.** The HTTP API settles on Tempo, so unifying on one chain would have been cleaner. But the `x402-mcp` package hardcodes its network type to `"base" | "base-sepolia"` — Tempo is not a permitted value. Rather than fork the package or write a custom facilitator, this server settles on Base, and OnchainDiligence accepts two rails. The constraint is documented, not papered over.
+
+- **The test client is hand-rolled.** `x402-mcp` ships a `withPayment` helper, but it imports an MCP client API (`experimental_MCPClient`) that the `ai` SDK removed in v5. Rather than pin an old `ai` version, `test/client.ts` performs the x402 loop directly on the MCP SDK plus `x402/client` — calling unpaid to get requirements, building a payment header, and retrying with payment in `_meta`. The server itself doesn't depend on `ai`, so this is a test-only concern.
+
+- **Check logic is shared, not reimplemented.** `chainalysis.ts` and `companiesHouse.ts` are copied unchanged from the HTTP API so that a result is the same regardless of which rail an agent uses. Consistency across surfaces matters more than DRY across repos here.
+
+## Not a compliance program
+
+OnchainDiligence returns factual checks and signed attestations. It is **not** legal or compliance advice and is not a substitute for a full compliance program. The sanctions oracle returns a match flag, not rich case detail. Results are never cached.
+
+## License
+
+MIT — see [LICENSE](./LICENSE).
