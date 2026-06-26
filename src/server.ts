@@ -27,6 +27,11 @@ import {
   buildAttribution as companyAttribution,
   CompanyNotFoundError,
 } from './companiesHouse.js'
+import {
+  checkUSCompany,
+  buildAttribution as usCompanyAttribution,
+  USCompanyNotFoundError,
+} from './secEdgar.js'
 
 // Fail fast if misconfigured — same discipline as the HTTP API.
 assertConfigured()
@@ -126,6 +131,52 @@ export const handler = createPaidMcpHandler(
             err instanceof CompanyNotFoundError
               ? err.message
               : err?.message || 'Company lookup failed.'
+          return { isError: true, content: [{ type: 'text', text: msg }] }
+        }
+      }
+    )
+
+    // --- verify_us_company ---------------------------------------------
+    server.paidTool(
+      'verify_us_company',
+      'US public company verification via the SEC EDGAR system. Given a ' +
+        'ticker, SEC CIK, or company name, returns the registered entity ' +
+        'name, CIK, industry (SIC code), state of incorporation, listed ' +
+        'exchanges and tickers, business address, and most recent SEC ' +
+        'filing. SCOPE: EDGAR covers SEC-registered PUBLIC companies and ' +
+        'funds only — NOT private US companies, which register at the state ' +
+        'level. Use for KYB and counterparty due diligence on listed US ' +
+        'entities. Authoritative US government open data.',
+      { price: config.prices.usCompany },
+      {
+        query: z
+          .string()
+          .describe(
+            'US public company ticker, SEC CIK, or company name — e.g. ' +
+              '"AAPL", "0000320193", or "Apple Inc"'
+          ),
+      },
+      { readOnlyHint: true, openWorldHint: true },
+      async (args) => {
+        try {
+          const result = await checkUSCompany(args.query)
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(
+                  { ...result, ...usCompanyAttribution() },
+                  null,
+                  2
+                ),
+              },
+            ],
+          }
+        } catch (err: any) {
+          const msg =
+            err instanceof USCompanyNotFoundError
+              ? err.message
+              : err?.message || 'US company lookup failed.'
           return { isError: true, content: [{ type: 'text', text: msg }] }
         }
       }

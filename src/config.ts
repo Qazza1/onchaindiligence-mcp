@@ -40,10 +40,20 @@ export const config = {
     cdpKeySecret: process.env.CDP_API_KEY_SECRET || '',
   },
 
+  // --- SEC EDGAR (free US public-company data, no API key) --------------
+  // SEC requires a descriptive User-Agent with contact info on every request.
+  // Public-domain data; covers SEC-registered (public) companies only.
+  edgar: {
+    userAgent:
+      process.env.EDGAR_USER_AGENT ||
+      'OnchainDiligence/1.0 (support@onchaindiligence.com)',
+  },
+
   // Per-call prices in USD (x402 settles these in USDC). Mirror the HTTP API.
   prices: {
     screen: 0.01,
     company: 0.01,
+    usCompany: 0.01,
     diligence: 0.015,
   },
 }
