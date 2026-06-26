@@ -47,11 +47,15 @@ export const handler = createPaidMcpHandler(
     // --- screen_wallet -------------------------------------------------
     server.paidTool(
       'screen_wallet',
-      'Screen a wallet address against the Chainalysis on-chain sanctions ' +
-        'oracle (US/EU/UN lists). Returns a signed-style boolean flag: ' +
-        'sanctioned or not. Use before sending funds to an address.',
+      'Sanctions screening for a crypto wallet address. Checks an EVM ' +
+        'address against the Chainalysis on-chain sanctions oracle, which ' +
+        'covers OFAC SDN, EU, and UN designated addresses (including ' +
+        'Tornado Cash and other sanctioned protocols). Returns a clear ' +
+        'sanctioned / not-sanctioned result with the matching program. Use ' +
+        'for AML compliance, counterparty due diligence, and payment ' +
+        'screening before sending USDC or any funds to an address.',
       { price: config.prices.screen },
-      { address: z.string().describe('EVM wallet address (0x + 40 hex) to screen') },
+      { address: z.string().describe('EVM wallet address (0x + 40 hex) to sanctions-screen') },
       { readOnlyHint: true, openWorldHint: true },
       async (args) => {
         try {
@@ -87,14 +91,19 @@ export const handler = createPaidMcpHandler(
     // --- verify_uk_company ---------------------------------------------
     server.paidTool(
       'verify_uk_company',
-      'Look up a UK company by registration number via Companies House: ' +
-        'status, type, incorporation date, registered address, and the ' +
-        'people with significant control (PSC).',
+      'UK company verification and KYB (know-your-business) lookup via the ' +
+        'official Companies House register. Given a UK company registration ' +
+        'number, returns legal status (active / dissolved), company type, ' +
+        'incorporation date, registered office address, and the people with ' +
+        'significant control (PSC / beneficial owners). Use for KYB ' +
+        'onboarding, supplier and counterparty due diligence, and confirming ' +
+        'a UK business is real, active, and who controls it. Authoritative ' +
+        'UK government open data.',
       { price: config.prices.company },
       {
         companyNumber: z
           .string()
-          .describe('UK Companies House registration number, e.g. 00000006'),
+          .describe('UK Companies House registration number to verify, e.g. 00000006'),
       },
       { readOnlyHint: true, openWorldHint: true },
       async (args) => {
@@ -125,13 +134,18 @@ export const handler = createPaidMcpHandler(
     // --- diligence (combined) ------------------------------------------
     server.paidTool(
       'diligence',
-      'Run both checks together: sanctions-screen a wallet AND look up a UK ' +
-        'company, in parallel. Returns independent results plus an explicit ' +
-        'disclaimer that no link between the wallet and company is established.',
+      'Combined counterparty due diligence in one call: runs sanctions ' +
+        'screening on a crypto wallet (Chainalysis oracle — OFAC SDN, EU, ' +
+        'UN) AND a UK Companies House KYB lookup (status, type, PSC / ' +
+        'beneficial owners) in parallel. Built for compliance agents vetting ' +
+        'a counterparty that has both an on-chain wallet and a UK company. ' +
+        'Returns both independent results, plus an explicit disclaimer that ' +
+        'no verified link between the wallet and the company is established ' +
+        'by the data.',
       { price: config.prices.diligence },
       {
-        wallet: z.string().describe('EVM wallet address (0x + 40 hex)'),
-        company: z.string().describe('UK company registration number'),
+        wallet: z.string().describe('EVM wallet address (0x + 40 hex) to sanctions-screen'),
+        company: z.string().describe('UK Companies House registration number to verify'),
       },
       { readOnlyHint: true, openWorldHint: true },
       async (args) => {
