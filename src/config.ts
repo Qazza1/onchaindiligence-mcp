@@ -52,8 +52,8 @@ export const config = {
   // Per-call prices in USD (x402 settles these in USDC). Mirror the HTTP API.
   prices: {
     screen: 0.01,
-    company: 0.01,
-    usCompany: 0.01,
+    company: 0.05,
+    usCompany: 0.05,
     diligence: 0.015,
   },
 }
