@@ -49,12 +49,20 @@ export const config = {
       'OnchainDiligence/1.0 (support@onchaindiligence.com)',
   },
 
+  // --- OFAC SDN name screening (public-domain US Treasury data) ----------
+  // Official OFAC CSV endpoints. Overridable via env for testing/mirrors.
+  ofac: {
+    sdnUrl: process.env.OFAC_SDN_URL || 'https://www.treasury.gov/ofac/downloads/sdn.csv',
+    altUrl: process.env.OFAC_ALT_URL || 'https://www.treasury.gov/ofac/downloads/alt.csv',
+  },
+
   // Per-call prices in USD (x402 settles these in USDC). Mirror the HTTP API.
   prices: {
     screen: 0.01,
+    nameScreen: 0.02,
     company: 0.05,
     usCompany: 0.05,
-    diligence: 0.015,
+    diligence: 0.05,
   },
 }
 

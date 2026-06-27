@@ -32,6 +32,11 @@ import {
   buildAttribution as usCompanyAttribution,
   USCompanyNotFoundError,
 } from './secEdgar.js'
+import {
+  screenName,
+  buildOfacAttribution,
+  OfacUpstreamError,
+} from './ofac.js'
 
 // Fail fast if misconfigured — same discipline as the HTTP API.
 assertConfigured()
@@ -89,6 +94,58 @@ export const handler = createPaidMcpHandler(
               },
             ],
           }
+        }
+      }
+    )
+
+    // --- screen_name ---------------------------------------------------
+    server.paidTool(
+      'screen_name',
+      'OFAC name screening: fuzzy-match a person or company name against the ' +
+        'official US Treasury OFAC Specially Designated Nationals (SDN) list ' +
+        '(primary names + strong aliases). Returns scored candidate matches ' +
+        'with the matched name, SDN type, and program. SCOPE: this is a ' +
+        'screening aid for AML / KYC / sanctions compliance — a match is a ' +
+        'candidate to investigate with secondary identifiers (DOB, ' +
+        'nationality, ID), NOT a determination. Weak AKAs are not screened, ' +
+        'per OFAC guidance.',
+      { price: config.prices.nameScreen },
+      {
+        name: z
+          .string()
+          .describe('Person or company name to screen against the OFAC SDN list'),
+        threshold: z
+          .number()
+          .min(0.5)
+          .max(1)
+          .optional()
+          .describe(
+            'Optional match confidence cutoff 0.5–1.0 (default 0.85). Lower = ' +
+              'more candidates, more false positives.'
+          ),
+      },
+      { readOnlyHint: true, openWorldHint: true },
+      async (args) => {
+        try {
+          const result = await screenName(args.name, args.threshold ?? 0.85)
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(
+                  { ...result, ...buildOfacAttribution() },
+                  null,
+                  2
+                ),
+              },
+            ],
+          }
+        } catch (err: any) {
+          const msg =
+            err instanceof OfacUpstreamError
+              ? 'OFAC SDN list is temporarily unavailable, please retry shortly.'
+              : err?.message || 'Name screen failed.'
+          return { isError: true, content: [{ type: 'text', text: msg }] }
         }
       }
     )
