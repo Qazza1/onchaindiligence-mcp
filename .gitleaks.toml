@@ -1,0 +1,49 @@
+# Gitleaks config for OnchainDiligence repos.
+#
+# Extends the default ruleset (which already catches private keys, AWS keys,
+# generic API tokens, etc.) and adds an allowlist for the PUBLIC hex values
+# that legitimately appear across a compliance/on-chain codebase, so the scan
+# stays high-signal instead of crying wolf on every transaction hash.
+#
+# The guiding rule: allowlist things that are PUBLIC BY DESIGN (on-chain data,
+# well-known selectors, example/placeholder values in docs). NEVER allowlist a
+# path or pattern that could hide a real private key or token.
+
+[extend]
+# Inherit all of gitleaks' built-in rules. We only ADD exceptions below.
+useDefault = true
+
+[allowlist]
+description = "Public, non-secret values legitimate in this codebase"
+
+# --- Files that are examples/docs by nature ---
+paths = [
+  '''\.env\.example$''',      # placeholder env template — no real values
+  '''README\.md$''',          # docs use 0x... placeholders
+  '''.*\.example\..*''',      # any *.example.* sample file
+]
+
+# --- Public on-chain values that look secret-ish but aren't ---
+regexes = [
+  # The Chainalysis sanctions-oracle function selector (public, 4 bytes).
+  '''0xdf592f7d''',
+
+  # Placeholder private keys in docs/templates: literal "0x..." or "0x<...>"
+  # or "your-key-here" style — these are NOT real 64-hex-char keys.
+  '''0x\.\.\.''',
+  '''0x<[^>]+>''',
+
+  # ── NOTE ──────────────────────────────────────────────────────────────
+  # Deliberately NOT allowlisting a blanket "any 64-hex string" here.
+  # Transaction hashes and keccak256 digests are also 64 hex, but so are
+  # raw private keys — allowlisting the whole shape would blind the scanner
+  # to the exact thing it exists to catch. If a specific, known-public 64-hex
+  # value (e.g. a documented example tx hash) trips the scan, add THAT exact
+  # value here by hand, rather than the general pattern. High-signal by design.
+]
+
+# --- Known-public contract / wallet ADDRESSES (20-byte, 40 hex) ---
+# Addresses are public by definition and safe to commit. Gitleaks' defaults
+# don't usually flag bare addresses, but if yours trip a custom rule, list the
+# specific ones here. Left as an example — uncomment and fill if needed.
+# stopwords = []
