@@ -27,6 +27,7 @@ import { createFacilitatorConfig } from '@coinbase/x402'
 
 import { config } from './config.js'
 import { screenAddress, buildAttribution } from './chainalysis.js'
+import { checkUSCompany, buildAttribution as buildEdgarAttribution } from './secEdgar.js'
 
 // Network for THIS beacon, decoupled from the live /mcp server. Defaults to
 // the same network as the rest of the server, but X402_DISCOVERY_NETWORK can
@@ -53,6 +54,13 @@ const DESCRIPTION =
   'oracle (OFAC, EU, UN designated addresses). Returns a clear sanctioned / ' +
   'not-sanctioned result. For AML compliance, counterparty due diligence, ' +
   'and payment screening before sending funds.'
+
+// Keyword-rich description for the US company verification beacon.
+const US_COMPANY_DESCRIPTION =
+  'Verify a US public company against SEC EDGAR. Look up an SEC-registered ' +
+  'issuer by ticker, CIK, or name and get its legal entity name, industry ' +
+  '(SIC), state of incorporation, tickers/exchanges, and latest filing. For ' +
+  'KYB, counterparty due diligence, and issuer verification.'
 
 /**
  * Mounts the paid + discoverable /x402/screen/:address route onto the given
@@ -98,6 +106,46 @@ export function mountDiscovery(app: Hono): void {
             }),
           },
         },
+        // Second Bazaar route: US public company verification (SEC EDGAR).
+        'GET /x402/us-company': {
+          accepts: {
+            scheme: 'exact',
+            price: '$0.05',
+            network: CAIP2,
+            payTo: config.x402.recipient,
+          },
+          description: US_COMPANY_DESCRIPTION,
+          mimeType: 'application/json',
+          extensions: {
+            ...declareDiscoveryExtension({
+              output: {
+                example: {
+                  source: 'SEC EDGAR',
+                  cik: '0000320193',
+                  name: 'Apple Inc.',
+                  entity_type: 'operating',
+                  sic_description: 'Electronic Computers',
+                  state_of_incorporation: 'CA',
+                  tickers: ['AAPL'],
+                  exchanges: ['Nasdaq'],
+                },
+                schema: {
+                  type: 'object',
+                  properties: {
+                    source: { type: 'string' },
+                    cik: { type: 'string' },
+                    name: { type: 'string' },
+                    entity_type: { type: 'string' },
+                    sic_description: { type: 'string' },
+                    state_of_incorporation: { type: 'string' },
+                    tickers: { type: 'array' },
+                    exchanges: { type: 'array' },
+                  },
+                },
+              },
+            }),
+          },
+        },
       },
       resourceServer
     )
@@ -112,6 +160,24 @@ export function mountDiscovery(app: Hono): void {
     } catch (err: any) {
       const msg = err?.message || 'sanctions screen failed'
       const status = /not a valid/i.test(msg) ? 400 : 502
+      return c.json({ error: msg }, status)
+    }
+  })
+
+  // Paid handler for US company verification. Query via ?q= (ticker, CIK, or
+  // name), mirroring the HTTP API's /us-company route.
+  app.get('/x402/us-company', async (c) => {
+    const query = c.req.query('q')
+    if (!query) {
+      return c.json({ error: 'provide ?q= (a ticker, CIK, or company name)' }, 400)
+    }
+    try {
+      const result = await checkUSCompany(query)
+      return c.json({ ...result, ...buildEdgarAttribution() })
+    } catch (err: any) {
+      const msg = err?.message || 'US company lookup failed'
+      // Not-found is a normal, informative result — surface it as 404, not 502.
+      const status = /not found|not an sec/i.test(msg) ? 404 : 502
       return c.json({ error: msg }, status)
     }
   })
