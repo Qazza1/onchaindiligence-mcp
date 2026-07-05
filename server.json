@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "com.onchaindiligence/compliance",
   "title": "OnchainDiligence",
-  "description": "Pay-per-call sanctions screening and UK company checks for agents, paid in USDC via x402.",
-  "version": "1.0.0",
+  "description": "Pay-per-call compliance via x402: wallet sanctions, OFAC name, UK + US company verification.",
+  "version": "1.1.0",
   "repository": {
     "url": "https://github.com/Qazza1/onchaindiligence-mcp",
     "source": "github"
