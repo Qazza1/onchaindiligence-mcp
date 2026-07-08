@@ -9,6 +9,13 @@
  * Payment model: NON-CUSTODIAL. The x402 facilitator verifies the agent's USDC
  * payment to our recipient address before the tool body runs. We never hold funds.
  *
+ * SIGNING: every tool result is wrapped in the same Ed25519 attestation envelope
+ * the HTTP API returns — `{ data, attestation }` — so an agent can verify at
+ * /verify that the result came from us, unaltered. Signing is done by POSTing to
+ * the API's free /attest route rather than holding a copy of the private key in
+ * this deployment (see attest.ts). If signing is unavailable the envelope carries
+ * `signed: false` with a reason, rather than failing a request the agent paid for.
+ *
  * This module exports a web-standard handler (Request -> Response) via
  * createPaidMcpHandler, which mounts as a Vercel function or inside Hono.
  */
@@ -37,6 +44,7 @@ import {
   buildOfacAttribution,
   OfacUpstreamError,
 } from './ofac.js'
+import { attest } from './attest.js'
 
 // Fail fast if misconfigured — same discipline as the HTTP API.
 assertConfigured()
@@ -70,16 +78,10 @@ export const handler = createPaidMcpHandler(
       async (args) => {
         try {
           const result = await screenAddress(args.address)
+          const envelope = await attest({ ...result, ...sanctionsAttribution() })
           return {
             content: [
-              {
-                type: 'text',
-                text: JSON.stringify(
-                  { ...result, ...sanctionsAttribution() },
-                  null,
-                  2
-                ),
-              },
+              { type: 'text', text: JSON.stringify(envelope, null, 2) },
             ],
           }
         } catch (err: any) {
@@ -128,16 +130,10 @@ export const handler = createPaidMcpHandler(
       async (args) => {
         try {
           const result = await screenName(args.name, args.threshold ?? 0.85)
+          const envelope = await attest({ ...result, ...buildOfacAttribution() })
           return {
             content: [
-              {
-                type: 'text',
-                text: JSON.stringify(
-                  { ...result, ...buildOfacAttribution() },
-                  null,
-                  2
-                ),
-              },
+              { type: 'text', text: JSON.stringify(envelope, null, 2) },
             ],
           }
         } catch (err: any) {
@@ -171,16 +167,10 @@ export const handler = createPaidMcpHandler(
       async (args) => {
         try {
           const result = await checkCompany(args.companyNumber)
+          const envelope = await attest({ ...result, ...companyAttribution() })
           return {
             content: [
-              {
-                type: 'text',
-                text: JSON.stringify(
-                  { ...result, ...companyAttribution() },
-                  null,
-                  2
-                ),
-              },
+              { type: 'text', text: JSON.stringify(envelope, null, 2) },
             ],
           }
         } catch (err: any) {
@@ -217,16 +207,10 @@ export const handler = createPaidMcpHandler(
       async (args) => {
         try {
           const result = await checkUSCompany(args.query)
+          const envelope = await attest({ ...result, ...usCompanyAttribution() })
           return {
             content: [
-              {
-                type: 'text',
-                text: JSON.stringify(
-                  { ...result, ...usCompanyAttribution() },
-                  null,
-                  2
-                ),
-              },
+              { type: 'text', text: JSON.stringify(envelope, null, 2) },
             ],
           }
         } catch (err: any) {
@@ -262,23 +246,17 @@ export const handler = createPaidMcpHandler(
             screenAddress(args.wallet),
             checkCompany(args.company),
           ])
+          const envelope = await attest({
+            wallet_check: { ...wallet, ...sanctionsAttribution() },
+            company_check: { ...company, ...companyAttribution() },
+            link_disclaimer:
+              'These are independent checks against separate data sources. ' +
+              'No verified link between the wallet and the company is ' +
+              'established by this data, regardless of the individual results.',
+          })
           return {
             content: [
-              {
-                type: 'text',
-                text: JSON.stringify(
-                  {
-                    wallet_check: { ...wallet, ...sanctionsAttribution() },
-                    company_check: { ...company, ...companyAttribution() },
-                    link_disclaimer:
-                      'These are independent checks against separate data sources. ' +
-                      'No verified link between the wallet and the company is ' +
-                      'established by this data, regardless of the individual results.',
-                  },
-                  null,
-                  2
-                ),
-              },
+              { type: 'text', text: JSON.stringify(envelope, null, 2) },
             ],
           }
         } catch (err: any) {
