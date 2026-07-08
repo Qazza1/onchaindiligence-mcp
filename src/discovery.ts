@@ -62,6 +62,14 @@ const US_COMPANY_DESCRIPTION =
   '(SIC), state of incorporation, tickers/exchanges, and latest filing. For ' +
   'KYB, counterparty due diligence, and issuer verification.'
 
+// Keyword-rich description for the unified verdict beacon. Agents searching
+// the Bazaar want a decision they can act on, not raw data to interpret.
+const VERDICT_DESCRIPTION =
+  'Get a single counterparty verdict — PASS or BLOCK — for an EVM wallet ' +
+  'address, with reasons. BLOCK means the address is sanctioned (OFAC via the ' +
+  'Chainalysis on-chain oracle); PASS means no sanctions match. Never returns ' +
+  'a false PASS. For autonomous agents deciding whether to send funds.'
+
 /**
  * Mounts the paid + discoverable /x402/screen/:address route onto the given
  * Hono app. The payment middleware is route-scoped (only this path is gated),
@@ -146,6 +154,50 @@ export function mountDiscovery(app: Hono): void {
             }),
           },
         },
+        // Third Bazaar route: unified counterparty verdict (PASS / BLOCK).
+        'GET /x402/verdict/:address': {
+          accepts: {
+            scheme: 'exact',
+            price: '$0.01',
+            network: CAIP2,
+            payTo: config.x402.recipient,
+          },
+          description: VERDICT_DESCRIPTION,
+          mimeType: 'application/json',
+          extensions: {
+            ...declareDiscoveryExtension({
+              output: {
+                example: {
+                  verdict: 'BLOCK',
+                  reasons: [
+                    'Address is on the sanctions list (OFAC via Chainalysis on-chain oracle).',
+                  ],
+                  address: '0x0000000000000000000000000000000000000000',
+                  signals: { sanctions: { checked: true, sanctioned: true } },
+                  verdict_basis: {
+                    live_signals: ['sanctions'],
+                    not_yet_evaluated: [
+                      'risk_score',
+                      'mixer_exposure',
+                      'wallet_age',
+                      'sanctions_proximity',
+                    ],
+                  },
+                },
+                schema: {
+                  type: 'object',
+                  properties: {
+                    verdict: { type: 'string' },
+                    reasons: { type: 'array' },
+                    address: { type: 'string' },
+                    signals: { type: 'object' },
+                    verdict_basis: { type: 'object' },
+                  },
+                },
+              },
+            }),
+          },
+        },
       },
       resourceServer
     )
@@ -178,6 +230,50 @@ export function mountDiscovery(app: Hono): void {
       const msg = err?.message || 'US company lookup failed'
       // Not-found is a normal, informative result — surface it as 404, not 502.
       const status = /not found|not an sec/i.test(msg) ? 404 : 502
+      return c.json({ error: msg }, status)
+    }
+  })
+
+  // Paid handler for the unified counterparty verdict.
+  //
+  // The decision rule is deliberately conservative and MUST stay in lockstep
+  // with GET /verdict/:address on the HTTP API (that route is the source of
+  // truth). BLOCK if sanctioned; PASS if clean; on any upstream failure we
+  // ERROR rather than return a false PASS. `verdict_basis` discloses which
+  // signals informed the decision so a caller never over-trusts a thin PASS.
+  app.get('/x402/verdict/:address', async (c) => {
+    const address = c.req.param('address')
+    try {
+      const screen = await screenAddress(address)
+      const sanctioned = screen.sanctioned === true
+
+      return c.json({
+        verdict: sanctioned ? 'BLOCK' : 'PASS',
+        reasons: [
+          sanctioned
+            ? 'Address is on the sanctions list (OFAC via Chainalysis on-chain oracle).'
+            : 'No sanctions match found.',
+        ],
+        address,
+        signals: { sanctions: { checked: true, sanctioned } },
+        verdict_basis: {
+          live_signals: ['sanctions'],
+          not_yet_evaluated: [
+            'risk_score',
+            'mixer_exposure',
+            'wallet_age',
+            'sanctions_proximity',
+          ],
+          note:
+            'v1 verdict is sanctions-driven. PASS means no sanctions match — ' +
+            'it is not a full risk clearance.',
+        },
+        checked_at: new Date().toISOString(),
+        ...buildAttribution(),
+      })
+    } catch (err: any) {
+      const msg = err?.message || 'verdict failed'
+      const status = /not a valid/i.test(msg) ? 400 : 502
       return c.json({ error: msg }, status)
     }
   })
