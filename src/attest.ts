@@ -47,9 +47,7 @@ export interface SignedEnvelope<T = unknown> {
  * Always resolves — never throws — so a signing outage cannot swallow a paid
  * request. On failure the envelope carries `signed: false` and a reason.
  */
-export async function attest<T extends Record<string, unknown>>(
-  data: T
-): Promise<SignedEnvelope<T>> {
+export async function attest<T>(data: T): Promise<SignedEnvelope<T>> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), ATTEST_TIMEOUT_MS)
 
@@ -62,8 +60,13 @@ export async function attest<T extends Record<string, unknown>>(
     })
 
     if (!res.ok) {
-      const detail = await res.json().catch(() => ({} as any))
-      return unsigned(data, detail?.error || `attestation service returned ${res.status}`)
+      // res.json() is typed as returning `unknown` — cast explicitly rather
+      // than relying on inference through .catch().
+      const detail = (await res.json().catch(() => ({}))) as { error?: string }
+      return unsigned(
+        data,
+        detail.error || `attestation service returned ${res.status}`
+      )
     }
 
     const envelope = (await res.json()) as SignedEnvelope<T>
