@@ -13,6 +13,14 @@
  * It reuses your real wiring: the same CDP facilitator creds, the same Base
  * recipient, and the same `screenAddress()` from chainalysis.ts.
  *
+ * SIGNING: every response is wrapped in the same Ed25519 attestation envelope
+ * the HTTP API returns — `{ data, attestation }` — so a Bazaar consumer can
+ * verify it at /verify without trusting us. Signing is done by POSTing to the
+ * API's free /attest route rather than holding a copy of the private key here
+ * (see attest.ts). NOTE: this changed the response shape of /x402/screen from
+ * a flat object to the envelope, bringing it in line with every other paid
+ * route in the product.
+ *
  * Network is CAIP-2 (eip155:8453 = Base mainnet, eip155:84532 = Base Sepolia),
  * derived from config.x402.network so it follows the same X402_NETWORK env as
  * the rest of the server. START ON base-sepolia: the one settle needed to
@@ -28,6 +36,7 @@ import { createFacilitatorConfig } from '@coinbase/x402'
 import { config } from './config.js'
 import { screenAddress, buildAttribution } from './chainalysis.js'
 import { checkUSCompany, buildAttribution as buildEdgarAttribution } from './secEdgar.js'
+import { attest } from './attest.js'
 
 // Network for THIS beacon, decoupled from the live /mcp server. Defaults to
 // the same network as the rest of the server, but X402_DISCOVERY_NETWORK can
@@ -98,16 +107,38 @@ export function mountDiscovery(app: Hono): void {
             ...declareDiscoveryExtension({
               output: {
                 example: {
-                  address: '0x0000000000000000000000000000000000000000',
-                  sanctioned: false,
-                  identifications: [],
+                  data: {
+                    address: '0x0000000000000000000000000000000000000000',
+                    sanctioned: false,
+                    identifications: [],
+                  },
+                  attestation: {
+                    signed: true,
+                    key_id: 'ed25519-D8wfc7civVNG05Ds',
+                    algorithm: 'ed25519',
+                    signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg',
+                  },
                 },
                 schema: {
                   type: 'object',
                   properties: {
-                    address: { type: 'string' },
-                    sanctioned: { type: 'boolean' },
-                    identifications: { type: 'array' },
+                    data: {
+                      type: 'object',
+                      properties: {
+                        address: { type: 'string' },
+                        sanctioned: { type: 'boolean' },
+                        identifications: { type: 'array' },
+                      },
+                    },
+                    attestation: {
+                      type: 'object',
+                      properties: {
+                        signed: { type: 'boolean' },
+                        key_id: { type: 'string' },
+                        algorithm: { type: 'string' },
+                        signature: { type: 'string' },
+                      },
+                    },
                   },
                 },
               },
@@ -128,26 +159,48 @@ export function mountDiscovery(app: Hono): void {
             ...declareDiscoveryExtension({
               output: {
                 example: {
-                  source: 'SEC EDGAR',
-                  cik: '0000320193',
-                  name: 'Apple Inc.',
-                  entity_type: 'operating',
-                  sic_description: 'Electronic Computers',
-                  state_of_incorporation: 'CA',
-                  tickers: ['AAPL'],
-                  exchanges: ['Nasdaq'],
+                  data: {
+                    source: 'SEC EDGAR',
+                    cik: '0000320193',
+                    name: 'Apple Inc.',
+                    entity_type: 'operating',
+                    sic_description: 'Electronic Computers',
+                    state_of_incorporation: 'CA',
+                    tickers: ['AAPL'],
+                    exchanges: ['Nasdaq'],
+                  },
+                  attestation: {
+                    signed: true,
+                    key_id: 'ed25519-D8wfc7civVNG05Ds',
+                    algorithm: 'ed25519',
+                    signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg',
+                  },
                 },
                 schema: {
                   type: 'object',
                   properties: {
-                    source: { type: 'string' },
-                    cik: { type: 'string' },
-                    name: { type: 'string' },
-                    entity_type: { type: 'string' },
-                    sic_description: { type: 'string' },
-                    state_of_incorporation: { type: 'string' },
-                    tickers: { type: 'array' },
-                    exchanges: { type: 'array' },
+                    data: {
+                      type: 'object',
+                      properties: {
+                        source: { type: 'string' },
+                        cik: { type: 'string' },
+                        name: { type: 'string' },
+                        entity_type: { type: 'string' },
+                        sic_description: { type: 'string' },
+                        state_of_incorporation: { type: 'string' },
+                        tickers: { type: 'array' },
+                        exchanges: { type: 'array' },
+                      },
+                    },
+                    attestation: {
+                      type: 'object',
+                      properties: {
+                        signed: { type: 'boolean' },
+                        key_id: { type: 'string' },
+                        algorithm: { type: 'string' },
+                        signature: { type: 'string' },
+                      },
+                    },
                   },
                 },
               },
@@ -168,30 +221,52 @@ export function mountDiscovery(app: Hono): void {
             ...declareDiscoveryExtension({
               output: {
                 example: {
-                  verdict: 'BLOCK',
-                  reasons: [
-                    'Address is on the sanctions list (OFAC via Chainalysis on-chain oracle).',
-                  ],
-                  address: '0x0000000000000000000000000000000000000000',
-                  signals: { sanctions: { checked: true, sanctioned: true } },
-                  verdict_basis: {
-                    live_signals: ['sanctions'],
-                    not_yet_evaluated: [
-                      'risk_score',
-                      'mixer_exposure',
-                      'wallet_age',
-                      'sanctions_proximity',
+                  data: {
+                    verdict: 'BLOCK',
+                    reasons: [
+                      'Address is on the sanctions list (OFAC via Chainalysis on-chain oracle).',
                     ],
+                    address: '0x0000000000000000000000000000000000000000',
+                    signals: { sanctions: { checked: true, sanctioned: true } },
+                    verdict_basis: {
+                      live_signals: ['sanctions'],
+                      not_yet_evaluated: [
+                        'risk_score',
+                        'mixer_exposure',
+                        'wallet_age',
+                        'sanctions_proximity',
+                      ],
+                    },
+                  },
+                  attestation: {
+                    signed: true,
+                    key_id: 'ed25519-D8wfc7civVNG05Ds',
+                    algorithm: 'ed25519',
+                    signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg',
                   },
                 },
                 schema: {
                   type: 'object',
                   properties: {
-                    verdict: { type: 'string' },
-                    reasons: { type: 'array' },
-                    address: { type: 'string' },
-                    signals: { type: 'object' },
-                    verdict_basis: { type: 'object' },
+                    data: {
+                      type: 'object',
+                      properties: {
+                        verdict: { type: 'string' },
+                        reasons: { type: 'array' },
+                        address: { type: 'string' },
+                        signals: { type: 'object' },
+                        verdict_basis: { type: 'object' },
+                      },
+                    },
+                    attestation: {
+                      type: 'object',
+                      properties: {
+                        signed: { type: 'boolean' },
+                        key_id: { type: 'string' },
+                        algorithm: { type: 'string' },
+                        signature: { type: 'string' },
+                      },
+                    },
                   },
                 },
               },
@@ -204,11 +279,14 @@ export function mountDiscovery(app: Hono): void {
   )
 
   // Paid handler — only runs after payment verifies and settles.
+  // Every result is wrapped in the same signed envelope the HTTP API returns,
+  // so a Bazaar consumer can verify it at /verify exactly as they would a
+  // direct API response. See attest.ts for why signing is a network call.
   app.get('/x402/screen/:address', async (c) => {
     const address = c.req.param('address')
     try {
       const result = await screenAddress(address)
-      return c.json({ ...result, ...buildAttribution() })
+      return c.json(await attest({ ...result, ...buildAttribution() }))
     } catch (err: any) {
       const msg = err?.message || 'sanctions screen failed'
       const status = /not a valid/i.test(msg) ? 400 : 502
@@ -225,7 +303,7 @@ export function mountDiscovery(app: Hono): void {
     }
     try {
       const result = await checkUSCompany(query)
-      return c.json({ ...result, ...buildEdgarAttribution() })
+      return c.json(await attest({ ...result, ...buildEdgarAttribution() }))
     } catch (err: any) {
       const msg = err?.message || 'US company lookup failed'
       // Not-found is a normal, informative result — surface it as 404, not 502.
@@ -247,30 +325,32 @@ export function mountDiscovery(app: Hono): void {
       const screen = await screenAddress(address)
       const sanctioned = screen.sanctioned === true
 
-      return c.json({
-        verdict: sanctioned ? 'BLOCK' : 'PASS',
-        reasons: [
-          sanctioned
-            ? 'Address is on the sanctions list (OFAC via Chainalysis on-chain oracle).'
-            : 'No sanctions match found.',
-        ],
-        address,
-        signals: { sanctions: { checked: true, sanctioned } },
-        verdict_basis: {
-          live_signals: ['sanctions'],
-          not_yet_evaluated: [
-            'risk_score',
-            'mixer_exposure',
-            'wallet_age',
-            'sanctions_proximity',
+      return c.json(
+        await attest({
+          verdict: sanctioned ? 'BLOCK' : 'PASS',
+          reasons: [
+            sanctioned
+              ? 'Address is on the sanctions list (OFAC via Chainalysis on-chain oracle).'
+              : 'No sanctions match found.',
           ],
-          note:
-            'v1 verdict is sanctions-driven. PASS means no sanctions match — ' +
-            'it is not a full risk clearance.',
-        },
-        checked_at: new Date().toISOString(),
-        ...buildAttribution(),
-      })
+          address,
+          signals: { sanctions: { checked: true, sanctioned } },
+          verdict_basis: {
+            live_signals: ['sanctions'],
+            not_yet_evaluated: [
+              'risk_score',
+              'mixer_exposure',
+              'wallet_age',
+              'sanctions_proximity',
+            ],
+            note:
+              'v1 verdict is sanctions-driven. PASS means no sanctions match — ' +
+              'it is not a full risk clearance.',
+          },
+          checked_at: new Date().toISOString(),
+          ...buildAttribution(),
+        })
+      )
     } catch (err: any) {
       const msg = err?.message || 'verdict failed'
       const status = /not a valid/i.test(msg) ? 400 : 502
