@@ -67,11 +67,13 @@ export const handler = createPaidMcpHandler(
       'screen_wallet',
       'Sanctions screening for a crypto wallet address. Checks an EVM ' +
         'address against the Chainalysis on-chain sanctions oracle, which ' +
-        'covers OFAC SDN, EU, and UN designated addresses (including ' +
-        'Tornado Cash and other sanctioned protocols). Returns a clear ' +
-        'sanctioned / not-sanctioned result with the matching program. Use ' +
-        'for AML compliance, counterparty due diligence, and payment ' +
-        'screening before sending USDC or any funds to an address.',
+        'covers OFAC SDN, EU, and UN designated addresses. The oracle ' +
+        'reflects designations as they stand today, including removals — ' +
+        'an address that was once designated may screen clean if it has ' +
+        'since been delisted. Returns a clear sanctioned / not-sanctioned ' +
+        'result with the matching program. Use for AML compliance, ' +
+        'counterparty due diligence, and payment screening before sending ' +
+        'USDC or any funds to an address.',
       { price: config.prices.screen },
       { address: z.string().describe('EVM wallet address (0x + 40 hex) to sanctions-screen') },
       { readOnlyHint: true, openWorldHint: true },
