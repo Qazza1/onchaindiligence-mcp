@@ -8,15 +8,17 @@ Live at **`https://mcp.onchaindiligence.com/mcp`** · Listed in the [official MC
 
 ## What it does
 
-An agent connects over Streamable HTTP and finds three tools:
+An agent connects over Streamable HTTP and finds five tools:
 
 | Tool | Description | Price |
 |------|-------------|-------|
 | `screen_wallet` | Screen a wallet address against the Chainalysis on-chain sanctions oracle (US/EU/UN lists). | $0.01 |
-| `verify_uk_company` | Look up a UK company by registration number: status, type, incorporation, registered address, and people with significant control. | $0.01 |
-| `diligence` | Run both checks in parallel, with an explicit disclaimer that no link between wallet and company is established. | $0.015 |
+| `screen_name` | Fuzzy-match a person or company against OFAC SDN names and strong aliases. | $0.02 |
+| `verify_uk_company` | Look up a UK company by registration number: status, type, incorporation, registered address, and people with significant control. | $0.05 |
+| `verify_us_company` | Resolve a public US company through SEC EDGAR. | $0.05 |
+| `diligence` | Run wallet and UK-company checks in parallel, without claiming a verified link between them. | $0.05 |
 
-Each result is the same factual data the [HTTP API](https://api.onchaindiligence.com) returns — the check logic is shared byte-for-byte, so an agent calling via MCP gets results identical to one calling over HTTP.
+The tools use the same underlying public-data sources as the [HTTP API](https://api.onchaindiligence.com). They are separate deployments, so response-level equivalence must be enforced by contract tests rather than assumed.
 
 ## How payment works
 
@@ -51,13 +53,13 @@ agent (MCP client + x402 wallet)
       ▼
 index.ts ──────────── Hono app, routes /mcp to the handler
       ▼
-src/server.ts ─────── createPaidMcpHandler: 3 paidTools, x402 gating
+src/server.ts ─────── createPaidMcpHandler: 5 paidTools, x402 gating
       │
       ├── src/chainalysis.ts ──── sanctions oracle read (viem, Ethereum mainnet)
       └── src/companiesHouse.ts ─ UK Companies House lookup
 ```
 
-- **`src/server.ts`** — defines the three `paidTool`s with their prices and Zod schemas, wired to the Coinbase facilitator for x402 settlement.
+- **`src/server.ts`** — defines the five `paidTool`s with their prices and Zod schemas, wired to the Coinbase facilitator for x402 settlement.
 - **`src/chainalysis.ts` / `src/companiesHouse.ts`** — the check logic, reused unchanged from the HTTP API so results stay consistent across rails.
 - **`index.ts`** — a Hono app exposing the handler at `/mcp`; deployed as a Vercel function, and the same app is served locally by `src/local.ts`.
 - **`test/client.ts`** — a low-level test client that performs the full x402 pay-and-retry loop by hand (see *Design notes*).
@@ -85,6 +87,7 @@ Environment variables:
 | `X402_RECIPIENT_ADDRESS` | Base address that receives USDC. |
 | `X402_NETWORK` | `base-sepolia` (testnet) or `base` (mainnet). |
 | `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` | Coinbase Developer Platform keys for the x402 facilitator. |
+| `ATTESTATION_SERVICE_TOKEN` | Server-to-server credential for the API's internal attestation service. Required for signed results; never expose it to browser code. |
 
 To exercise the full paid loop against the running server:
 
@@ -101,7 +104,7 @@ A few decisions worth explaining, since they reflect real constraints rather tha
 
 - **The test client is hand-rolled.** `x402-mcp` ships a `withPayment` helper, but it imports an MCP client API (`experimental_MCPClient`) that the `ai` SDK removed in v5. Rather than pin an old `ai` version, `test/client.ts` performs the x402 loop directly on the MCP SDK plus `x402/client` — calling unpaid to get requirements, building a payment header, and retrying with payment in `_meta`. The server itself doesn't depend on `ai`, so this is a test-only concern.
 
-- **Check logic is shared, not reimplemented.** `chainalysis.ts` and `companiesHouse.ts` are copied unchanged from the HTTP API so that a result is the same regardless of which rail an agent uses. Consistency across surfaces matters more than DRY across repos here.
+- **Public-data clients are currently duplicated.** `chainalysis.ts` and `companiesHouse.ts` began as copies of the HTTP API implementations. They can drift, so the remediation roadmap moves them behind a shared service/package and adds contract tests.
 
 ## Not a compliance program
 

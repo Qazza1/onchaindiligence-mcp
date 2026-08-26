@@ -1,10 +1,10 @@
 /**
  * server.ts — the x402-paid MCP server.
  *
- * Exposes three compliance checks as MCP tools that agents can call and PAY FOR
+ * Exposes five compliance checks as MCP tools that agents can call and PAY FOR
  * over Streamable HTTP using x402 (USDC on Base). Each tool runs the exact same
- * check logic as the HTTP API (reused chainalysis.ts / companiesHouse.ts), so an
- * agent calling via MCP gets identical results to one calling the HTTP API.
+ * underlying public-data clients as the HTTP API. Cross-surface contract tests
+ * are required before claiming response-level equivalence.
  *
  * Payment model: NON-CUSTODIAL. The x402 facilitator verifies the agent's USDC
  * payment to our recipient address before the tool body runs. We never hold funds.
@@ -12,9 +12,9 @@
  * SIGNING: every tool result is wrapped in the same Ed25519 attestation envelope
  * the HTTP API returns — `{ data, attestation }` — so an agent can verify at
  * /verify that the result came from us, unaltered. Signing is done by POSTing to
- * the API's free /attest route rather than holding a copy of the private key in
- * this deployment (see attest.ts). If signing is unavailable the envelope carries
- * `signed: false` with a reason, rather than failing a request the agent paid for.
+ * the API's authenticated /attest route rather than holding a copy of the
+ * private key in this deployment (see attest.ts). Signing readiness is checked
+ * before payment middleware and unsigned paid successes are never returned.
  *
  * This module exports a web-standard handler (Request -> Response) via
  * createPaidMcpHandler, which mounts as a Vercel function or inside Hono.
@@ -57,7 +57,7 @@ const facilitator = createFacilitatorConfig(
 )
 
 /**
- * Build the paid MCP handler. Three paidTools, each priced, each running the
+ * Build the paid MCP handler. Five paidTools, each priced, each running the
  * same check the HTTP API runs and returning the same shape + honest attribution.
  */
 export const handler = createPaidMcpHandler(
@@ -71,7 +71,7 @@ export const handler = createPaidMcpHandler(
         'reflects designations as they stand today, including removals — ' +
         'an address that was once designated may screen clean if it has ' +
         'since been delisted. Returns a clear sanctioned / not-sanctioned ' +
-        'result with the matching program. Use for AML compliance, ' +
+        'boolean; the oracle does not return programme-level case detail. Use for AML compliance, ' +
         'counterparty due diligence, and payment screening before sending ' +
         'USDC or any funds to an address.',
       { price: config.prices.screen },

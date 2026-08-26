@@ -11,20 +11,22 @@
  * envelope the HTTP routes return — one key, one trust anchor, and the result
  * verifies at /verify unchanged.
  *
- * FAILURE BEHAVIOUR — read this before changing it:
- *
- * Payment settles in the x402 middleware, BEFORE the handler runs. So by the
- * time we sign, the caller has already paid. If signing fails we must not throw
- * away their money with a 500, and we must not quietly return an unsigned
- * result dressed up as a signed one. Instead we return the data with an
- * explicit `attestation: { signed: false, error }`, so the caller can see
- * exactly what happened and retry.
+ * FAILURE BEHAVIOUR: index.ts probes the authenticated readiness endpoint
+ * before x402 payment middleware. If signing still fails after that preflight,
+ * this module throws and the tool returns an explicit error. It never returns
+ * an unsigned success-shaped paid result.
  */
 
 const ATTEST_URL =
   process.env.ATTEST_URL || 'https://api.onchaindiligence.com/attest'
+const ATTEST_SERVICE_TOKEN = process.env.ATTESTATION_SERVICE_TOKEN || ''
+const ATTEST_READY_URL = /\/attest\/?$/.test(ATTEST_URL)
+  ? ATTEST_URL.replace(/\/attest\/?$/, '/attest/ready')
+  : `${ATTEST_URL.replace(/\/$/, '')}/ready`
 
 const ATTEST_TIMEOUT_MS = 4000
+const READY_CACHE_MS = 5000
+let readyCache = { checkedAt: 0, ready: false }
 
 export interface Attestation {
   signed: boolean
@@ -44,17 +46,24 @@ export interface SignedEnvelope<T = unknown> {
 /**
  * Wrap a result in a signed attestation envelope.
  *
- * Always resolves — never throws — so a signing outage cannot swallow a paid
- * request. On failure the envelope carries `signed: false` and a reason.
+ * Throws on signing failure. An unsigned envelope is never a successful paid
+ * tool result.
  */
 export async function attest<T>(data: T): Promise<SignedEnvelope<T>> {
+  if (!ATTEST_SERVICE_TOKEN) {
+    throw new Error('attestation service credential is not configured')
+  }
+
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), ATTEST_TIMEOUT_MS)
 
   try {
     const res = await fetch(ATTEST_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ATTEST_SERVICE_TOKEN}`,
+      },
       body: JSON.stringify({ evidence: data }),
       signal: controller.signal,
     })
@@ -63,15 +72,12 @@ export async function attest<T>(data: T): Promise<SignedEnvelope<T>> {
       // res.json() is typed as returning `unknown` — cast explicitly rather
       // than relying on inference through .catch().
       const detail = (await res.json().catch(() => ({}))) as { error?: string }
-      return unsigned(
-        data,
-        detail.error || `attestation service returned ${res.status}`
-      )
+      throw new Error(detail.error || `attestation service returned ${res.status}`)
     }
 
     const envelope = (await res.json()) as SignedEnvelope<T>
     if (!envelope?.attestation?.signed || !envelope.attestation.signature) {
-      return unsigned(data, 'attestation service returned an unsigned envelope')
+      throw new Error('attestation service returned an unsigned envelope')
     }
     return envelope
   } catch (err: any) {
@@ -79,20 +85,31 @@ export async function attest<T>(data: T): Promise<SignedEnvelope<T>> {
       err?.name === 'AbortError'
         ? 'attestation service timed out'
         : err?.message || 'attestation service unreachable'
-    return unsigned(data, reason)
+    throw new Error(reason)
   } finally {
     clearTimeout(timer)
   }
 }
 
-function unsigned<T>(data: T, error: string): SignedEnvelope<T> {
-  return {
-    data,
-    attestation: {
-      signed: false,
-      error:
-        `${error}. The check below was performed, but could not be signed. ` +
-        `Retry to obtain a verifiable attestation.`,
-    },
+/** Authenticated, cached readiness probe used before payment middleware. */
+export async function attestationReady(): Promise<boolean> {
+  if (!ATTEST_SERVICE_TOKEN) return false
+  const now = Date.now()
+  if (now - readyCache.checkedAt < READY_CACHE_MS) return readyCache.ready
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 2500)
+  try {
+    const res = await fetch(ATTEST_READY_URL, {
+      headers: { Authorization: `Bearer ${ATTEST_SERVICE_TOKEN}` },
+      signal: controller.signal,
+    })
+    const body = (await res.json().catch(() => ({}))) as { ready?: boolean }
+    readyCache = { checkedAt: now, ready: res.ok && body.ready === true }
+  } catch {
+    readyCache = { checkedAt: now, ready: false }
+  } finally {
+    clearTimeout(timer)
   }
+  return readyCache.ready
 }

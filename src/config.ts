@@ -33,11 +33,15 @@ export const config = {
   // recipient the HTTP API uses. Keep them separate.
   x402: {
     recipient: (process.env.X402_RECIPIENT_ADDRESS || '') as `0x${string}`,
-    network: (process.env.X402_NETWORK || 'base-sepolia') as
-      | 'base'
-      | 'base-sepolia',
+    // Intentionally no default. The cast describes the validated post-boot
+    // value; at runtime assertConfigured() rejects undefined/invalid values.
+    network: process.env.X402_NETWORK as 'base' | 'base-sepolia',
     cdpKeyId: process.env.CDP_API_KEY_ID || '',
     cdpKeySecret: process.env.CDP_API_KEY_SECRET || '',
+  },
+
+  attestation: {
+    serviceToken: process.env.ATTESTATION_SERVICE_TOKEN || '',
   },
 
   // --- SEC EDGAR (free US public-company data, no API key) --------------
@@ -76,6 +80,8 @@ export function assertConfigured(): void {
   if (!config.x402.recipient) missing.push('X402_RECIPIENT_ADDRESS')
   if (!config.x402.cdpKeyId) missing.push('CDP_API_KEY_ID')
   if (!config.x402.cdpKeySecret) missing.push('CDP_API_KEY_SECRET')
+  if (!config.x402.network) missing.push('X402_NETWORK')
+  if (!config.attestation.serviceToken) missing.push('ATTESTATION_SERVICE_TOKEN')
 
   if (missing.length) {
     throw new Error(
@@ -89,5 +95,13 @@ export function assertConfigured(): void {
       `X402_RECIPIENT_ADDRESS ("${config.x402.recipient}") is not a valid ` +
         `0x-prefixed address (expected 0x + 40 hex chars).`
     )
+  }
+
+  if (config.x402.network !== 'base' && config.x402.network !== 'base-sepolia') {
+    throw new Error('X402_NETWORK must be explicitly set to "base" or "base-sepolia".')
+  }
+
+  if (config.attestation.serviceToken.length < 32) {
+    throw new Error('ATTESTATION_SERVICE_TOKEN must be at least 32 characters long.')
   }
 }

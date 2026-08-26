@@ -1,7 +1,7 @@
 # OnchainDiligence MCP — build notes
 
 ## What this is
-A standalone x402-paid MCP server exposing the same three compliance checks as the
+A standalone x402-paid MCP server exposing five compliance checks using the same
 HTTP API (`api.onchaindiligence.com`), but as MCP tools agents can call and pay for
 over Streamable HTTP. Separate project from the HTTP API by design (separate payment
 rail, separate blast radius). Intended home: `mcp.onchaindiligence.com`.
@@ -39,7 +39,9 @@ rail, separate blast radius). Intended home: `mcp.onchaindiligence.com`.
 ## Reused modules (copied from the HTTP API, logic unchanged)
 - chainalysis.ts  — sanctions oracle read (viem, Ethereum mainnet, isSanctioned())
 - companiesHouse.ts — UK Companies House lookup (profile + PSC)
-Both kept byte-for-byte in behavior so MCP results == HTTP results.
+These began as copies. Do not assume MCP results equal HTTP results without
+cross-surface contract tests; centralizing the verdict/check implementation is
+tracked in the audit findings register.
 
 ## Env vars needed
 - COMPANIES_HOUSE_API_KEY   (same as HTTP API)
