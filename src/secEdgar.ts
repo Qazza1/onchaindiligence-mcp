@@ -53,7 +53,21 @@ function pad10(cik: string | number): string {
 }
 
 // --- ticker map cache (6h TTL) -----------------------------------------
-type TickerEntry = { cik_str: number; ticker: string; title: string }
+export type TickerEntry = { cik_str: number; ticker: string; title: string }
+export type CompanyMatchMethod =
+  | 'cik'
+  | 'ticker'
+  | 'exact_name'
+  | 'unique_prefix'
+  | 'unique_substring'
+
+export type CompanyResolution =
+  | { status: 'resolved'; cik: string; matched_by: CompanyMatchMethod }
+  | {
+      status: 'ambiguous'
+      candidate_count: number
+      candidates: Array<{ cik: string; ticker: string; name: string }>
+    }
 let tickerCache: { at: number; entries: TickerEntry[] } | null = null
 const TICKER_TTL_MS = 6 * 60 * 60 * 1000
 
@@ -70,28 +84,82 @@ async function getTickerEntries(): Promise<TickerEntry[]> {
 }
 
 /**
- * Resolve a user query (CIK | ticker | company name) to a 10-digit CIK.
- * Tries, in order: explicit CIK, exact ticker, exact name, prefix, substring.
+ * Resolve a query without silently selecting the first fuzzy name match.
+ * Prefix/substring matching is accepted only when it identifies one filer.
  */
-async function resolveToCik(query: string): Promise<string> {
+export function resolveCompanyQuery(
+  query: string,
+  entries: TickerEntry[]
+): CompanyResolution | null {
   const raw = query.trim()
 
   // Explicit CIK? e.g. "320193", "0000320193", or "CIK0000320193"
   const stripped = raw.replace(/^cik/i, '').trim()
-  if (/^\d{1,10}$/.test(stripped)) return pad10(stripped)
+  if (/^\d{1,10}$/.test(stripped)) {
+    return { status: 'resolved', cik: pad10(stripped), matched_by: 'cik' }
+  }
 
-  const entries = await getTickerEntries()
   const q = raw.toUpperCase()
+  const tickerMatches = entries.filter((entry) => entry.ticker.toUpperCase() === q)
+  const exactNameMatches = entries.filter((entry) => entry.title.toUpperCase() === q)
 
-  const hit =
-    entries.find((e) => e.ticker.toUpperCase() === q) ||
-    entries.find((e) => e.title.toUpperCase() === q) ||
-    entries.find((e) => e.title.toUpperCase().startsWith(q)) ||
-    entries.find((e) => e.title.toUpperCase().includes(q))
+  const choose = (
+    matches: TickerEntry[],
+    matchedBy: CompanyMatchMethod
+  ): CompanyResolution | null => {
+    if (matches.length === 0) return null
+    if (matches.length === 1) {
+      return {
+        status: 'resolved',
+        cik: pad10(matches[0].cik_str),
+        matched_by: matchedBy,
+      }
+    }
+    const sorted = [...matches].sort(
+      (a, b) =>
+        a.title.localeCompare(b.title) ||
+        a.ticker.localeCompare(b.ticker) ||
+        a.cik_str - b.cik_str
+    )
+    return {
+      status: 'ambiguous',
+      candidate_count: sorted.length,
+      candidates: sorted.slice(0, 10).map((entry) => ({
+        cik: pad10(entry.cik_str),
+        ticker: entry.ticker,
+        name: entry.title,
+      })),
+    }
+  }
 
-  if (!hit) throw new USCompanyNotFoundError(query)
-  return pad10(hit.cik_str)
+  const exactTicker = choose(tickerMatches, 'ticker')
+  if (exactTicker) return exactTicker
+  const exactName = choose(exactNameMatches, 'exact_name')
+  if (exactName) return exactName
+
+  const prefix = choose(
+    entries.filter((entry) => entry.title.toUpperCase().startsWith(q)),
+    'unique_prefix'
+  )
+  if (prefix) return prefix
+
+  return choose(
+    entries.filter((entry) => entry.title.toUpperCase().includes(q)),
+    'unique_substring'
+  )
 }
+
+async function resolveCompany(query: string): Promise<CompanyResolution> {
+  const entries = await getTickerEntries()
+  const resolution = resolveCompanyQuery(query, entries)
+  if (!resolution) throw new USCompanyNotFoundError(query)
+  return resolution
+}
+
+const COVERAGE_NOTE =
+  'SEC EDGAR covers SEC-registered (public) companies and funds only. ' +
+  'A "not found" result does NOT mean the company does not exist — ' +
+  'private US companies register at the state level and are not in EDGAR.'
 
 /**
  * Look up a US public company by ticker, CIK, or name. Returns registered
@@ -99,7 +167,21 @@ async function resolveToCik(query: string): Promise<string> {
  * address, and the most recent SEC filing — plus an explicit coverage note.
  */
 export async function checkUSCompany(query: string) {
-  const cik = await resolveToCik(query)
+  const resolution = await resolveCompany(query)
+  if (resolution.status === 'ambiguous') {
+    return {
+      source: 'SEC EDGAR',
+      match_status: 'ambiguous' as const,
+      query: query.trim(),
+      candidate_count: resolution.candidate_count,
+      candidates: resolution.candidates,
+      resolution_note:
+        'Multiple SEC filers match this name. Resubmit an exact ticker, CIK, or exact legal name; no company was selected.',
+      coverage_note: COVERAGE_NOTE,
+    }
+  }
+
+  const cik = resolution.cik
 
   const res = await fetch(SEC_SUBMISSIONS(cik), { headers: headers() })
   if (res.status === 404) throw new USCompanyNotFoundError(query)
@@ -122,6 +204,8 @@ export async function checkUSCompany(query: string) {
 
   return {
     source: 'SEC EDGAR',
+    match_status: 'resolved' as const,
+    matched_by: resolution.matched_by,
     cik,
     name: d?.name ?? null,
     former_names: Array.isArray(d?.formerNames)
@@ -143,10 +227,7 @@ export async function checkUSCompany(query: string) {
         }
       : null,
     latest_filing: latestFiling,
-    coverage_note:
-      'SEC EDGAR covers SEC-registered (public) companies and funds only. ' +
-      'A "not found" result does NOT mean the company does not exist — ' +
-      'private US companies register at the state level and are not in EDGAR.',
+    coverage_note: COVERAGE_NOTE,
   }
 }
 

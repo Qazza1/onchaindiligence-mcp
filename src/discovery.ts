@@ -70,7 +70,8 @@ const US_COMPANY_DESCRIPTION =
   'Verify a US public company against SEC EDGAR. Look up an SEC-registered ' +
   'issuer by ticker, CIK, or name and get its legal entity name, industry ' +
   '(SIC), state of incorporation, tickers/exchanges, and latest filing. For ' +
-  'KYB, counterparty due diligence, and issuer verification.'
+  'ambiguous names, returns candidates without selecting a company. For KYB, ' +
+  'counterparty due diligence, and issuer verification.'
 
 // Keyword-rich description for the unified verdict beacon. Agents searching
 // the Bazaar want a decision they can act on, not raw data to interpret.
@@ -174,6 +175,8 @@ export function mountDiscovery(app: Hono): void {
                 example: {
                   data: {
                     source: 'SEC EDGAR',
+                    match_status: 'resolved',
+                    matched_by: 'ticker',
                     cik: '0000320193',
                     name: 'Apple Inc.',
                     entity_type: 'operating',
@@ -196,6 +199,11 @@ export function mountDiscovery(app: Hono): void {
                       type: 'object',
                       properties: {
                         source: { type: 'string' },
+                        match_status: {
+                          type: 'string',
+                          enum: ['resolved', 'ambiguous'],
+                        },
+                        matched_by: { type: 'string' },
                         cik: { type: 'string' },
                         name: { type: 'string' },
                         entity_type: { type: 'string' },
@@ -203,6 +211,9 @@ export function mountDiscovery(app: Hono): void {
                         state_of_incorporation: { type: 'string' },
                         tickers: { type: 'array' },
                         exchanges: { type: 'array' },
+                        candidate_count: { type: 'integer' },
+                        candidates: { type: 'array' },
+                        resolution_note: { type: 'string' },
                       },
                     },
                     attestation: {

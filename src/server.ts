@@ -192,7 +192,8 @@ export const handler = createPaidMcpHandler(
         'ticker, SEC CIK, or company name, returns the registered entity ' +
         'name, CIK, industry (SIC code), state of incorporation, listed ' +
         'exchanges and tickers, business address, and most recent SEC ' +
-        'filing. SCOPE: EDGAR covers SEC-registered PUBLIC companies and ' +
+        'filing. Ambiguous name searches return candidates and never silently ' +
+        'select a company. SCOPE: EDGAR covers SEC-registered PUBLIC companies and ' +
         'funds only — NOT private US companies, which register at the state ' +
         'level. Use for KYB and counterparty due diligence on listed US ' +
         'entities. Authoritative US government open data.',
