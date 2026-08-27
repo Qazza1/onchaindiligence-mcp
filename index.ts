@@ -13,7 +13,7 @@
 import { Hono } from 'hono'
 import { handler } from './src/server.js'
 import { mountDiscovery } from './src/discovery.js'
-import { attestationReady } from './src/attest.js'
+import { attestationReady, canonicalVerdictReady } from './src/attest.js'
 
 const app = new Hono()
 app.get('/', (c) => c.text('OnchainDiligence MCP server — POST /mcp'))
@@ -32,10 +32,25 @@ const requireSigningReadiness = async (c: any, next: () => Promise<void>) => {
   await next()
 }
 
+const requireCanonicalVerdictReadiness = async (c: any, next: () => Promise<void>) => {
+  if (!(await canonicalVerdictReady())) {
+    c.header('Retry-After', '10')
+    return c.json(
+      {
+        error: 'canonical verdict service temporarily unavailable',
+        detail: 'No payment was requested. Retry when verdict readiness is restored.',
+      },
+      503
+    )
+  }
+  await next()
+}
+
 // Registered before either payment implementation so a signing outage fails
 // before x402 verification/settlement can collect funds.
 app.use('/mcp', requireSigningReadiness)
 app.use('/x402/*', requireSigningReadiness)
+app.use('/x402/verdict/:address', requireCanonicalVerdictReadiness)
 app.all('/mcp', (c) => handler(c.req.raw))
 
 // Additive: mounts GET /x402/screen/:address (paid + Bazaar-discoverable).

@@ -36,7 +36,8 @@ import { createFacilitatorConfig } from '@coinbase/x402'
 import { config } from './config.js'
 import { screenAddress, buildAttribution } from './chainalysis.js'
 import { checkUSCompany, buildAttribution as buildEdgarAttribution } from './secEdgar.js'
-import { attest } from './attest.js'
+import { attest, canonicalVerdict, CanonicalVerdictError } from './attest.js'
+import { isValidAddressOrEns } from './inputValidation.js'
 
 // Network for THIS beacon, decoupled from the live /mcp server. Defaults to
 // the same network as the rest of the server, but X402_DISCOVERY_NETWORK can
@@ -74,10 +75,11 @@ const US_COMPANY_DESCRIPTION =
 // Keyword-rich description for the unified verdict beacon. Agents searching
 // the Bazaar want a decision they can act on, not raw data to interpret.
 const VERDICT_DESCRIPTION =
-  'Get a single counterparty verdict — PASS or BLOCK — for an EVM wallet ' +
-  'address, with reasons. BLOCK means the address is sanctioned (OFAC via the ' +
-  'Chainalysis on-chain oracle); PASS means no sanctions match. Never returns ' +
-  'a false PASS. For autonomous agents deciding whether to send funds.'
+  'Get a single signed counterparty verdict — PASS, WARN, or BLOCK — for an ' +
+  'EVM wallet address, with reasons. BLOCK means the address itself is sanctioned; ' +
+  'WARN means direct sanctioned-counterparty exposure was found or exposure ' +
+  'could not be completely evaluated; PASS means neither was found within the ' +
+  'reported bounded scope. For autonomous agents deciding whether to send funds.'
 
 /**
  * Mounts the paid + discoverable /x402/screen/:address route onto the given
@@ -86,6 +88,17 @@ const VERDICT_DESCRIPTION =
  * handler, as Hono requires.
  */
 export function mountDiscovery(app: Hono): void {
+  // Reject malformed verdict identifiers before the payment middleware can
+  // present a challenge. ENS-like names are accepted because the canonical API
+  // resolves them; all other inputs must be 20-byte EVM addresses.
+  app.use('/x402/verdict/:address', async (c, next) => {
+    const input = c.req.param('address')?.trim() ?? ''
+    if (!isValidAddressOrEns(input)) {
+      return c.json({ error: 'invalid address or ENS name parameter' }, 400)
+    }
+    await next()
+  })
+
   app.use(
     paymentMiddleware(
       {
@@ -207,7 +220,7 @@ export function mountDiscovery(app: Hono): void {
             }),
           },
         },
-        // Third Bazaar route: unified counterparty verdict (PASS / BLOCK).
+        // Third Bazaar route: unified counterparty verdict (PASS / WARN / BLOCK).
         'GET /x402/verdict/:address': {
           accepts: {
             scheme: 'exact',
@@ -222,14 +235,24 @@ export function mountDiscovery(app: Hono): void {
               output: {
                 example: {
                   data: {
-                    verdict: 'BLOCK',
+                    verdict: 'WARN',
                     reasons: [
-                      'Address is on the sanctions list (OFAC via Chainalysis on-chain oracle).',
+                      'Address is not itself sanctioned, but transacted directly with 1 sanctioned address on Tempo mainnet.',
                     ],
                     address: '0x0000000000000000000000000000000000000000',
-                    signals: { sanctions: { checked: true, sanctioned: true } },
+                    signals: {
+                      sanctions: { checked: true, sanctioned: false },
+                      direct_counterparty_exposure: {
+                        checked: true,
+                        complete: true,
+                        status: 'complete',
+                        sanctioned_counterparties: [
+                          '0x0000000000000000000000000000000000000001',
+                        ],
+                      },
+                    },
                     verdict_basis: {
-                      live_signals: ['sanctions'],
+                      live_signals: ['sanctions', 'direct_counterparty_exposure'],
                       not_yet_evaluated: [
                         'risk_score',
                         'mixer_exposure',
@@ -251,7 +274,7 @@ export function mountDiscovery(app: Hono): void {
                     data: {
                       type: 'object',
                       properties: {
-                        verdict: { type: 'string' },
+                        verdict: { type: 'string', enum: ['PASS', 'WARN', 'BLOCK'] },
                         reasons: { type: 'array' },
                         address: { type: 'string' },
                         signals: { type: 'object' },
@@ -314,46 +337,25 @@ export function mountDiscovery(app: Hono): void {
 
   // Paid handler for the unified counterparty verdict.
   //
-  // The decision rule is deliberately conservative and MUST stay in lockstep
-  // with GET /verdict/:address on the HTTP API (that route is the source of
-  // truth). BLOCK if sanctioned; PASS if clean; on any upstream failure we
-  // ERROR rather than return a false PASS. `verdict_basis` discloses which
-  // signals informed the decision so a caller never over-trusts a thin PASS.
+  // The HTTP API owns the decision rule and signed response. MCP delegates the
+  // supplied address instead of reimplementing PASS / WARN / BLOCK locally.
   app.get('/x402/verdict/:address', async (c) => {
     const address = c.req.param('address')
     try {
-      const screen = await screenAddress(address)
-      const sanctioned = screen.sanctioned === true
-
-      return c.json(
-        await attest({
-          verdict: sanctioned ? 'BLOCK' : 'PASS',
-          reasons: [
-            sanctioned
-              ? 'Address is on the sanctions list (OFAC via Chainalysis on-chain oracle).'
-              : 'No sanctions match found.',
-          ],
-          address,
-          signals: { sanctions: { checked: true, sanctioned } },
-          verdict_basis: {
-            live_signals: ['sanctions'],
-            not_yet_evaluated: [
-              'risk_score',
-              'mixer_exposure',
-              'wallet_age',
-              'sanctions_proximity',
-            ],
-            note:
-              'v1 verdict is sanctions-driven. PASS means no sanctions match — ' +
-              'it is not a full risk clearance.',
-          },
-          checked_at: new Date().toISOString(),
-          ...buildAttribution(),
-        })
-      )
+      return c.json(await canonicalVerdict(address))
     } catch (err: any) {
       const msg = err?.message || 'verdict failed'
-      const status = /not a valid/i.test(msg) ? 400 : 502
+      const upstreamStatus = err instanceof CanonicalVerdictError ? err.status : 502
+      const status =
+        upstreamStatus === 400
+          ? 400
+          : upstreamStatus === 401
+            ? 401
+            : upstreamStatus === 429
+              ? 429
+              : upstreamStatus === 503
+                ? 503
+                : 502
       return c.json({ error: msg }, status)
     }
   })

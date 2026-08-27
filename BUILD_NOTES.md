@@ -39,9 +39,20 @@ rail, separate blast radius). Intended home: `mcp.onchaindiligence.com`.
 ## Reused modules (copied from the HTTP API, logic unchanged)
 - chainalysis.ts  — sanctions oracle read (viem, Ethereum mainnet, isSanctioned())
 - companiesHouse.ts — UK Companies House lookup (profile + PSC)
-These began as copies. Do not assume MCP results equal HTTP results without
-cross-surface contract tests; centralizing the verdict/check implementation is
-tracked in the audit findings register.
+These began as copies. Raw screening/company tools still require cross-surface
+contract coverage before claiming response-level equivalence. The Bazaar
+`/x402/verdict/:address` route is different: it delegates to the authenticated
+canonical API route and returns that signed envelope unchanged. Its delegation
+contract is covered by `test/canonicalVerdict.ts`.
+
+## Canonical verdict boundary
+- The HTTP API exclusively owns PASS / WARN / BLOCK policy and evidence shape.
+- MCP sends only the caller's address/ENS to `/internal/verdict/:address`; it
+  cannot manufacture verdict evidence locally.
+- `/internal/verdict/ready` is checked before the verdict payment middleware,
+  so a known API, signer, or mandatory sanctions-provider outage returns 503
+  without asking for payment.
+- Run the transport contract with `npx tsx test/canonicalVerdict.ts`.
 
 ## Env vars needed
 - COMPANIES_HOUSE_API_KEY   (same as HTTP API)

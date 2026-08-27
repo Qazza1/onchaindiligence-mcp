@@ -23,10 +23,18 @@ const ATTEST_SERVICE_TOKEN = process.env.ATTESTATION_SERVICE_TOKEN || ''
 const ATTEST_READY_URL = /\/attest\/?$/.test(ATTEST_URL)
   ? ATTEST_URL.replace(/\/attest\/?$/, '/attest/ready')
   : `${ATTEST_URL.replace(/\/$/, '')}/ready`
+const CANONICAL_API_BASE = process.env.CANONICAL_API_URL
+  ? process.env.CANONICAL_API_URL.replace(/\/$/, '')
+  : /\/attest\/?$/.test(ATTEST_URL)
+    ? ATTEST_URL.replace(/\/attest\/?$/, '')
+    : new URL(ATTEST_URL).origin
+const VERDICT_READY_URL = `${CANONICAL_API_BASE}/internal/verdict/ready`
 
 const ATTEST_TIMEOUT_MS = 4000
+const VERDICT_TIMEOUT_MS = 15000
 const READY_CACHE_MS = 5000
 let readyCache = { checkedAt: 0, ready: false }
+let verdictReadyCache = { checkedAt: 0, ready: false }
 
 export interface Attestation {
   signed: boolean
@@ -41,6 +49,23 @@ export interface Attestation {
 export interface SignedEnvelope<T = unknown> {
   data: T
   attestation: Attestation
+}
+
+export interface CanonicalVerdictData {
+  verdict: 'PASS' | 'WARN' | 'BLOCK'
+  reasons: string[]
+  address: string
+  signals: Record<string, unknown>
+  verdict_basis: Record<string, unknown>
+  checked_at: string
+  [key: string]: unknown
+}
+
+export class CanonicalVerdictError extends Error {
+  constructor(message: string, public status = 502) {
+    super(message)
+    this.name = 'CanonicalVerdictError'
+  }
 }
 
 /**
@@ -112,4 +137,90 @@ export async function attestationReady(): Promise<boolean> {
     clearTimeout(timer)
   }
   return readyCache.ready
+}
+
+/**
+ * Fetch the API-owned verdict. MCP deliberately does not contain verdict
+ * rules: the API evaluates the subject and exposure, then signs the result.
+ */
+export async function canonicalVerdict(
+  address: string
+): Promise<SignedEnvelope<CanonicalVerdictData>> {
+  if (!ATTEST_SERVICE_TOKEN) {
+    throw new CanonicalVerdictError('canonical verdict credential is not configured', 503)
+  }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), VERDICT_TIMEOUT_MS)
+  try {
+    const res = await fetch(
+      `${CANONICAL_API_BASE}/internal/verdict/${encodeURIComponent(address)}`,
+      {
+        headers: { Authorization: `Bearer ${ATTEST_SERVICE_TOKEN}` },
+        signal: controller.signal,
+      }
+    )
+    const body = (await res.json().catch(() => ({}))) as
+      | SignedEnvelope<CanonicalVerdictData>
+      | { error?: string }
+
+    if (!res.ok) {
+      throw new CanonicalVerdictError(
+        'error' in body && body.error ? body.error : `canonical verdict service returned ${res.status}`,
+        res.status >= 400 && res.status < 500 ? res.status : 502
+      )
+    }
+
+    const envelope = body as SignedEnvelope<CanonicalVerdictData>
+    const verdict = envelope?.data?.verdict
+    if (
+      !envelope?.attestation?.signed ||
+      !envelope.attestation.signature ||
+      !['PASS', 'WARN', 'BLOCK'].includes(verdict) ||
+      !Array.isArray(envelope.data.reasons) ||
+      typeof envelope.data.address !== 'string' ||
+      typeof envelope.data.signals !== 'object' ||
+      typeof envelope.data.verdict_basis !== 'object' ||
+      typeof envelope.data.checked_at !== 'string' ||
+      (/^0x[0-9a-fA-F]{40}$/.test(address) &&
+        envelope.data.address.toLowerCase() !== address.toLowerCase())
+    ) {
+      throw new CanonicalVerdictError('canonical verdict service returned an invalid envelope')
+    }
+    return envelope
+  } catch (err: any) {
+    if (err instanceof CanonicalVerdictError) throw err
+    const reason =
+      err?.name === 'AbortError'
+        ? 'canonical verdict service timed out'
+        : err?.message || 'canonical verdict service unreachable'
+    throw new CanonicalVerdictError(reason)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** Cached readiness probe used before the verdict payment middleware. */
+export async function canonicalVerdictReady(): Promise<boolean> {
+  if (!ATTEST_SERVICE_TOKEN) return false
+  const now = Date.now()
+  if (now - verdictReadyCache.checkedAt < READY_CACHE_MS) {
+    return verdictReadyCache.ready
+  }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 3000)
+  try {
+    const res = await fetch(VERDICT_READY_URL, {
+      headers: { Authorization: `Bearer ${ATTEST_SERVICE_TOKEN}` },
+      signal: controller.signal,
+    })
+    const body = (await res.json().catch(() => ({}))) as { ready?: boolean }
+    verdictReadyCache = { checkedAt: now, ready: res.ok && body.ready === true }
+  } catch {
+    verdictReadyCache = { checkedAt: now, ready: false }
+  } finally {
+    clearTimeout(timer)
+  }
+  return verdictReadyCache.ready
 }
