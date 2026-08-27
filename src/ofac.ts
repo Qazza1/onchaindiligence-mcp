@@ -46,7 +46,8 @@ export interface NameScreenResult {
   normalized_query: string
   hit: boolean
   matches: SdnMatch[]
-  list_date: string | null
+  /** When this service fetched the source files; not OFAC's publication date. */
+  retrieved_at: string
   threshold: number
 }
 
@@ -258,7 +259,7 @@ export function screenNameAgainstIndex(
 interface CachedList {
   index: SdnRecord[]
   fetchedAt: number
-  listDate: string
+  retrievedAt: string
 }
 let cache: CachedList | null = null
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000 // 6h — OFAC updates ~daily
@@ -290,7 +291,7 @@ export async function loadSdnIndex(): Promise<CachedList> {
   cache = {
     index,
     fetchedAt: now,
-    listDate: new Date(now).toISOString().slice(0, 10),
+    retrievedAt: new Date(now).toISOString(),
   }
   return cache
 }
@@ -300,14 +301,14 @@ export async function screenName(
   query: string,
   threshold = 0.85
 ): Promise<NameScreenResult> {
-  const { index, listDate } = await loadSdnIndex()
+  const { index, retrievedAt } = await loadSdnIndex()
   const matches = screenNameAgainstIndex(query, index, threshold)
   return {
     query,
     normalized_query: normalizeName(query),
     hit: matches.length > 0,
     matches,
-    list_date: listDate,
+    retrieved_at: retrievedAt,
     threshold,
   }
 }
