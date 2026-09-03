@@ -87,6 +87,28 @@ OnchainDiligence settles two ways, because the agent-payment landscape is split 
 
 Same checks, same signed results, different rails for different ecosystems.
 
+## Standard HTTP x402 surface
+
+Alongside the MCP transport, every check is also available to a generic x402
+buyer over plain HTTPS, using the x402 **v2** stack (CAIP-2 networks, HTTP 402,
+`X-PAYMENT` header):
+
+| Resource | Price |
+|---|---|
+| `GET /x402/screen/:address` | $0.01 |
+| `GET /x402/screen-name?name=` | $0.02 |
+| `GET /x402/uk-company/:companyNumber` | $0.05 |
+| `GET /x402/us-company?q=` | $0.05 |
+| `GET /x402/diligence?wallet=&company=` | $0.05 |
+| `GET /x402/verdict/:address` | $0.01 |
+
+Free discovery documents: [`/openapi.json`](https://mcp.onchaindiligence.com/openapi.json)
+and [`/.well-known/x402`](https://mcp.onchaindiligence.com/.well-known/x402).
+
+Buyer walkthrough: [`docs/X402_HTTP_BUYERS.md`](docs/X402_HTTP_BUYERS.md).
+Why the MCP rail is still on x402 v1, and what migrating it would require:
+[`docs/MCP_X402_MIGRATION.md`](docs/MCP_X402_MIGRATION.md).
+
 ## Architecture
 
 ```
