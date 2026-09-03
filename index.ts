@@ -21,6 +21,8 @@ import { Hono } from 'hono'
 import { handler } from './src/server.js'
 import { mountDiscovery } from './src/discovery.js'
 import { mountPublicMetadata } from './src/publicMetadata.js'
+import { mountReceipts } from './src/receiptsRoute.js'
+import { mountInternalBootstrap } from './src/internalBootstrap.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
 import { outcomeForStatus, readMcpEnvelope, recordEvent } from './src/telemetry.js'
 
@@ -105,5 +107,14 @@ app.all('/mcp', async (c) => {
 // Does not touch the /mcp handler above. Safe to remove by deleting this call
 // and src/discovery.ts.
 mountDiscovery(app)
+
+// D2.0A: mounts GET /receipts/:receiptId, the public Agent Evidence receipt
+// resolver. Free, unauthenticated, read-only. Safe to remove by deleting
+// this call and src/receiptsRoute.ts.
+mountReceipts(app)
+
+// TEMPORARY D2.0A deployment-only route. It can sign only the fixed P1.8
+// reference receipt and is removed immediately after the signed envelope is bundled.
+mountInternalBootstrap(app)
 
 export default app

@@ -38,9 +38,13 @@ let verdictReadyCache = { checkedAt: 0, ready: false }
 
 export interface Attestation {
   signed: boolean
+  schema_version?: string
+  issuer?: string
+  purpose?: 'compliance-screening-result' | 'public-action-receipt'
   issued_at?: string
   key_id?: string
   algorithm?: string
+  canonicalization?: string
   signature?: string
   signing_input_hint?: string
   error?: string
@@ -73,8 +77,17 @@ export class CanonicalVerdictError extends Error {
  *
  * Throws on signing failure. An unsigned envelope is never a successful paid
  * tool result.
+ *
+ * `purpose` is an optional override, forwarded to the API's /attest route,
+ * which allowlists it server-side (see onchaindilige/src/server.ts) — this
+ * function cannot make the API sign under an arbitrary purpose. Used by the
+ * D2.0A Public Action Receipt generator with 'public-action-receipt'; every
+ * existing paid tool omits it and keeps the prior default.
  */
-export async function attest<T>(data: T): Promise<SignedEnvelope<T>> {
+export async function attest<T>(
+  data: T,
+  options: { purpose?: 'public-action-receipt' } = {}
+): Promise<SignedEnvelope<T>> {
   if (!ATTEST_SERVICE_TOKEN) {
     throw new Error('attestation service credential is not configured')
   }
@@ -89,7 +102,9 @@ export async function attest<T>(data: T): Promise<SignedEnvelope<T>> {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${ATTEST_SERVICE_TOKEN}`,
       },
-      body: JSON.stringify({ evidence: data }),
+      body: JSON.stringify(
+        options.purpose ? { evidence: data, purpose: options.purpose } : { evidence: data }
+      ),
       signal: controller.signal,
     })
 
