@@ -172,6 +172,7 @@ export interface Attestation {
   issued_at?: string
   key_id?: string
   algorithm?: string
+  canonicalization?: string
   signature?: string
 }
 export interface PublicActionReceiptEnvelope {

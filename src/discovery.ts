@@ -171,7 +171,7 @@ export const X402_ROUTES: X402RoutesConfig = {
               },
               attestation: {
                 signed: true,
-                key_id: 'ed25519-D8wfc7civVNG05Ds',
+                key_id: 'ed25519-EXAMPLEKEY000000',
                 algorithm: 'ed25519',
                 signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg',
               },
@@ -230,7 +230,7 @@ export const X402_ROUTES: X402RoutesConfig = {
               },
               attestation: {
                 signed: true,
-                key_id: 'ed25519-D8wfc7civVNG05Ds',
+                key_id: 'ed25519-EXAMPLEKEY000000',
                 algorithm: 'ed25519',
                 signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg',
               },
@@ -317,7 +317,7 @@ export const X402_ROUTES: X402RoutesConfig = {
               },
               attestation: {
                 signed: true,
-                key_id: 'ed25519-D8wfc7civVNG05Ds',
+                key_id: 'ed25519-EXAMPLEKEY000000',
                 algorithm: 'ed25519',
                 signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg',
               },
@@ -376,7 +376,7 @@ export const X402_ROUTES: X402RoutesConfig = {
               },
               attestation: {
                 signed: true,
-                key_id: 'ed25519-D8wfc7civVNG05Ds',
+                key_id: 'ed25519-EXAMPLEKEY000000',
                 algorithm: 'ed25519',
                 signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg',
               },
@@ -458,7 +458,7 @@ export const X402_ROUTES: X402RoutesConfig = {
               },
               attestation: {
                 signed: true,
-                key_id: 'ed25519-D8wfc7civVNG05Ds',
+                key_id: 'ed25519-EXAMPLEKEY000000',
                 algorithm: 'ed25519',
                 signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg',
               },
@@ -535,7 +535,7 @@ export const X402_ROUTES: X402RoutesConfig = {
               },
               attestation: {
                 signed: true,
-                key_id: 'ed25519-D8wfc7civVNG05Ds',
+                key_id: 'ed25519-EXAMPLEKEY000000',
                 algorithm: 'ed25519',
                 signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg',
               },
