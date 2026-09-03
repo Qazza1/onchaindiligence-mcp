@@ -22,11 +22,40 @@ import { handler } from './src/server.js'
 import { mountDiscovery } from './src/discovery.js'
 import { mountPublicMetadata } from './src/publicMetadata.js'
 import { mountReceipts } from './src/receiptsRoute.js'
-import { attestationReady, canonicalVerdictReady } from './src/attest.js'
+import { attest, attestationReady, canonicalVerdictReady } from './src/attest.js'
 import { outcomeForStatus, readMcpEnvelope, recordEvent } from './src/telemetry.js'
+import {
+  REFERENCE_RECEIPT,
+  REFERENCE_RECEIPT_DIGEST,
+  REFERENCE_RECEIPT_ID,
+} from './src/receipts/referenceReceiptData.js'
 
 const app = new Hono()
 app.get('/', (c) => c.text('OnchainDiligence MCP server — POST /mcp'))
+
+// One-time operational bootstrap for the fixed, public-safe P1.8 reference
+// receipt. It accepts no caller data, can only ask the canonical signer to
+// attest this exact immutable receipt, and is disabled unless a short-lived
+// deployment-only bearer token is explicitly configured. Remove immediately
+// after the envelope is captured into referenceReceipts.ts.
+app.get('/internal/bootstrap-reference-receipt', async (c) => {
+  const token = process.env.REFERENCE_RECEIPT_BOOTSTRAP_TOKEN
+  if (!token || c.req.header('authorization') !== `Bearer ${token}`) return c.notFound()
+
+  try {
+    const envelope = await attest(REFERENCE_RECEIPT, { purpose: 'public-action-receipt' })
+    if (
+      envelope.data.receipt_id !== REFERENCE_RECEIPT_ID ||
+      envelope.data.receipt_digest !== REFERENCE_RECEIPT_DIGEST ||
+      envelope.attestation.purpose !== 'public-action-receipt'
+    ) {
+      return c.json({ error: 'fixed receipt integrity check failed' }, 502)
+    }
+    return c.json(envelope, 200)
+  } catch {
+    return c.json({ error: 'reference receipt signing unavailable' }, 503)
+  }
+})
 
 // Free, unauthenticated discovery documents: GET /openapi.json and
 // GET /.well-known/x402. Mounted before the paid middleware; neither path
