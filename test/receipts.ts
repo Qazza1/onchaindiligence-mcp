@@ -37,8 +37,10 @@ assert.equal(formatReceiptId(REFERENCE_RECEIPT.receipt_digest), REFERENCE_RECEIP
 assert.equal(verifyReceiptEnvelope(signedEnvelope, newSignerRegistry).state, 'VALID')
 assert.equal(verifyReceiptEnvelope(signedEnvelope, []).state, 'UNVERIFIABLE')
 assert.equal(verifyReceiptEnvelope({ ...signedEnvelope, receipt: { ...signedEnvelope.receipt, receipt_id: 'OCD-RCP-0000-0000-0000-0000' } }, newSignerRegistry).code, 'id-mismatch')
+assert.equal(verifyReceiptEnvelope({ ...signedEnvelope, receipt: { ...signedEnvelope.receipt, decision: { ...signedEnvelope.receipt.decision, status: 'ALLOW' } } }, newSignerRegistry).code, 'digest-mismatch')
 assert.equal(verifyReceiptEnvelope({ ...signedEnvelope, receipt: { ...signedEnvelope.receipt, decision: { ...signedEnvelope.receipt.decision, authorized: true } } }, newSignerRegistry).code, 'digest-mismatch')
 assert.equal(verifyReceiptEnvelope({ ...signedEnvelope, proof: { ...signedEnvelope.proof, signature: `${signedEnvelope.proof.signature?.slice(0, -1)}A` } }, newSignerRegistry).code, 'signature-invalid')
+assert.equal(verifyReceiptEnvelope(signedEnvelope, [{ ...newSignerRegistry[0], valid_from: '2026-09-03T20:56:25.000Z' }]).code, 'key-window-violation')
 
 const app = new Hono()
 mountReceipts(app, new BundledReceiptStore([signedEnvelope]))
