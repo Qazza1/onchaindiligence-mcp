@@ -16,6 +16,8 @@
  *   GET  /x402/us-company               paid: SEC EDGAR company verification
  *   GET  /x402/diligence                paid: combined wallet + UK company
  *   GET  /x402/verdict/:address         paid: PASS / WARN / BLOCK verdict
+ *   POST /x402/preflight-payment        paid: structured payment policy preflight (D2.1)
+ *   GET  /receipts/:receiptId           free: public receipt resolver (D2.0A)
  */
 import { Hono } from 'hono'
 import { handler } from './src/server.js'

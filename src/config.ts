@@ -67,6 +67,7 @@ export const config = {
     company: 0.05,
     usCompany: 0.05,
     diligence: 0.05,
+    preflight: 0.01,
   },
 }
 

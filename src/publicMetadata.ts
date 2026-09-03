@@ -35,6 +35,7 @@ import {
   CAIP2,
   DESCRIPTION,
   DILIGENCE_DESCRIPTION,
+  PREFLIGHT_DESCRIPTION,
   SCREEN_NAME_DESCRIPTION,
   UK_COMPANY_DESCRIPTION,
   US_COMPANY_DESCRIPTION,
@@ -52,6 +53,8 @@ const USDC_ASSET: Record<string, string> = {
 /** One entry per paid HTTP x402 resource. Single source for both documents. */
 interface ResourceSpec {
   path: string
+  /** Defaults to 'GET'. Only Payment Preflight (D2.1) uses POST so far. */
+  method?: 'GET' | 'POST'
   operationId: string
   summary: string
   description: string
@@ -64,6 +67,10 @@ interface ResourceSpec {
     example?: string
     schema?: Record<string, unknown>
   }>
+  /** POST routes carry their input in a JSON body instead of path/query params. */
+  requestBody?: { description: string; example: Record<string, unknown>; schema: Record<string, unknown> }
+  /** Defaults to SIGNED_ENVELOPE_SCHEMA. Preflight's response shape differs — see below. */
+  responseSchema?: Record<string, unknown>
 }
 
 const RESOURCES: ResourceSpec[] = [
@@ -161,6 +168,99 @@ const RESOURCES: ResourceSpec[] = [
       example: '0x0000000000000000000000000000000000000000',
     },
   },
+  {
+    path: '/x402/preflight-payment',
+    method: 'POST',
+    operationId: 'preflightPayment',
+    summary: 'Evaluate a proposed payment against structured policy before execution',
+    description: PREFLIGHT_DESCRIPTION,
+    priceUsd: config.prices.preflight,
+    requestBody: {
+      description:
+        'The proposed action, a structured deterministic policy, optional evaluation options, ' +
+        'and optional references. Full field-by-field documentation: docs/PAYMENT_PREFLIGHT.md.',
+      example: {
+        action: {
+          kind: 'PAYMENT',
+          resource: 'https://service.example/api',
+          network: 'eip155:8453',
+          asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+          amount: '1.00',
+          sender: null,
+          recipient: '0x000000000000000000000000000000000000dEaD',
+        },
+        policy: {
+          max_amount: '5.00',
+          allowed_networks: ['eip155:8453'],
+          allowed_assets: ['0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'],
+          expected_recipient: null,
+          allowed_resource_origins: ['https://service.example'],
+        },
+        options: { screen_recipient_sanctions: true },
+        references: { mandate_digest: null },
+      },
+      schema: {
+        type: 'object',
+        required: ['action', 'policy'],
+        properties: {
+          action: {
+            type: 'object',
+            required: ['kind', 'network', 'asset', 'amount', 'recipient'],
+            properties: {
+              kind: { type: 'string', enum: ['PAYMENT'] },
+              resource: { type: ['string', 'null'] },
+              network: { type: 'string', description: 'CAIP-2, e.g. "eip155:8453".' },
+              asset: { type: 'string', description: 'Canonical ERC-20 contract address, not a ticker.' },
+              amount: { type: 'string', description: 'Canonical decimal string, e.g. "1.00". Never a float.' },
+              sender: { type: ['string', 'null'] },
+              recipient: { type: 'string' },
+            },
+          },
+          policy: {
+            type: 'object',
+            properties: {
+              max_amount: { type: ['string', 'null'] },
+              allowed_networks: { type: ['array', 'null'], items: { type: 'string' } },
+              allowed_assets: { type: ['array', 'null'], items: { type: 'string' } },
+              expected_recipient: { type: ['string', 'null'] },
+              allowed_resource_origins: { type: ['array', 'null'], items: { type: 'string' } },
+            },
+          },
+          options: {
+            type: 'object',
+            properties: { screen_recipient_sanctions: { type: 'boolean' } },
+          },
+          references: {
+            type: 'object',
+            properties: { mandate_digest: { type: ['string', 'null'] } },
+          },
+        },
+      },
+    },
+    responseSchema: {
+      type: 'object',
+      required: ['decision', 'checks', 'receipt'],
+      properties: {
+        decision: {
+          type: 'object',
+          required: ['status', 'authorized', 'reasons'],
+          properties: {
+            status: { type: 'string', enum: ['ALLOW', 'REQUIRE_APPROVAL', 'BLOCK', 'UNKNOWN'] },
+            authorized: { type: ['boolean', 'null'] },
+            reasons: { type: 'array', items: { type: 'string' } },
+          },
+        },
+        checks: { type: 'array' },
+        receipt: {
+          type: 'object',
+          description:
+            'The complete signed onchaindiligence.public-action-receipt.v1 envelope (schema/receipt/proof). ' +
+            'Independently verifiable; see https://onchaindiligence.com/receipt.',
+          required: ['schema', 'receipt', 'proof'],
+        },
+      },
+    },
+  },
 ]
 
 /** The signed envelope every paid route returns. */
@@ -212,8 +312,9 @@ export function buildOpenApiDocument(): Record<string, unknown> {
       })
     }
 
+    const verb = (resource.method ?? 'GET').toLowerCase()
     paths[resource.path] = {
-      get: {
+      [verb]: {
         operationId: resource.operationId,
         summary: resource.summary,
         description:
@@ -226,10 +327,26 @@ export function buildOpenApiDocument(): Record<string, unknown> {
           `${CAIP2}. Input is validated before any payment challenge is issued, so a ` +
           `malformed request returns 400 and is never charged.`,
         ...(parameters.length ? { parameters } : {}),
+        ...(resource.requestBody
+          ? {
+              requestBody: {
+                required: true,
+                description: resource.requestBody.description,
+                content: {
+                  'application/json': {
+                    schema: resource.requestBody.schema,
+                    example: resource.requestBody.example,
+                  },
+                },
+              },
+            }
+          : {}),
         responses: {
           '200': {
-            description: 'Paid, verified result wrapped in a signed attestation envelope.',
-            content: { 'application/json': { schema: SIGNED_ENVELOPE_SCHEMA } },
+            description: resource.requestBody
+              ? 'Paid, verified evaluation result including a complete signed receipt envelope.'
+              : 'Paid, verified result wrapped in a signed attestation envelope.',
+            content: { 'application/json': { schema: resource.responseSchema ?? SIGNED_ENVELOPE_SCHEMA } },
           },
           '400': {
             description:
@@ -306,7 +423,7 @@ export function buildWellKnownManifest(): Record<string, unknown> {
       'Paid compliance checks — wallet sanctions screening, OFAC name screening, UK and US company verification, combined diligence, and a PASS/WARN/BLOCK counterparty verdict — each returned with a verifiable Ed25519 attestation.',
     resources: RESOURCES.map((resource) => ({
       url: `${BASE_URL}${resource.path.replace(/\{(\w+)\}/g, ':$1')}`,
-      method: 'GET',
+      method: resource.method ?? 'GET',
       description: resource.summary,
     })),
     attestation: { type: 'ed25519-envelope' },

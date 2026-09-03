@@ -1,10 +1,14 @@
 /**
  * server.ts — the x402-paid MCP server.
  *
- * Exposes five compliance checks as MCP tools that agents can call and PAY FOR
- * over Streamable HTTP using x402 (USDC on Base). Each tool runs the exact same
- * underlying public-data clients as the HTTP API. Cross-surface contract tests
- * are required before claiming response-level equivalence.
+ * Exposes six paid MCP tools that agents can call and PAY FOR over Streamable
+ * HTTP using x402 (USDC on Base): five compliance checks (screen_wallet,
+ * screen_name, verify_uk_company, verify_us_company, diligence) plus
+ * preflight_payment (D2.1), a structured pre-execution policy evaluation.
+ * Each compliance-check tool runs the exact same underlying public-data
+ * clients as the HTTP API; preflight_payment runs the same preflightPayment()
+ * service the HTTP x402 route uses (see preflight.ts). Cross-surface contract
+ * tests are required before claiming response-level equivalence.
  *
  * Payment model: NON-CUSTODIAL. The x402 facilitator verifies the agent's USDC
  * payment to our recipient address before the tool body runs. We never hold funds.
@@ -45,6 +49,7 @@ import {
   OfacUpstreamError,
 } from './ofac.js'
 import { attest } from './attest.js'
+import { preflightPayment } from './preflight.js'
 
 // Fail fast if misconfigured — same discipline as the HTTP API.
 assertConfigured()
@@ -271,6 +276,96 @@ export const handler = createPaidMcpHandler(
                 text: err?.message || 'Combined diligence failed.',
               },
             ],
+          }
+        }
+      }
+    )
+
+    // --- preflight_payment (D2.1) ---------------------------------------
+    server.paidTool(
+      'preflight_payment',
+      'Evaluate a proposed autonomous payment against a structured, caller-supplied ' +
+        'policy and optional recipient sanctions screening, BEFORE any payment is ' +
+        'executed. Returns a deterministic decision — ALLOW, REQUIRE_APPROVAL, or ' +
+        'BLOCK — with reasons, plus a signed OCD PREFLIGHT receipt anyone can ' +
+        'independently verify. This is a POLICY EVALUATION, not payment execution: ' +
+        'OnChainDiligence never holds funds and does not authorize or submit the ' +
+        'payment. The wallet, PayBox, or x402 client applies its OWN separate ' +
+        'authorization after this preflight; both gates are independent and an ' +
+        'ALLOW here does not guarantee the execution provider will proceed. Accepts ' +
+        'only structured, deterministic policy fields in v1 — free-text ' +
+        'natural-language policy (e.g. "don\'t spend too much") is not supported.',
+      { price: config.prices.preflight },
+      {
+        action: z.object({
+          kind: z.literal('PAYMENT').describe('The only supported action kind in v1.'),
+          resource: z
+            .string()
+            .nullable()
+            .optional()
+            .describe('URL of the resource/service the payment is for, if any.'),
+          network: z.string().describe('CAIP-2 network identifier, e.g. "eip155:8453" for Base mainnet.'),
+          asset: z.string().describe('Canonical ERC-20 token contract address (0x…) — never a ticker like "USDC".'),
+          amount: z.string().describe('Canonical decimal string amount, e.g. "1.00". Never a float.'),
+          sender: z.string().nullable().optional().describe('Sender wallet address, if known.'),
+          recipient: z.string().describe('Recipient wallet address (0x…).'),
+        }),
+        policy: z.object({
+          max_amount: z
+            .string()
+            .nullable()
+            .optional()
+            .describe('Maximum allowed decimal amount, or null for no configured cap.'),
+          allowed_networks: z
+            .array(z.string())
+            .nullable()
+            .optional()
+            .describe('Allowed CAIP-2 networks, or null for no restriction.'),
+          allowed_assets: z
+            .array(z.string())
+            .nullable()
+            .optional()
+            .describe('Allowed token contract addresses, or null for no restriction.'),
+          expected_recipient: z
+            .string()
+            .nullable()
+            .optional()
+            .describe('Exact recipient address the caller expects, or null.'),
+          allowed_resource_origins: z
+            .array(z.string())
+            .nullable()
+            .optional()
+            .describe('Allowed https origins for action.resource, or null.'),
+        }),
+        options: z
+          .object({
+            screen_recipient_sanctions: z
+              .boolean()
+              .optional()
+              .describe('If true, screen the recipient wallet against the Chainalysis sanctions oracle.'),
+          })
+          .optional(),
+        references: z
+          .object({
+            mandate_digest: z
+              .string()
+              .nullable()
+              .optional()
+              .describe('Optional sha256:… digest of a private mandate this proposal was derived from.'),
+          })
+          .optional(),
+      },
+      { readOnlyHint: true, openWorldHint: true },
+      async (args) => {
+        try {
+          const result = await preflightPayment(args)
+          return {
+            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          }
+        } catch (err: any) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: err?.message || 'Preflight evaluation failed.' }],
           }
         }
       }

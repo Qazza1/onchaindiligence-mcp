@@ -61,6 +61,7 @@ const PAID_ROUTES: Array<{ key: string; priceUsd: number }> = [
   { key: 'GET /x402/us-company', priceUsd: config.prices.usCompany },
   { key: 'GET /x402/diligence', priceUsd: config.prices.diligence },
   { key: 'GET /x402/verdict/:address', priceUsd: config.prices.screen },
+  { key: 'POST /x402/preflight-payment', priceUsd: config.prices.preflight },
 ]
 
 // The declared route map is what the payment middleware charges on. Asserting
@@ -93,9 +94,13 @@ for (const route of PAID_ROUTES) {
 
   // Bazaar discovery metadata must be present, or CDP will never index it.
   assert.ok(entry.extensions?.bazaar, `${route.key} must declare the Bazaar extension`)
+  // Every route's example must show its signed cryptographic proof, either
+  // the standard {data, attestation} envelope or (Payment Preflight only)
+  // the receipt envelope's nested receipt.proof.
+  const example = entry.extensions.bazaar.info?.output?.example
   assert.ok(
-    entry.extensions.bazaar.info?.output?.example?.attestation,
-    `${route.key} Bazaar example must show the signed attestation envelope`
+    example?.attestation || example?.receipt?.proof,
+    `${route.key} Bazaar example must show a signed proof (attestation or receipt.proof)`
   )
   assert.ok(
     typeof entry.description === 'string' && entry.description.length > 80,
@@ -149,6 +154,49 @@ for (const path of PRE_PAYMENT_REJECTIONS) {
 }
 console.log(`ok  ${PRE_PAYMENT_REJECTIONS.length} invalid inputs rejected before any payment challenge`)
 
+// Payment Preflight takes a JSON body rather than path/query params, so it
+// gets its own POST-shaped pre-payment rejection cases.
+const PREFLIGHT_PRE_PAYMENT_REJECTIONS: Array<Record<string, unknown>> = [
+  {},
+  { action: { kind: 'PAYMENT' } },
+  {
+    action: {
+      kind: 'PAYMENT',
+      resource: null,
+      network: 'not-caip2',
+      asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      amount: '1.00',
+      sender: null,
+      recipient: '0x000000000000000000000000000000000000dEaD',
+    },
+    policy: { max_amount: null, allowed_networks: null, allowed_assets: null, expected_recipient: null, allowed_resource_origins: null },
+  },
+  {
+    action: {
+      kind: 'PAYMENT',
+      resource: null,
+      network: 'eip155:8453',
+      asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      amount: '1.5e2',
+      sender: null,
+      recipient: '0x000000000000000000000000000000000000dEaD',
+    },
+    policy: { max_amount: null, allowed_networks: null, allowed_assets: null, expected_recipient: null, allowed_resource_origins: null },
+  },
+]
+for (const body of PREFLIGHT_PRE_PAYMENT_REJECTIONS) {
+  const res = await app.request('/x402/preflight-payment', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  assert.equal(res.status, 400, `preflight-payment must reject ${JSON.stringify(body)} pre-payment, got ${res.status}`)
+  assert.equal(res.headers.get('payment-required'), null, 'must not issue a payment challenge for invalid preflight input')
+}
+console.log(
+  `ok  ${PREFLIGHT_PRE_PAYMENT_REJECTIONS.length} invalid preflight bodies rejected before any payment challenge`
+)
+
 // --- 4. Free discovery documents are genuinely free -------------------------
 
 const openApiRes = await app.request('/openapi.json')
@@ -188,6 +236,24 @@ assert.equal(
 )
 // OpenAPI describes the paid HTTP surface, not the MCP JSON-RPC transport.
 assert.ok(!documented.includes('/mcp'), 'OpenAPI must not document the MCP transport as a path')
+
+// Payment Preflight is POST with a request body and a different response
+// shape (decision/checks/receipt, not {data, attestation}) — its own block.
+assert.ok(documented.includes('/x402/preflight-payment'), 'OpenAPI must document /x402/preflight-payment')
+const preflightOp = openapi.paths['/x402/preflight-payment'].post
+assert.ok(preflightOp, '/x402/preflight-payment must be documented under POST, not GET')
+assert.ok(preflightOp.responses['402'], 'preflight-payment must document its 402 behaviour')
+assert.ok(preflightOp.responses['400'], 'preflight-payment must document pre-payment rejection')
+assert.ok(preflightOp.requestBody?.content['application/json']?.schema, 'preflight-payment must document its request body')
+const preflightEnvelope = preflightOp.responses['200'].content['application/json'].schema
+assert.deepEqual(preflightEnvelope.required, ['decision', 'checks', 'receipt'], 'preflight-payment response shape')
+assert.equal(preflightOp['x-onchaindiligence-x402'].network, CAIP2)
+assert.equal(preflightOp['x-onchaindiligence-x402'].priceUsd, config.prices.preflight)
+assert.ok(
+  /does not authorize or submit the payment/i.test(preflightOp.description),
+  'preflight-payment description must explicitly disclaim executing/authorizing the payment'
+)
+assert.equal(documented.length, PAID_ROUTES.length, `expected ${PAID_ROUTES.length} documented resources`)
 console.log(`ok  /openapi.json is free, valid 3.1, documents ${documented.length} paid resources`)
 
 const manifestRes = await app.request('/.well-known/x402')

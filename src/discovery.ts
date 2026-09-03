@@ -26,7 +26,7 @@
  * the rest of the server. START ON base-sepolia: the one settle needed to
  * trigger indexing then costs free testnet USDC, not real money.
  */
-import type { Hono } from 'hono'
+import type { Context, Hono } from 'hono'
 import { paymentMiddleware, x402ResourceServer } from '@x402/hono'
 import { ExactEvmScheme } from '@x402/evm/exact/server'
 import { HTTPFacilitatorClient } from '@x402/core/server'
@@ -49,6 +49,12 @@ import {
   isValidUkCompanyNumber,
   isValidScreeningName,
 } from './inputValidation.js'
+import {
+  preflightPayment,
+  parsePreflightInput,
+  PreflightInputError,
+  type PreflightDependencies,
+} from './preflight.js'
 
 /**
  * Price strings for the x402 middleware, derived from the SAME canonical
@@ -129,6 +135,21 @@ export const UK_COMPANY_DESCRIPTION =
 
 // The honest boundary matters more than the marketing here: this route runs
 // two INDEPENDENT checks and explicitly does not link them.
+// D2.1: Payment Preflight. Deliberately explicit that this is an evaluation,
+// not execution or authorization — the wallet/PayBox/x402 client applies its
+// own separate authorization afterward, and both gates are independent.
+export const PREFLIGHT_DESCRIPTION =
+  'Evaluate a proposed autonomous payment against a structured, caller-supplied ' +
+  'policy and optional recipient sanctions screening, BEFORE any payment is ' +
+  'executed. Returns a deterministic decision — ALLOW, REQUIRE_APPROVAL, or BLOCK ' +
+  '— with reasons, plus a signed OCD PREFLIGHT receipt anyone can independently ' +
+  'verify. This is a POLICY EVALUATION, not payment execution: OnChainDiligence ' +
+  'never holds funds and does not authorize or submit the payment. The wallet, ' +
+  'PayBox, or x402 client applies its OWN separate authorization after this ' +
+  'preflight; both gates are independent and an ALLOW here does not guarantee ' +
+  'the execution provider will proceed. Accepts only structured, deterministic ' +
+  'policy fields in v1 — free-text natural-language policy is not supported.'
+
 export const DILIGENCE_DESCRIPTION =
   'Combined counterparty due diligence in one paid call: sanctions-screens an ' +
   'EVM wallet against the Chainalysis on-chain oracle AND verifies a UK ' +
@@ -566,7 +587,146 @@ export const X402_ROUTES: X402RoutesConfig = {
         }),
       },
     },
+    // --- D2.1: Payment Preflight -------------------------------------
+    // POST, not GET: the proposed action + structured policy travel in the
+    // request body. Response shape is DELIBERATELY different from the other
+    // routes' {data, attestation} envelope — see preflight.ts's PreflightResult
+    // — because the payload already carries a complete signed receipt
+    // envelope (schema/receipt/proof), not a bare attestation.
+    'POST /x402/preflight-payment': {
+      accepts: {
+        scheme: 'exact',
+        price: usd(config.prices.preflight),
+        network: CAIP2,
+        payTo: config.x402.recipient,
+      },
+      description: PREFLIGHT_DESCRIPTION,
+      mimeType: 'application/json',
+      extensions: {
+        // Body-based (POST + JSON) Bazaar declaration — distinct shape from
+        // the query/path-param GET routes above. `bodyType`/`method` at the
+        // top level are what select this variant; see @x402/extensions'
+        // createBodyDiscoveryExtension.
+        ...declareDiscoveryExtension({
+          bodyType: 'json',
+          input: {
+            action: {
+              kind: 'PAYMENT',
+              resource: 'https://service.example/api',
+              network: 'eip155:8453',
+              asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+              amount: '1.00',
+              sender: null,
+              recipient: '0x000000000000000000000000000000000000dEaD',
+            },
+            policy: {
+              max_amount: '5.00',
+              allowed_networks: ['eip155:8453'],
+              allowed_assets: ['0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'],
+              expected_recipient: null,
+              allowed_resource_origins: ['https://service.example'],
+            },
+            options: { screen_recipient_sanctions: true },
+            references: { mandate_digest: null },
+          },
+          inputSchema: {
+            properties: {
+              action: { type: 'object' },
+              policy: { type: 'object' },
+              options: { type: 'object' },
+              references: { type: 'object' },
+            },
+          },
+          output: {
+            example: {
+              decision: {
+                status: 'ALLOW',
+                authorized: true,
+                reasons: ['All configured policy checks passed.'],
+              },
+              checks: [
+                {
+                  id: 'amount-within-max',
+                  result: 'PASS',
+                  summary: 'The proposed amount is within the caller-configured maximum.',
+                  evidence_digest: null,
+                },
+              ],
+              receipt: {
+                schema: 'onchaindiligence.public-action-receipt.v1',
+                receipt: {
+                  receipt_type: 'PREFLIGHT',
+                  receipt_id: 'OCD-RCP-EXAMPLE-0000-0000-0000',
+                },
+                proof: {
+                  signed: true,
+                  key_id: 'ed25519-EXAMPLEKEY000000',
+                  algorithm: 'ed25519',
+                  signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg',
+                },
+              },
+            },
+            schema: {
+              type: 'object',
+              properties: {
+                decision: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'string', enum: ['ALLOW', 'REQUIRE_APPROVAL', 'BLOCK', 'UNKNOWN'] },
+                    authorized: { type: ['boolean', 'null'] },
+                    reasons: { type: 'array', items: { type: 'string' } },
+                  },
+                },
+                checks: { type: 'array' },
+                receipt: { type: 'object', description: 'Complete onchaindiligence.public-action-receipt.v1 envelope.' },
+              },
+            },
+          },
+        }),
+      },
+    },
 }
+
+/**
+ * Reads and validates a preflight request body from a Hono context. Shared
+ * by the pre-payment guard (below) and the paid handler so both use the
+ * exact same parser — never two slightly different validators.
+ */
+async function readPreflightBody(c: Context): Promise<unknown> {
+  try {
+    return await c.req.json()
+  } catch {
+    throw new PreflightInputError('body must be valid JSON')
+  }
+}
+
+/**
+ * Factory rather than a bare handler so tests can inject the same
+ * PreflightDependencies seam preflightPayment() itself accepts (a fake
+ * signer/registry/sanctions screener) and prove HTTP-transport parity with
+ * the core service fully offline. `mountDiscovery` calls this with no
+ * arguments, which is exactly the real production handler.
+ */
+export function createPreflightPostHandler(deps: PreflightDependencies = {}) {
+  return async function preflightPostHandler(c: Context) {
+    let body: unknown
+    try {
+      body = await readPreflightBody(c)
+    } catch (err: any) {
+      return c.json({ error: err.message }, 400)
+    }
+    try {
+      const result = await preflightPayment(body, deps)
+      return c.json(result, 200)
+    } catch (err: any) {
+      if (err instanceof PreflightInputError) return c.json({ error: err.message }, 400)
+      return c.json({ error: err?.message || 'preflight evaluation failed' }, 502)
+    }
+  }
+}
+
+/** The real production handler — no injected dependencies. */
+export const preflightPostHandler = createPreflightPostHandler()
 
 /**
  * Mounts the paid + discoverable /x402/screen/:address route onto the given
@@ -613,6 +773,25 @@ export function mountDiscovery(app: Hono): void {
     await next()
   })
 
+  // D2.1: reject a structurally invalid preflight body before payment. Reads
+  // a CLONE of the request so the original body stream is untouched for the
+  // real handler (which re-reads and re-validates via the exact same
+  // parsePreflightInput — never a second, looser validator that could drift).
+  app.use('/x402/preflight-payment', async (c, next) => {
+    let body: unknown
+    try {
+      body = await c.req.raw.clone().json()
+    } catch {
+      return c.json({ error: 'body must be valid JSON' }, 400)
+    }
+    try {
+      parsePreflightInput(body)
+    } catch (err: any) {
+      return c.json({ error: err instanceof PreflightInputError ? err.message : 'invalid preflight input' }, 400)
+    }
+    await next()
+  })
+
   // Scoped to /x402/* deliberately. The middleware only gates the routes in
   // X402_ROUTES, but an unscoped `app.use` still RUNS it on every request —
   // including `/`, `/mcp` and the free discovery documents — which makes those
@@ -620,6 +799,12 @@ export function mountDiscovery(app: Hono): void {
   // machinery on the paid namespace; paid behaviour is unchanged because every
   // priced route already lives under /x402/.
   app.use('/x402/*', paymentMiddleware(X402_ROUTES, resourceServer))
+
+  // Paid handler: Payment Preflight (D2.1). Evaluates the proposed action
+  // against the caller's structured policy and returns a signed PREFLIGHT
+  // receipt. See preflight.ts — this route is a thin transport adapter over
+  // the shared preflightPayment() service the MCP tool also calls.
+  app.post('/x402/preflight-payment', preflightPostHandler)
 
   // Paid handler — only runs after payment verifies and settles.
   // Every result is wrapped in the same signed envelope the HTTP API returns,

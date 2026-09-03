@@ -48,6 +48,28 @@ export function contentId(value: unknown): string {
   return `sha256:${createHash('sha256').update(canonicalizeJson(value), 'utf8').digest('base64url')}`
 }
 
+/**
+ * The exact bytes an `onchaindiligence.attestation.v2` signer must sign over
+ * a finalized receipt — identical construction to what `verifyReceiptEnvelope`
+ * recomputes below. This module never signs anything itself (see file
+ * header); this export exists so tests can produce a genuinely-shaped fake
+ * signature (a fresh local keypair + a caller-supplied registry) without
+ * duplicating the canonicalizer.
+ */
+export function receiptAttestationSigningInput(
+  receipt: unknown,
+  fields: { issuer: string; purpose: string; issuedAt: string; keyId: string }
+): string {
+  return canonicalizeJson({
+    schema_version: 'onchaindiligence.attestation.v2',
+    issuer: fields.issuer,
+    purpose: fields.purpose,
+    data: receipt,
+    issued_at: fields.issuedAt,
+    key_id: fields.keyId,
+  })
+}
+
 // ---------------------------------------------------------------------
 // Crockford Base32 receipt id codec — ported verbatim from
 // packages/agent-evidence/src/receiptId.ts. See that file / the spec doc
