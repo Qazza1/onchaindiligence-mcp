@@ -253,8 +253,22 @@ assert.ok(
   /does not authorize or submit the payment/i.test(preflightOp.description),
   'preflight-payment description must explicitly disclaim executing/authorizing the payment'
 )
-assert.equal(documented.length, PAID_ROUTES.length, `expected ${PAID_ROUTES.length} documented resources`)
-console.log(`ok  /openapi.json is free, valid 3.1, documents ${documented.length} paid resources`)
+// D2.1A: the free inspection primitive is documented, but clearly
+// distinguished from the paid preflight — no 402, no payment vendor block,
+// and its own decision/checks/evidence/receipt shape with receipt always null.
+assert.ok(documented.includes('/inspect/payment'), 'OpenAPI must document the free /inspect/payment resource')
+const inspectOp = openapi.paths['/inspect/payment'].post
+assert.ok(inspectOp, '/inspect/payment must be documented under POST')
+assert.ok(!inspectOp.responses['402'], '/inspect/payment must never document a 402 — it is free')
+assert.ok(!inspectOp['x-onchaindiligence-x402'], '/inspect/payment must not carry the paid x402 vendor block')
+assert.ok(/FREE/.test(inspectOp.description), '/inspect/payment description must say it is free')
+const inspectEnvelope = inspectOp.responses['200'].content['application/json'].schema
+assert.deepEqual(inspectEnvelope.required, ['decision', 'checks', 'evidence', 'receipt'], '/inspect/payment response shape')
+assert.equal(inspectEnvelope.properties.receipt.type, 'null', '/inspect/payment must declare receipt as always null')
+
+// documented.length = every paid route (PAID_ROUTES) + the one free resource.
+assert.equal(documented.length, PAID_ROUTES.length + 1, `expected ${PAID_ROUTES.length + 1} documented resources (paid + 1 free)`)
+console.log(`ok  /openapi.json is free, valid 3.1, documents ${documented.length} resources (${PAID_ROUTES.length} paid + 1 free, clearly distinguished)`)
 
 const manifestRes = await app.request('/.well-known/x402')
 assert.equal(manifestRes.status, 200, '/.well-known/x402 must be free')
@@ -266,7 +280,13 @@ for (const entry of manifest.resources) {
   assert.ok(entry.url.startsWith('https://mcp.onchaindiligence.com/x402/'), 'https, own domain')
   assert.ok(entry.method && entry.description, 'each resource needs method + description')
 }
-console.log('ok  /.well-known/x402 manifest present, one canonical path, own-domain https resources')
+// The x402 capability manifest is specifically about PAYABLE resources — the
+// free D2.1A inspection primitive must never appear in it.
+assert.ok(
+  !manifest.resources.some((r: any) => r.url.includes('/inspect/payment')),
+  'the free /inspect/payment resource must never appear in the x402 payment manifest'
+)
+console.log('ok  /.well-known/x402 manifest present, one canonical path, own-domain https resources, excludes the free resource')
 
 // --- 5. Telemetry cannot emit caller input ---------------------------------
 

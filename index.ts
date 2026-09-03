@@ -17,6 +17,7 @@
  *   GET  /x402/diligence                paid: combined wallet + UK company
  *   GET  /x402/verdict/:address         paid: PASS / WARN / BLOCK verdict
  *   POST /x402/preflight-payment        paid: structured payment policy preflight (D2.1)
+ *   POST /inspect/payment               free: unsigned deterministic policy inspection (D2.1A)
  *   GET  /receipts/:receiptId           free: public receipt resolver (D2.0A)
  */
 import { Hono } from 'hono'
@@ -24,6 +25,7 @@ import { handler } from './src/server.js'
 import { mountDiscovery } from './src/discovery.js'
 import { mountPublicMetadata } from './src/publicMetadata.js'
 import { mountReceipts } from './src/receiptsRoute.js'
+import { mountInspect } from './src/inspectRoute.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
 import { outcomeForStatus, readMcpEnvelope, recordEvent } from './src/telemetry.js'
 
@@ -113,5 +115,11 @@ mountDiscovery(app)
 // resolver. Free, unauthenticated, read-only. Safe to remove by deleting
 // this call and src/receiptsRoute.ts.
 mountReceipts(app)
+
+// D2.1A: mounts POST /inspect/payment, the free unsigned deterministic
+// policy inspection primitive. Deliberately outside /x402/* (no payment
+// middleware — see src/inspectRoute.ts) and outside the funnel/readiness
+// middleware above, which are /x402/*-scoped for exactly this reason.
+mountInspect(app)
 
 export default app

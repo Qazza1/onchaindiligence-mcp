@@ -41,6 +41,7 @@ import {
   US_COMPANY_DESCRIPTION,
   VERDICT_DESCRIPTION,
 } from './discovery.js'
+import { INSPECT_DESCRIPTION } from './inspectRoute.js'
 
 const BASE_URL = 'https://mcp.onchaindiligence.com'
 
@@ -388,6 +389,124 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         },
       },
     }
+  }
+
+  // POST /inspect/payment (D2.1A) — FREE, and deliberately NOT part of
+  // RESOURCES above: RESOURCES is the paid x402 surface, reused verbatim by
+  // buildWellKnownManifest()'s x402 capability manifest, which must never
+  // list a non-payable resource. Documented here, separately, with its own
+  // request/response shape and no PAID-RESOURCE / 402 / x-onchaindiligence-x402
+  // framing — see the explicit contrast with /x402/preflight-payment below.
+  paths['/inspect/payment'] = {
+    post: {
+      operationId: 'inspectPayment',
+      summary: 'FREE deterministic payment policy inspection (no signing, no receipt)',
+      description:
+        `${INSPECT_DESCRIPTION}\n\n` +
+        'FREE RESOURCE. No payment, no x402 challenge, no Payment-Required header. ' +
+        'Contrast with POST /x402/preflight-payment, which is $0.01 and returns a ' +
+        'signed, independently-verifiable receipt.',
+      requestBody: {
+        required: true,
+        description:
+          'The proposed action and a structured deterministic policy only — no `options`, ' +
+          'no `references`. `options.screen_recipient_sanctions: true` is rejected with 400 ' +
+          '(sanctions screening is a paid-tier feature). Full documentation: docs/PAYMENT_PREFLIGHT.md.',
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['action', 'policy'],
+              properties: {
+                action: {
+                  type: 'object',
+                  required: ['kind', 'network', 'asset', 'amount', 'recipient'],
+                  properties: {
+                    kind: { type: 'string', enum: ['PAYMENT'] },
+                    resource: { type: ['string', 'null'] },
+                    network: { type: 'string', description: 'CAIP-2, e.g. "eip155:8453".' },
+                    asset: { type: 'string', description: 'Canonical ERC-20 contract address, not a ticker.' },
+                    amount: { type: 'string', description: 'Canonical decimal string, e.g. "1.00". Never a float.' },
+                    sender: { type: ['string', 'null'] },
+                    recipient: { type: 'string' },
+                  },
+                },
+                policy: {
+                  type: 'object',
+                  properties: {
+                    max_amount: { type: ['string', 'null'] },
+                    allowed_networks: { type: ['array', 'null'], items: { type: 'string' } },
+                    allowed_assets: { type: ['array', 'null'], items: { type: 'string' } },
+                    expected_recipient: { type: ['string', 'null'] },
+                    allowed_resource_origins: { type: ['array', 'null'], items: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            example: {
+              action: {
+                kind: 'PAYMENT',
+                resource: 'https://service.example/api',
+                network: 'eip155:8453',
+                asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+                amount: '1.00',
+                sender: null,
+                recipient: '0x000000000000000000000000000000000000dEaD',
+              },
+              policy: {
+                max_amount: '5.00',
+                allowed_networks: ['eip155:8453'],
+                allowed_assets: ['0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'],
+                expected_recipient: null,
+                allowed_resource_origins: ['https://service.example'],
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Free, unsigned deterministic inspection result.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['decision', 'checks', 'evidence', 'receipt'],
+                properties: {
+                  decision: {
+                    type: 'object',
+                    required: ['status', 'authorized', 'reasons'],
+                    properties: {
+                      status: { type: 'string', enum: ['ALLOW', 'REQUIRE_APPROVAL', 'BLOCK', 'UNKNOWN'] },
+                      authorized: { type: ['boolean', 'null'] },
+                      reasons: { type: 'array', items: { type: 'string' } },
+                    },
+                  },
+                  checks: { type: 'array' },
+                  evidence: {
+                    type: 'object',
+                    required: ['external_checks_performed'],
+                    properties: { external_checks_performed: { type: 'boolean', const: false } },
+                  },
+                  receipt: {
+                    type: 'null',
+                    description: 'Always null — the free endpoint signs nothing and issues no receipt.',
+                  },
+                },
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid input, or options.screen_recipient_sanctions was requested (paid-tier only).',
+          content: {
+            'application/json': {
+              schema: { type: 'object', properties: { error: { type: 'string' } } },
+            },
+          },
+        },
+      },
+    },
   }
 
   return {

@@ -169,15 +169,13 @@ function requireOrigin(value: string, field: string): string {
 }
 
 /**
- * Strict structural validation. Throws PreflightInputError (never touches the
- * network) on any malformed input — callers use this to reject bad requests
- * BEFORE a payment challenge is ever issued.
+ * Shared by parsePreflightInput (paid) and parseInspectInput (free) — the
+ * exact same action/policy validation, so a proposal that is well-formed for
+ * one is well-formed for the other. Never touches the network.
  */
-export function parsePreflightInput(raw: unknown): PreflightInput {
-  if (!isPlainObject(raw)) throw new PreflightInputError('body must be a JSON object')
-
-  if (!isPlainObject(raw.action)) throw new PreflightInputError('action must be an object')
-  const a = raw.action
+function parseAction(raw: unknown): PreflightAction {
+  if (!isPlainObject(raw)) throw new PreflightInputError('action must be an object')
+  const a = raw
   if (a.kind !== 'PAYMENT') {
     throw new PreflightInputError('action.kind must be "PAYMENT" (the only supported kind in v1)')
   }
@@ -202,10 +200,12 @@ export function parsePreflightInput(raw: unknown): PreflightInput {
       throw new PreflightInputError('action.resource must be a valid URL')
     }
   }
-  const action: PreflightAction = { kind: 'PAYMENT', resource, network, asset, amount, sender, recipient }
+  return { kind: 'PAYMENT', resource, network, asset, amount, sender, recipient }
+}
 
-  if (!isPlainObject(raw.policy)) throw new PreflightInputError('policy must be an object')
-  const p = raw.policy
+function parsePolicy(raw: unknown): PreflightPolicy {
+  if (!isPlainObject(raw)) throw new PreflightInputError('policy must be an object')
+  const p = raw
   const maxAmount = optionalString(p.max_amount, 'policy.max_amount')
   if (maxAmount !== null && !isCanonicalDecimalAmount(maxAmount)) {
     throw new PreflightInputError('policy.max_amount must be a canonical decimal string, or null')
@@ -229,13 +229,25 @@ export function parsePreflightInput(raw: unknown): PreflightInput {
   if (allowedResourceOrigins) {
     for (const origin of allowedResourceOrigins) requireOrigin(origin, 'policy.allowed_resource_origins')
   }
-  const policy: PreflightPolicy = {
+  return {
     max_amount: maxAmount,
     allowed_networks: allowedNetworks,
     allowed_assets: allowedAssets,
     expected_recipient: expectedRecipient,
     allowed_resource_origins: allowedResourceOrigins,
   }
+}
+
+/**
+ * Strict structural validation. Throws PreflightInputError (never touches the
+ * network) on any malformed input — callers use this to reject bad requests
+ * BEFORE a payment challenge is ever issued.
+ */
+export function parsePreflightInput(raw: unknown): PreflightInput {
+  if (!isPlainObject(raw)) throw new PreflightInputError('body must be a JSON object')
+
+  const action = parseAction(raw.action)
+  const policy = parsePolicy(raw.policy)
 
   const rawOptions = raw.options ?? {}
   if (!isPlainObject(rawOptions)) throw new PreflightInputError('options must be an object')
@@ -256,6 +268,69 @@ export function parsePreflightInput(raw: unknown): PreflightInput {
   const references: PreflightReferences = { mandate_digest: mandateDigest }
 
   return { action, policy, options, references }
+}
+
+// ---------------------------------------------------------------------
+// Free inspection (D2.1A) — pure deterministic policy evaluation, no
+// external evidence, no signing, no receipt. See inspectPayment() below.
+// ---------------------------------------------------------------------
+
+export interface InspectPaymentInput {
+  action: PreflightAction
+  policy: PreflightPolicy
+}
+
+export interface InspectPaymentResult {
+  decision: ReceiptDecision
+  checks: ReceiptCheck[]
+  /** Always false: the free tier performs no external evidence lookups. */
+  evidence: { external_checks_performed: false }
+  /** Always null: the free tier signs nothing and issues no receipt. */
+  receipt: null
+}
+
+/**
+ * Strict structural validation for the free {action, policy} contract.
+ * Deliberately narrower than parsePreflightInput's — no options, no
+ * references. `options.screen_recipient_sanctions: true` is explicitly
+ * rejected rather than silently ignored: a caller asking for sanctions
+ * evidence on the free tier should get a clear error pointing at the paid
+ * endpoint, never a result that looks complete but silently skipped it.
+ */
+export function parseInspectInput(raw: unknown): InspectPaymentInput {
+  if (!isPlainObject(raw)) throw new PreflightInputError('body must be a JSON object')
+
+  if (raw.options !== undefined) {
+    if (!isPlainObject(raw.options)) throw new PreflightInputError('options must be an object')
+    if (raw.options.screen_recipient_sanctions === true) {
+      throw new PreflightInputError(
+        'options.screen_recipient_sanctions is not available on the free inspection endpoint — use POST /x402/preflight-payment for sanctions-screened evaluation'
+      )
+    }
+  }
+
+  return { action: parseAction(raw.action), policy: parsePolicy(raw.policy) }
+}
+
+/**
+ * Free, unsigned, deterministic inspection of a proposed payment against
+ * structured policy — the same money/address/network/origin rules and the
+ * same precedence (FAIL -> BLOCK, else UNKNOWN -> REQUIRE_APPROVAL, else
+ * ALLOW) as preflightPayment(), via the identical evaluatePreflightPolicy().
+ * Performs NO external evidence lookup (sanctions screening is unavailable
+ * here), NO signing call, and produces NO receipt — `receipt` is always
+ * `null` and this must never be dressed up to look cryptographically
+ * attested. Use preflightPayment() for a VALID-verified signed receipt.
+ */
+export async function inspectPayment(raw: unknown): Promise<InspectPaymentResult> {
+  const input = parseInspectInput(raw)
+  const { decision, checks } = await evaluatePreflightPolicy({
+    action: input.action,
+    policy: input.policy,
+    options: { screen_recipient_sanctions: false },
+    references: { mandate_digest: null },
+  })
+  return { decision, checks, evidence: { external_checks_performed: false }, receipt: null }
 }
 
 function addressesEqual(a: string, b: string): boolean {

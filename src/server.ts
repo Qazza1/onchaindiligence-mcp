@@ -1,7 +1,7 @@
 /**
- * server.ts — the x402-paid MCP server.
+ * server.ts — the x402-paid MCP server (plus one free tool).
  *
- * Exposes six paid MCP tools that agents can call and PAY FOR over Streamable
+ * Exposes six PAID MCP tools that agents call and pay for over Streamable
  * HTTP using x402 (USDC on Base): five compliance checks (screen_wallet,
  * screen_name, verify_uk_company, verify_us_company, diligence) plus
  * preflight_payment (D2.1), a structured pre-execution policy evaluation.
@@ -9,6 +9,14 @@
  * clients as the HTTP API; preflight_payment runs the same preflightPayment()
  * service the HTTP x402 route uses (see preflight.ts). Cross-surface contract
  * tests are required before claiming response-level equivalence.
+ *
+ * Plus one FREE tool, inspect_payment (D2.1A), registered via the plain
+ * (unpaid) server.tool() — never server.paidTool() — so an agent is never
+ * required to pay merely to sanity-check a proposed payment's deterministic
+ * fields before deciding whether preflight_payment's paid evidence is worth
+ * buying. It shares preflightPayment()'s exact policy evaluator
+ * (evaluatePreflightPolicy in preflight.ts) with no external evidence, no
+ * signing, and no receipt.
  *
  * Payment model: NON-CUSTODIAL. The x402 facilitator verifies the agent's USDC
  * payment to our recipient address before the tool body runs. We never hold funds.
@@ -49,7 +57,8 @@ import {
   OfacUpstreamError,
 } from './ofac.js'
 import { attest } from './attest.js'
-import { preflightPayment } from './preflight.js'
+import { preflightPayment, inspectPayment } from './preflight.js'
+import { INSPECT_DESCRIPTION } from './inspectRoute.js'
 
 // Fail fast if misconfigured — same discipline as the HTTP API.
 assertConfigured()
@@ -366,6 +375,45 @@ export const handler = createPaidMcpHandler(
           return {
             isError: true,
             content: [{ type: 'text', text: err?.message || 'Preflight evaluation failed.' }],
+          }
+        }
+      }
+    )
+
+    // --- inspect_payment (D2.1A) -- FREE, no payment wrapper ------------
+    // Deliberately server.tool(), not server.paidTool(): this must never
+    // require an x402 payment, or agents would need to pay to decide
+    // whether preflight_payment's paid evidence is worth paying for.
+    server.tool(
+      'inspect_payment',
+      INSPECT_DESCRIPTION,
+      {
+        action: z.object({
+          kind: z.literal('PAYMENT').describe('The only supported action kind in v1.'),
+          resource: z.string().nullable().optional().describe('URL of the resource/service the payment is for, if any.'),
+          network: z.string().describe('CAIP-2 network identifier, e.g. "eip155:8453" for Base mainnet.'),
+          asset: z.string().describe('Canonical ERC-20 token contract address (0x…) — never a ticker like "USDC".'),
+          amount: z.string().describe('Canonical decimal string amount, e.g. "1.00". Never a float.'),
+          sender: z.string().nullable().optional().describe('Sender wallet address, if known.'),
+          recipient: z.string().describe('Recipient wallet address (0x…).'),
+        }),
+        policy: z.object({
+          max_amount: z.string().nullable().optional().describe('Maximum allowed decimal amount, or null for no configured cap.'),
+          allowed_networks: z.array(z.string()).nullable().optional().describe('Allowed CAIP-2 networks, or null for no restriction.'),
+          allowed_assets: z.array(z.string()).nullable().optional().describe('Allowed token contract addresses, or null for no restriction.'),
+          expected_recipient: z.string().nullable().optional().describe('Exact recipient address the caller expects, or null.'),
+          allowed_resource_origins: z.array(z.string()).nullable().optional().describe('Allowed https origins for action.resource, or null.'),
+        }),
+      },
+      { readOnlyHint: true, openWorldHint: false },
+      async (args) => {
+        try {
+          const result = await inspectPayment(args)
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+        } catch (err: any) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: err?.message || 'Inspection failed.' }],
           }
         }
       }
