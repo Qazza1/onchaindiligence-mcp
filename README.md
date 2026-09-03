@@ -20,6 +20,48 @@ An agent connects over Streamable HTTP and finds five tools:
 
 The tools use the same underlying public-data sources as the [HTTP API](https://api.onchaindiligence.com). They are separate deployments, so response-level equivalence must be enforced by contract tests rather than assumed.
 
+## Use OnChainDiligence from an agent
+
+Connect a Streamable HTTP MCP client to `https://mcp.onchaindiligence.com/mcp`.
+The useful path is deliberately explicit:
+
+```text
+agent → tools/list → choose a tool → unpaid tool call → x402 requirement
+      → agent policy + wallet authorization → paid retry → signed result
+```
+
+For a minimal `screen_wallet` consumer, first discover the server's current
+tool schema and call it without payment:
+
+```ts
+const client = await connectMcp('https://mcp.onchaindiligence.com/mcp')
+const { tools } = await client.listTools()
+
+const unpaid = await client.callTool({
+  name: 'screen_wallet',
+  arguments: { address: '0x0000000000000000000000000000000000000000' },
+})
+const requirement = unpaid.structuredContent.accepts[0]
+// requirement contains the exact amount, USDC asset, Base network and recipient.
+
+// Only after the caller's policy approves the server-supplied requirement:
+const payment = await createPaymentHeader(agentWallet, 1, requirement)
+const paid = await client.callTool({
+  name: 'screen_wallet',
+  arguments: { address: '0x0000000000000000000000000000000000000000' },
+  _meta: { 'x402/payment': payment },
+})
+```
+
+The runnable [`test/client.ts`](./test/client.ts) performs that exact sequence
+with `MCP_SERVER_URL` and `PAYER_PRIVATE_KEY` environment-variable placeholders;
+it never embeds a wallet key in source.
+
+The live service returned `10000` atomic USDC units ($0.01) for
+`screen_wallet` during validation on 2026-09-03. That is only an observation:
+agents must always read the current requirement from the unpaid response rather
+than hard-coding a price.
+
 ## How payment works
 
 Payment rides on [x402](https://x402.org), the open agent-payment standard built on HTTP `402 Payment Required`:
