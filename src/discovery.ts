@@ -88,6 +88,16 @@ const resourceServer = new x402ResourceServer(facilitatorClient).register(
   new ExactEvmScheme()
 )
 
+// D2.2B1: the CDP hosted facilitator's /verify rejects any x402 v2 payload
+// whose resource.description exceeds 500 characters, character count
+// (x402-foundation/x402#2832) — it fails AFTER the buyer has already signed,
+// so the client sees a paid replay return 402 with no funds moved. Every
+// X402_ROUTES description must stay comfortably under that; this constant is
+// the safety-margin cap this file's own descriptions are written against
+// (see the regression test in test/x402Routes.ts, which checks every
+// X402_ROUTES description against the real facilitator's 500-char limit).
+export const MAX_X402_DESCRIPTION_LENGTH = 480
+
 // Keyword-rich description — this is what agents search on in the Bazaar.
 export const DESCRIPTION =
   'Sanctions-screen an EVM wallet address against the Chainalysis on-chain ' +
@@ -138,26 +148,29 @@ export const UK_COMPANY_DESCRIPTION =
 // D2.1: Payment Preflight. Deliberately explicit that this is an evaluation,
 // not execution or authorization — the wallet/PayBox/x402 client applies its
 // own separate authorization afterward, and both gates are independent.
+// D2.2B1: kept intentionally <= 480 chars (see MAX_X402_DESCRIPTION_LENGTH in
+// this file and its regression test in test/x402Routes.ts) — the CDP hosted
+// facilitator's /verify rejects any payload whose resource.description
+// exceeds 500 characters (x402-foundation/x402#2832), which silently turned
+// a paid replay into a 402 AFTER the buyer had already signed. Do not let
+// this grow back past the limit; shorten wording, don't slice it at runtime.
 export const PREFLIGHT_DESCRIPTION =
-  'Evaluate a proposed autonomous payment against a structured, caller-supplied ' +
-  'policy and optional recipient sanctions screening, BEFORE any payment is ' +
-  'executed. Returns a deterministic decision — ALLOW, REQUIRE_APPROVAL, or BLOCK ' +
-  '— with reasons, plus a signed OCD PREFLIGHT receipt anyone can independently ' +
-  'verify. This is a POLICY EVALUATION, not payment execution: OnChainDiligence ' +
-  'never holds funds and does not authorize or submit the payment. The wallet, ' +
-  'PayBox, or x402 client applies its OWN separate authorization after this ' +
-  'preflight; both gates are independent and an ALLOW here does not guarantee ' +
-  'the execution provider will proceed. Accepts only structured, deterministic ' +
-  'policy fields in v1 — free-text natural-language policy is not supported.'
+  'Evaluate a proposed payment against a structured, caller-supplied policy and ' +
+  'optional recipient sanctions screening, before execution. Returns ALLOW, ' +
+  'REQUIRE_APPROVAL, or BLOCK with reasons, plus a signed OCD PREFLIGHT receipt ' +
+  'anyone can independently verify. Policy evaluation only: OCD never holds, moves, ' +
+  'or authorizes funds. The wallet, PayBox, or x402 client independently authorizes ' +
+  'execution afterward; an ALLOW here does not guarantee it will proceed.'
 
+// D2.2B1: also over the 500-char facilitator limit before this edit (507)
+// — shortened for the same reason as PREFLIGHT_DESCRIPTION above.
 export const DILIGENCE_DESCRIPTION =
-  'Combined counterparty due diligence in one paid call: sanctions-screens an ' +
-  'EVM wallet against the Chainalysis on-chain oracle AND verifies a UK ' +
-  'company against Companies House (status, type, PSC / beneficial owners), ' +
-  'returning both independent results in one signed response. These are two ' +
-  'separate checks against separate sources: a result does NOT establish that ' +
-  'the wallet belongs to, or is controlled by, that company. Use when vetting ' +
-  'a counterparty that presents both a wallet and a UK company number.'
+  'Combined counterparty due diligence in one paid call: sanctions-screens an EVM ' +
+  'wallet against the Chainalysis on-chain oracle AND verifies a UK company against ' +
+  'Companies House (status, type, PSC / beneficial owners), returning both ' +
+  'independent results in one signed response. Two separate checks against separate ' +
+  'sources — a result does NOT establish the wallet belongs to that company. For ' +
+  'vetting a counterparty presenting both a wallet and a UK company number.'
 
 /**
  * The paid HTTP x402 resource map: one entry per capability, each declaring

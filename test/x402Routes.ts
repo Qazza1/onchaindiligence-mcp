@@ -42,7 +42,7 @@ process.on('unhandledRejection', (error: unknown) => {
 
 const { Hono } = await import('hono')
 const { config } = await import('../src/config.js')
-const { mountDiscovery, CAIP2, usd, X402_ROUTES } = await import('../src/discovery.js')
+const { mountDiscovery, CAIP2, usd, X402_ROUTES, MAX_X402_DESCRIPTION_LENGTH } = await import('../src/discovery.js')
 const { buildOpenApiDocument, buildWellKnownManifest, mountPublicMetadata } = await import(
   '../src/publicMetadata.js'
 )
@@ -108,6 +108,30 @@ for (const route of PAID_ROUTES) {
   )
 }
 console.log(`ok  ${PAID_ROUTES.length} paid routes: price/network/payTo/mimeType + Bazaar metadata`)
+
+// D2.2B1: the CDP hosted facilitator's /verify rejects any x402 v2 payload
+// whose resource.description exceeds 500 characters (x402-foundation/x402
+// #2832) -- it fails AFTER the buyer has already signed, turning a paid
+// replay silently into a 402 with no funds moved. PREFLIGHT_DESCRIPTION (756
+// chars) and DILIGENCE_DESCRIPTION (507 chars) both exceeded this before the
+// D2.2B1 fix. Every resource description must stay under a real hard cap
+// with margin -- assert against the actual character counts, not a
+// runtime-sliced string, so a future edit that grows a description back past
+// the limit fails this test instead of failing silently in production.
+const CDP_FACILITATOR_HARD_LIMIT = 500
+assert.ok(MAX_X402_DESCRIPTION_LENGTH < CDP_FACILITATOR_HARD_LIMIT, 'the safety-margin cap must be strictly below the real facilitator limit')
+for (const route of PAID_ROUTES) {
+  const entry = (X402_ROUTES as Record<string, any>)[route.key]
+  const length = entry.description.length
+  assert.ok(
+    length <= MAX_X402_DESCRIPTION_LENGTH,
+    `${route.key} description is ${length} chars, over the ${MAX_X402_DESCRIPTION_LENGTH}-char safety margin (facilitator hard limit ${CDP_FACILITATOR_HARD_LIMIT})`
+  )
+}
+console.log(
+  `ok  every x402 resource description is <= ${MAX_X402_DESCRIPTION_LENGTH} chars (facilitator hard limit ${CDP_FACILITATOR_HARD_LIMIT}): ` +
+    PAID_ROUTES.map((r) => `${r.key}=${(X402_ROUTES as Record<string, any>)[r.key].description.length}`).join(', ')
+)
 
 // Descriptions must let a buyer tell the capabilities apart, and must not
 // overclaim. Diligence in particular must disclaim the wallet<->company link.
@@ -249,8 +273,11 @@ const preflightEnvelope = preflightOp.responses['200'].content['application/json
 assert.deepEqual(preflightEnvelope.required, ['decision', 'checks', 'receipt'], 'preflight-payment response shape')
 assert.equal(preflightOp['x-onchaindiligence-x402'].network, CAIP2)
 assert.equal(preflightOp['x-onchaindiligence-x402'].priceUsd, config.prices.preflight)
+// D2.2B1: PREFLIGHT_DESCRIPTION was reworded (shortened for the facilitator's
+// 500-char limit, see the description-length block above) -- same
+// disclaimer, different phrasing.
 assert.ok(
-  /does not authorize or submit the payment/i.test(preflightOp.description),
+  /never holds,?\s*moves,?\s*or authorizes funds/i.test(preflightOp.description),
   'preflight-payment description must explicitly disclaim executing/authorizing the payment'
 )
 // D2.1A: the free inspection primitive is documented, but clearly

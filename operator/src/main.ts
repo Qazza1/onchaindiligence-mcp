@@ -32,6 +32,7 @@ import {
   validateChallenge,
 } from '../../src/lifecycleCore.js'
 import { canExecuteLifecycle, canRetryTargetStep, type InspectionStatus, type TargetStepFailurePoint } from './gating.js'
+import { extractSafe402Detail } from './safeError.js'
 
 // --- local proxy paths (same origin as this page — see operator/server.ts) --
 const PROXY_INSPECT = '/proxy/inspect/payment'
@@ -219,6 +220,23 @@ async function verifyReceiptViaLocalServer(envelope: unknown): Promise<{ state: 
   return res.json()
 }
 
+/**
+ * Only called for a paid replay that unexpectedly stayed 402 (e.g. the
+ * facilitator's /verify rejecting the request after the wallet already
+ * signed). Parses the body defensively and delegates to the allowlisted
+ * extractor in safeError.ts — never logs/displays the raw body, headers, or
+ * anything payment-signature-shaped.
+ */
+async function safe402Message(res: Response, routeLabel: string): Promise<string> {
+  let body: unknown = null
+  try {
+    body = await res.clone().json()
+  } catch {
+    body = null
+  }
+  return extractSafe402Detail(body, routeLabel)
+}
+
 function showRecovery(message: string, allowRetry: boolean): void {
   const section = $('recovery')
   section.style.display = 'block'
@@ -246,7 +264,10 @@ async function runPreflightStep(): Promise<void> {
   const payingFetch = buildPayingFetch()
   logLine('  awaiting wallet signature for payment #1…')
   const paidRes = await payingFetch(PROXY_PREFLIGHT, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
-  if (paidRes.status !== 200) throw new LifecycleAbortError(`paid preflight-payment returned HTTP ${paidRes.status}`)
+  if (paidRes.status !== 200) {
+    const detail = paidRes.status === 402 ? await safe402Message(paidRes, 'preflight-payment') : `HTTP ${paidRes.status}`
+    throw new LifecycleAbortError(`paid preflight-payment rejected — ${detail}`)
+  }
   const result = await paidRes.json()
 
   if (result.decision?.status !== 'ALLOW') throw new LifecycleAbortError(`preflight decision was not ALLOW (${result.decision?.status})`)
@@ -288,7 +309,10 @@ async function runTargetStep(): Promise<{ transactionHash: string }> {
   const payingFetch = buildPayingFetch()
   logLine('  awaiting wallet signature for payment #2…')
   const paidRes = await payingFetch(PROXY_TARGET)
-  if (paidRes.status !== 200) throw new LifecycleAbortError(`paid target service call returned HTTP ${paidRes.status}`)
+  if (paidRes.status !== 200) {
+    const detail = paidRes.status === 402 ? await safe402Message(paidRes, 'screen_wallet target service') : `HTTP ${paidRes.status}`
+    throw new LifecycleAbortError(`paid target service call rejected — ${detail}`)
+  }
   const settlementHeader = paidRes.headers.get('x-payment-response') ?? paidRes.headers.get('payment-response')
   if (!settlementHeader) throw new LifecycleAbortError('paid target service response carried no payment-response header')
   const settlement = decodeSettlementResponse(settlementHeader)
