@@ -46,136 +46,62 @@ import { x402Client } from '@x402/core/client'
 import { ExactEvmScheme } from '@x402/evm/exact/client'
 import { toClientEvmSigner } from '@x402/evm'
 import { verifyReceiptEnvelope, fetchAttestationKeyRegistry } from '../src/receipts.js'
+import {
+  BASE_URL,
+  NETWORK,
+  ASSET,
+  RECIPIENT,
+  PER_CALL_ATOMIC,
+  AGGREGATE_MAX_ATOMIC,
+  INSPECT_URL,
+  PREFLIGHT_URL,
+  TARGET_SERVICE_URL,
+  FINALIZE_URL,
+  RECEIPTS_URL,
+  EXPLORER_URL,
+  BAZAAR_DISCOVERY_URL,
+  LifecycleAbortError,
+  resetSpendTrackerForTests,
+  currentSpentAtomic,
+  reserveSpend,
+  targetPaymentAction,
+  strictPolicy,
+  decodeChallenge,
+  decodeSettlementResponse,
+  validateChallenge,
+} from '../src/lifecycleCore.js'
 
-// --- Pinned expectations. Nothing here is caller-supplied. -----------------
-
-export const BASE_URL = 'https://mcp.onchaindiligence.com'
-const RESOURCE_ORIGIN = BASE_URL
-export const NETWORK = 'eip155:8453' // Base mainnet, CAIP-2
-export const ASSET = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' // USDC on Base
-export const RECIPIENT = '0x63c347d7e42b940e79AfEC3D172bFc2921b6c897' // OCD's own configured X402_RECIPIENT_ADDRESS
-
-export const PER_CALL_ATOMIC = 10_000n // exactly $0.01 (USDC, 6 decimals)
-export const AGGREGATE_MAX_ATOMIC = 20_000n // exactly $0.02 — the hard cap for this entire script
-
-const INSPECT_URL = `${BASE_URL}/inspect/payment`
-const PREFLIGHT_URL = `${BASE_URL}/x402/preflight-payment`
-const TARGET_SERVICE_URL = `${BASE_URL}/x402/screen/${RECIPIENT}`
-const FINALIZE_URL = `${BASE_URL}/receipts/finalize`
-const RECEIPTS_URL = (id: string) => `${BASE_URL}/receipts/${id}`
-const EXPLORER_URL = (id: string) => `https://onchaindiligence.com/r/${id}`
-const BAZAAR_DISCOVERY_URL = 'https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources'
+// --- Pinned expectations + pre-signature safety gates now live in
+// src/lifecycleCore.ts, shared verbatim with operator/src/main.ts (the
+// browser-wallet operator UI, D2.2B). Re-exported here unchanged so this
+// script's own CLI-only concerns (private-key buyer, dry-run gate, console
+// reporting) stay in one file without duplicating the safety logic. ---------
+export {
+  BASE_URL,
+  NETWORK,
+  ASSET,
+  RECIPIENT,
+  PER_CALL_ATOMIC,
+  AGGREGATE_MAX_ATOMIC,
+  LifecycleAbortError,
+  resetSpendTrackerForTests,
+  reserveSpend,
+  decodeChallenge,
+  decodeSettlementResponse,
+  validateChallenge,
+}
 
 const CONFIRM_FLAG = '--confirm-two-payments'
 const DRY_RUN = !process.argv.includes(CONFIRM_FLAG)
-
-/** Thrown by fail() — never process.exit() directly, so every abort path is testable via assert.throws without killing the test process. Only the top-level main().catch() below turns this into a process exit. */
-export class LifecycleAbortError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'LifecycleAbortError'
-  }
-}
-
-let totalSpentAtomic = 0n
-
-/** Exported for tests that need to assert spend-tracking behavior in isolation; production code never resets this mid-run. */
-export function resetSpendTrackerForTests(): void {
-  totalSpentAtomic = 0n
-}
 
 function fail(message: string): never {
   throw new LifecycleAbortError(message)
 }
 
-export function reserveSpend(amount: bigint, label: string): void {
-  if (amount !== PER_CALL_ATOMIC) {
-    fail(`${label}: quoted amount ${amount} is not EXACTLY ${PER_CALL_ATOMIC} ($0.01) — refusing to pay`)
-  }
-  if (totalSpentAtomic + amount > AGGREGATE_MAX_ATOMIC) {
-    fail(`${label}: would push aggregate spend to ${totalSpentAtomic + amount}, exceeding the hard cap of ${AGGREGATE_MAX_ATOMIC} ($0.02)`)
-  }
-  totalSpentAtomic += amount
-}
-
-/** The proposed target payment: $0.01 USDC to OCD's own recipient, for the screen_wallet resource. Identical object used for both the free inspection and the paid preflight. */
-function targetPaymentAction() {
-  return {
-    kind: 'PAYMENT' as const,
-    resource: TARGET_SERVICE_URL,
-    network: NETWORK,
-    asset: ASSET,
-    amount: '0.01',
-    sender: null,
-    recipient: RECIPIENT,
-  }
-}
-
-function strictPolicy() {
-  return {
-    max_amount: '0.01',
-    allowed_networks: [NETWORK],
-    allowed_assets: [ASSET],
-    expected_recipient: RECIPIENT,
-    allowed_resource_origins: [RESOURCE_ORIGIN],
-  }
-}
-
-export function decodeChallenge(response: Response): any {
-  const header = response.headers.get('payment-required')
-  if (!header) fail(`${response.url}: 402 response carried no Payment-Required header`)
-  try {
-    return JSON.parse(Buffer.from(header as string, 'base64').toString('utf8'))
-  } catch {
-    return fail(`${response.url}: Payment-Required header was not base64-encoded JSON`)
-  }
-}
-
-/**
- * Decodes the post-payment X-PAYMENT-RESPONSE/PAYMENT-RESPONSE header. This
- * is a POST-payment sanity read, not a pre-payment safety gate (the real
- * safety gate is validateChallenge(), which runs and can abort BEFORE any
- * signing) — so this deliberately only hard-fails on the one unambiguous
- * field (`success`) rather than a strict network-string comparison, since
- * the settlement response's network field is not guaranteed to use the same
- * CAIP-2 convention as the payment requirements challenge.
- */
-export function decodeSettlementResponse(header: string): { success: boolean; transaction: string; network: unknown; payer: unknown } {
-  try {
-    const decoded = JSON.parse(Buffer.from(header, 'base64').toString('utf8'))
-    if (typeof decoded.transaction !== 'string' || !decoded.transaction.startsWith('0x')) {
-      fail('payment-response did not contain a valid transaction hash')
-    }
-    return decoded
-  } catch (err) {
-    if (err instanceof LifecycleAbortError) throw err
-    return fail('payment-response header was not valid base64-encoded JSON')
-  }
-}
-
-/** Validates a decoded x402 challenge against every pinned expectation. Returns the quoted atomic amount. Never mutates spend state — see reserveSpend. */
-export function validateChallenge(challenge: any, label: string): bigint {
-  if (challenge.x402Version !== 2) fail(`${label}: unexpected x402 version ${challenge.x402Version} (expected 2)`)
-  const accepts = challenge.accepts?.[0]
-  if (!accepts) fail(`${label}: challenge contained no accepts entry`)
-  if (accepts.scheme !== 'exact') fail(`${label}: unexpected scheme "${accepts.scheme}" (expected "exact")`)
-  if (accepts.network !== NETWORK) fail(`${label}: network mismatch — quoted "${accepts.network}", pinned "${NETWORK}"`)
-  if (String(accepts.asset).toLowerCase() !== ASSET.toLowerCase()) {
-    fail(`${label}: asset mismatch — quoted "${accepts.asset}", pinned USDC "${ASSET}"`)
-  }
-  if (String(accepts.payTo).toLowerCase() !== RECIPIENT.toLowerCase()) {
-    fail(`${label}: recipient mismatch — quoted "${accepts.payTo}", pinned "${RECIPIENT}". Refusing to pay an address that is not OCD's own.`)
-  }
-  let amount: bigint
-  try {
-    amount = BigInt(accepts.amount)
-  } catch {
-    return fail(`${label}: quoted amount "${accepts.amount}" is not an integer`)
-  }
-  if (amount !== PER_CALL_ATOMIC) {
-    fail(`${label}: quoted amount ${amount} is not EXACTLY ${PER_CALL_ATOMIC} atomic units ($0.01) — refusing to pay`)
-  }
-  console.log(`  validated: exact/${accepts.network}/${amount} atomic USDC -> ${accepts.payTo}`)
+/** Thin logging wrapper: validateChallenge() itself is silent (isomorphic, no console dependency) — the CLI script is the one place that wants a log line per validation. */
+function validateChallengeLogged(challenge: any, label: string): bigint {
+  const amount = validateChallenge(challenge, label)
+  console.log(`  validated: exact/${challenge.accepts[0].network}/${amount} atomic USDC -> ${challenge.accepts[0].payTo}`)
   return amount
 }
 
@@ -212,14 +138,14 @@ async function validatePreflightChallenge(): Promise<bigint> {
     body: JSON.stringify({ action: targetPaymentAction(), policy: strictPolicy(), publication: { preflight: true, commerce: true } }),
   })
   if (res.status !== 402) fail(`expected HTTP 402 from preflight-payment, got ${res.status}`)
-  return validateChallenge(decodeChallenge(res), 'preflight-payment')
+  return validateChallengeLogged(decodeChallenge(res), 'preflight-payment')
 }
 
 async function validateTargetChallenge(): Promise<bigint> {
   console.log('\n=== Validating live 402 for GET /x402/screen/<recipient> (unpaid) ===')
   const res = await fetch(TARGET_SERVICE_URL)
   if (res.status !== 402) fail(`expected HTTP 402 from the target service, got ${res.status}`)
-  return validateChallenge(decodeChallenge(res), 'screen_wallet target service')
+  return validateChallengeLogged(decodeChallenge(res), 'screen_wallet target service')
 }
 
 // ---------------------------------------------------------------------
@@ -335,7 +261,7 @@ async function runReal(): Promise<void> {
   const preflightBody = JSON.stringify({ action: targetPaymentAction(), policy: strictPolicy(), publication: { preflight: true, commerce: true } })
   const preflightChallengeRes = await fetch(PREFLIGHT_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: preflightBody })
   if (preflightChallengeRes.status !== 402) fail(`expected 402 from preflight-payment, got ${preflightChallengeRes.status}`)
-  const preflightAmount = validateChallenge(decodeChallenge(preflightChallengeRes), 'preflight-payment')
+  const preflightAmount = validateChallengeLogged(decodeChallenge(preflightChallengeRes), 'preflight-payment')
   reserveSpend(preflightAmount, 'preflight-payment')
 
   const paidPreflightRes = await payingFetch(PREFLIGHT_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: preflightBody })
@@ -365,7 +291,7 @@ async function runReal(): Promise<void> {
   console.log('\n=== Step 3: PAID target service ($0.01) ===')
   const targetChallengeRes = await fetch(TARGET_SERVICE_URL)
   if (targetChallengeRes.status !== 402) fail(`expected 402 from the target service, got ${targetChallengeRes.status}`)
-  const targetAmount = validateChallenge(decodeChallenge(targetChallengeRes), 'screen_wallet target service')
+  const targetAmount = validateChallengeLogged(decodeChallenge(targetChallengeRes), 'screen_wallet target service')
   reserveSpend(targetAmount, 'screen_wallet target service')
 
   const paidTargetRes = await payingFetch(TARGET_SERVICE_URL)
@@ -380,7 +306,7 @@ async function runReal(): Promise<void> {
   console.log(`  transaction hash: ${settlement.transaction}`)
   console.log(`  service result  : sanctioned=${targetBody?.data?.sanctioned}`)
 
-  console.log(`\nTotal spent this run: ${totalSpentAtomic} atomic units (cap ${AGGREGATE_MAX_ATOMIC})`)
+  console.log(`\nTotal spent this run: ${currentSpentAtomic()} atomic units (cap ${AGGREGATE_MAX_ATOMIC})`)
 
   // --- Step 4: finalization (free) -------------------------------------
   console.log('\n=== Step 4: FREE finalization ===')
@@ -426,7 +352,7 @@ async function runReal(): Promise<void> {
   console.log('LIFECYCLE COMPLETE')
   console.log(`PREFLIGHT receipt: ${preflightReceipt.receipt_id}`)
   console.log(`COMMERCE  receipt: ${commerceReceipt.receipt_id}`)
-  console.log(`Total spent: $${(Number(totalSpentAtomic) / 1_000_000).toFixed(2)} USDC`)
+  console.log(`Total spent: $${(Number(currentSpentAtomic()) / 1_000_000).toFixed(2)} USDC`)
   console.log('='.repeat(72))
 }
 

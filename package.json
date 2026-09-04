@@ -9,7 +9,9 @@
     "start": "tsx src/local.ts",
     "typecheck": "tsc --noEmit",
     "test:client": "tsx test/client.ts",
-    "db:migrate": "tsx scripts/migrate.ts"
+    "db:migrate": "tsx scripts/migrate.ts",
+    "operator:build": "esbuild operator/src/main.ts --bundle --format=esm --platform=browser --target=es2020 --outfile=operator/dist/app.js",
+    "operator:commerce": "npm run operator:build && tsx operator/server.ts"
   },
   "dependencies": {
     "@coinbase/x402": "^2.1.0",
@@ -32,6 +34,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.5.0",
+    "esbuild": "^0.28.2",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   }
