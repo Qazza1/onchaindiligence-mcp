@@ -150,6 +150,20 @@ export async function peekCapability(capabilityHash: string): Promise<Capability
   return row ? mapCapabilityRow(row) : null
 }
 
+/**
+ * D2.2B2: used only by scripts/reconcile-commerce-receipt.ts to cross-check
+ * that the capability actually consumed for a stuck Commerce Receipt really
+ * points back at the same preflight/transaction/receipt id before any
+ * reconciliation proceeds. Read-only.
+ */
+export async function getCapabilityByCommerceReceiptId(commerceReceiptId: string): Promise<CapabilityRecord | null> {
+  const rows = (await sql().query('SELECT * FROM finalization_capabilities WHERE commerce_receipt_id = $1', [
+    commerceReceiptId,
+  ])) as unknown as any[]
+  const row = rows[0]
+  return row ? mapCapabilityRow(row) : null
+}
+
 export type ConsumeOutcome =
   | { kind: 'consumed' }
   | { kind: 'replay'; commerceReceiptId: string }
@@ -225,6 +239,76 @@ export async function consumeCapabilityAndPublish(params: {
     )
     await client.query('COMMIT')
     return { kind: 'consumed' }
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {})
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+// ---------------------------------------------------------------------
+// D2.2B2 — no-payment reconciliation of a Commerce Receipt whose original
+// chain observation could not obtain a definitive result (see
+// scripts/reconcile-commerce-receipt.ts). Never touches
+// finalization_capabilities: reconciliation is not a capability action, it
+// only appends a NEW, separate immutable Commerce Receipt plus one
+// idempotency row linking it back to the prior receipt it re-observes.
+// ---------------------------------------------------------------------
+
+/** Read-only idempotency check — used by the reconciliation script's dry run and as the fast pre-check before the real write. */
+export async function getReconciliationForPriorReceipt(priorReceiptId: string): Promise<{ reconciledReceiptId: string } | null> {
+  const rows = (await sql().query(
+    'SELECT reconciled_receipt_id FROM receipt_reconciliations WHERE prior_receipt_id = $1',
+    [priorReceiptId]
+  )) as unknown as Array<{ reconciled_receipt_id: string }>
+  const row = rows[0]
+  return row ? { reconciledReceiptId: row.reconciled_receipt_id } : null
+}
+
+export type ReconciliationOutcome =
+  | { kind: 'created' }
+  | { kind: 'already-reconciled'; reconciledReceiptId: string }
+
+/**
+ * Atomically inserts the new reconciled Commerce Receipt AND the
+ * idempotency row in one transaction — never one without the other, and
+ * never a second reconciliation for the same prior receipt (the SELECT ...
+ * FOR UPDATE below serializes concurrent runs; the table's PRIMARY KEY on
+ * prior_receipt_id is the backstop if that race is somehow still hit).
+ * Never UPDATEs or overwrites either the prior receipt or a
+ * previously-reconciled one.
+ */
+export async function recordReconciliation(params: {
+  priorReceiptId: string
+  reconciledEnvelope: PublicActionReceiptEnvelope
+  isPublic: boolean
+}): Promise<ReconciliationOutcome> {
+  const client = await getPool().connect()
+  try {
+    await client.query('BEGIN')
+    const existing = await client.query(
+      'SELECT reconciled_receipt_id FROM receipt_reconciliations WHERE prior_receipt_id = $1 FOR UPDATE',
+      [params.priorReceiptId]
+    )
+    if (existing.rows[0]) {
+      await client.query('ROLLBACK')
+      return { kind: 'already-reconciled', reconciledReceiptId: existing.rows[0].reconciled_receipt_id }
+    }
+
+    const receiptId = params.reconciledEnvelope.receipt.receipt_id
+    const digest = params.reconciledEnvelope.receipt.receipt_digest
+    await client.query(
+      `INSERT INTO receipts (receipt_id, receipt_digest, receipt_type, envelope_json, is_public)
+       VALUES ($1, $2, 'COMMERCE', $3::jsonb, $4)`,
+      [receiptId, digest, JSON.stringify(params.reconciledEnvelope), params.isPublic]
+    )
+    await client.query(
+      `INSERT INTO receipt_reconciliations (prior_receipt_id, reconciled_receipt_id) VALUES ($1, $2)`,
+      [params.priorReceiptId, receiptId]
+    )
+    await client.query('COMMIT')
+    return { kind: 'created' }
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
     throw err

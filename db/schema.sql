@@ -43,3 +43,17 @@ CREATE INDEX IF NOT EXISTS finalization_capabilities_preflight_idx
 -- migration discipline: existing statements are never rewritten in place.
 ALTER TABLE finalization_capabilities
   ADD COLUMN IF NOT EXISTS publish_commerce BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- D2.2B2: idempotency for scripts/reconcile-commerce-receipt.ts. A prior
+-- Commerce Receipt whose original chain observation could not obtain a
+-- definitive result (RPC transiently unavailable) is NEVER deleted or
+-- rewritten -- this table records, at most once per prior receipt, the id
+-- of the LATER immutable Commerce Receipt that independently re-observed
+-- the same transaction. PRIMARY KEY on prior_receipt_id enforces "at most
+-- one reconciliation per prior receipt" at the database level, not just in
+-- application code.
+CREATE TABLE IF NOT EXISTS receipt_reconciliations (
+  prior_receipt_id       TEXT PRIMARY KEY REFERENCES receipts (receipt_id),
+  reconciled_receipt_id  TEXT NOT NULL UNIQUE REFERENCES receipts (receipt_id),
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);

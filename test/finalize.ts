@@ -14,6 +14,7 @@ import {
   FinalizationConflictError,
   FinalizationInputError,
   FinalizationServiceError,
+  FinalizationPendingError,
 } from '../src/finalizeRoute.js'
 import { finalizeReceiptCore, receiptAttestationSigningInput, PUBLIC_ACTION_RECEIPT_ISSUER, PUBLIC_ACTION_RECEIPT_PURPOSE, PUBLIC_ACTION_RECEIPT_SCHEMA } from '../src/receipts.js'
 import { UnsupportedSettlementScopeError, type SettlementObservation } from '../src/settlement.js'
@@ -161,6 +162,159 @@ await assert.rejects(
   FinalizationInputError
 )
 console.log('ok  unsupported network/asset surfaces as a clear input error, not a 500')
+
+// --- D2.2B2: transient/retryable observations must NOT consume the capability ---
+
+{
+  const NOT_FOUND_OBSERVATION: SettlementObservation = {
+    state: 'not-found',
+    blockNumber: null,
+    blockTimestamp: null,
+    confirmations: null,
+    sufficientlyConfirmed: false,
+    transfers: [],
+    rpcError: null,
+  }
+  let consumeCalled = false
+  const err = await finalizePayment(
+    'Bearer x',
+    VALID_BODY,
+    baseDeps({
+      observeTransaction: async () => NOT_FOUND_OBSERVATION,
+      consumeCapabilityAndPublish: async () => {
+        consumeCalled = true
+        return { kind: 'consumed' }
+      },
+    })
+  ).catch((e) => e)
+  assert.ok(err instanceof FinalizationPendingError, 'transaction not yet found must be retryable, not a hard failure')
+  assert.equal(err.reason, 'transaction-not-found')
+  assert.equal(err.httpStatus, 425)
+  assert.equal(consumeCalled, false, 'the capability must not be consumed while the transaction is not yet found')
+}
+console.log('ok  transaction not yet found -> FinalizationPendingError (425), capability NOT consumed')
+
+{
+  const RPC_UNAVAILABLE_OBSERVATION: SettlementObservation = {
+    state: 'rpc-unavailable',
+    blockNumber: null,
+    blockTimestamp: null,
+    confirmations: null,
+    sufficientlyConfirmed: false,
+    transfers: [],
+    rpcError: 'Block at number "50883116" could not be found.',
+  }
+  let consumeCalled = false
+  const err = await finalizePayment(
+    'Bearer x',
+    VALID_BODY,
+    baseDeps({
+      observeTransaction: async () => RPC_UNAVAILABLE_OBSERVATION,
+      consumeCapabilityAndPublish: async () => {
+        consumeCalled = true
+        return { kind: 'consumed' }
+      },
+    })
+  ).catch((e) => e)
+  assert.ok(err instanceof FinalizationPendingError, 'RPC unavailable must be retryable, not a hard failure')
+  assert.equal(err.reason, 'rpc-unavailable')
+  assert.equal(err.httpStatus, 503)
+  assert.ok(err.message.includes('50883116'), 'the safe RPC error detail should be surfaced')
+  assert.equal(consumeCalled, false, 'the capability must not be consumed while the RPC is unavailable')
+}
+console.log('ok  RPC unavailable -> FinalizationPendingError (503), capability NOT consumed')
+
+{
+  const INSUFFICIENT_CONFIRMATIONS_OBSERVATION: SettlementObservation = {
+    state: 'success',
+    blockNumber: 100n,
+    blockTimestamp: '2026-09-04T00:01:00.000Z',
+    confirmations: 1,
+    sufficientlyConfirmed: false, // observed, but not yet deep enough
+    transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 1_000_000n }],
+    rpcError: null,
+  }
+  let consumeCalled = false
+  const err = await finalizePayment(
+    'Bearer x',
+    VALID_BODY,
+    baseDeps({
+      observeTransaction: async () => INSUFFICIENT_CONFIRMATIONS_OBSERVATION,
+      consumeCapabilityAndPublish: async () => {
+        consumeCalled = true
+        return { kind: 'consumed' }
+      },
+    })
+  ).catch((e) => e)
+  assert.ok(err instanceof FinalizationPendingError, 'insufficient confirmations must be retryable, not a hard failure')
+  assert.equal(err.reason, 'insufficient-confirmations')
+  assert.equal(err.httpStatus, 425)
+  assert.equal(consumeCalled, false, 'the capability must not be consumed before the required confirmation depth is reached')
+}
+console.log('ok  successful tx with insufficient confirmations -> FinalizationPendingError (425), capability NOT consumed')
+
+// --- reverted transaction IS definitive: a real (FAILED) Commerce Receipt --
+
+{
+  const REVERTED_OBSERVATION: SettlementObservation = {
+    state: 'reverted',
+    blockNumber: 100n,
+    blockTimestamp: null,
+    confirmations: null,
+    sufficientlyConfirmed: false,
+    transfers: [],
+    rpcError: null,
+  }
+  let consumeCalledWith: any = null
+  const result = await finalizePayment(
+    'Bearer x',
+    VALID_BODY,
+    baseDeps({
+      observeTransaction: async () => REVERTED_OBSERVATION,
+      consumeCapabilityAndPublish: async (params: any) => {
+        consumeCalledWith = params
+        return { kind: 'consumed' }
+      },
+    })
+  )
+  assert.equal(result.envelope.receipt.execution.status, 'FAILED')
+  assert.equal(result.envelope.receipt.settlement.status, 'NOT_CONFIRMED')
+  assert.ok(consumeCalledWith, 'a reverted transaction is DEFINITIVE -- it must finalize (and consume), not stay pending forever')
+}
+console.log('ok  reverted transaction is definitive -> finalizes immediately as FAILED/NOT_CONFIRMED, capability consumed')
+
+// --- HTTP adapter maps FinalizationPendingError to 425/503 with Retry-After ---
+
+{
+  const { Hono } = await import('hono')
+  const { createFinalizePostHandler } = await import('../src/finalizeRoute.js')
+
+  const app = new Hono()
+  app.post(
+    '/receipts/finalize',
+    createFinalizePostHandler(
+      baseDeps({
+        observeTransaction: async (): Promise<SettlementObservation> => ({
+          state: 'not-found',
+          blockNumber: null,
+          blockTimestamp: null,
+          confirmations: null,
+          sufficientlyConfirmed: false,
+          transfers: [],
+          rpcError: null,
+        }),
+      })
+    )
+  )
+  const res = await app.request('https://mcp.onchaindiligence.com/receipts/finalize', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer pending-probe-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify(VALID_BODY),
+  })
+  assert.equal(res.status, 425)
+  assert.equal(res.headers.get('retry-after'), '10')
+}
+console.log('ok  HTTP adapter maps a retryable observation to 425 with Retry-After')
 
 // --- preflight validity gate ----------------------------------------------
 

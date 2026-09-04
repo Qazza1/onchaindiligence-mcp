@@ -182,7 +182,18 @@ export function buildCommerceReceiptCore(
   })
 
   const exactMatch = observation.state === 'success' && !anyMatchFail && allApplicableMatchPass
-  const settlementConfirmed = exactMatch && observation.sufficientlyConfirmed
+
+  // D2.2B2: "settlement" and "execution matched what was preflighted" are
+  // kept strictly independent (see this file's header). A supported Base
+  // USDC transfer that actually settled on-chain is a confirmed SETTLEMENT
+  // even when it paid the wrong recipient/amount/sender — that mismatch is
+  // reported by execution-matches-preflight and the individual
+  // *-matches-preflight checks above, not by hiding the settlement itself.
+  // The one thing that must NEVER read as a confirmed settlement is a
+  // successful transaction that carried no transfer of the expected asset
+  // at all -- there is nothing there to call "settled".
+  const hasSupportedTransfer = observation.transfers.length > 0
+  const settlementConfirmed = observation.state === 'success' && observation.sufficientlyConfirmed && hasSupportedTransfer
   checks.push({
     id: 'settlement-confirmed',
     result:
@@ -194,10 +205,12 @@ export function buildCommerceReceiptCore(
             ? 'PASS'
             : 'FAIL',
     summary: settlementConfirmed
-      ? 'The exact payment proposed in the preflight was independently observed settled on-chain.'
+      ? 'A transfer of the asset proposed in the preflight was independently observed settled on-chain with sufficient confirmations. Whether it matches the preflight exactly is reported separately by the *-matches-preflight checks.'
       : observation.state === 'success' && !observation.sufficientlyConfirmed
         ? 'The transaction was observed but has not yet reached the required confirmation depth.'
-        : 'The exact payment proposed in the preflight was not confirmed settled — see the match checks above for the specific discrepancy, if any.',
+        : observation.state === 'success'
+          ? 'The transaction succeeded, but no transfer of the asset proposed in the preflight was observed in it — there is no settlement of the expected asset to confirm.'
+          : 'No settlement was confirmed — see transaction-found/transaction-success above.',
     evidence_digest: null,
   })
 
@@ -242,22 +255,34 @@ export function buildCommerceReceiptCore(
     provider: execution.execution_provider,
     status: executionStatus,
     transaction_hash: execution.transaction_hash,
-    submitted_at: null, // not independently observable; only the settlement block time is
-    confirmed_at: settlementStatus === 'CONFIRMED' ? observation.blockTimestamp : null,
+    submitted_at: null, // not independently observable; only the confirmed block time is
+    // D2.2B2: tied to EXECUTION confirmation (the tx itself confirmed),
+    // not to whether a matching settlement was found in it -- a
+    // successfully confirmed tx with no supported-asset transfer still has
+    // a real confirmed_at, it just settlement-confirms nothing.
+    confirmed_at: executionStatus === 'CONFIRMED' ? observation.blockTimestamp : null,
   }
 
-  const settlementRecord: ReceiptSettlement = {
-    status: settlementStatus,
-    detail: settlementConfirmed
-      ? 'Independently observed on Base mainnet: the proposed transfer settled exactly as preflighted.'
-      : observation.state === 'success' && !exactMatch
-        ? 'A transaction was observed and confirmed, but it did not match the payment proposed in the preflight — see checks for the exact discrepancy.'
+  // Mirrors settlementStatus's own priority order exactly (not-found /
+  // rpc-unavailable / reverted / insufficiently-confirmed / confirmed) so
+  // the human-readable detail can never drift out of sync with the status
+  // it's explaining.
+  const settlementDetail: string =
+    observation.state === 'not-found'
+      ? 'No transaction was found for the supplied hash at inspection time.'
+      : observation.state === 'rpc-unavailable'
+        ? `Settlement could not be independently verified: the Base RPC endpoint could not be reached (${observation.rpcError ?? 'unknown error'}).`
         : observation.state === 'reverted'
           ? 'The observed transaction reverted; no value moved.'
-          : observation.state === 'not-found'
-            ? 'No transaction was found for the supplied hash at inspection time.'
-            : 'Settlement could not be independently verified (RPC unavailable, or insufficient confirmations).',
-  }
+          : !observation.sufficientlyConfirmed
+            ? 'The transaction was observed but has not yet reached the required confirmation depth.'
+            : !hasSupportedTransfer
+              ? 'The transaction succeeded, but no transfer of the asset proposed in the preflight was observed in it.'
+              : exactMatch
+                ? 'Independently observed on Base mainnet: the proposed transfer settled exactly as preflighted.'
+                : 'Independently observed on Base mainnet: a transfer of the proposed asset settled, but it did not match the payment proposed in the preflight — see checks for the exact discrepancy.'
+
+  const settlementRecord: ReceiptSettlement = { status: settlementStatus, detail: settlementDetail }
 
   const limitations = [
     'This receipt records the OBSERVED execution and settlement; `decision` is copied unchanged from the original PREFLIGHT receipt and was not re-evaluated here.',

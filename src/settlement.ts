@@ -19,7 +19,7 @@
  * Reuses the existing viem dependency (already used by chainalysis.ts) —
  * no second blockchain stack.
  */
-import { createPublicClient, http, getAddress, parseAbi, parseEventLogs } from 'viem'
+import { createPublicClient, http, getAddress, parseAbi, parseEventLogs, type Log } from 'viem'
 import { base } from 'viem/chains'
 
 const TRANSFER_ABI = parseAbi(['event Transfer(address indexed from, address indexed to, uint256 value)'])
@@ -57,6 +57,32 @@ function minConfirmations(): number {
   const raw = process.env.BASE_MIN_CONFIRMATIONS
   const parsed = raw ? Number(raw) : NaN
   return Number.isInteger(parsed) && parsed >= 1 ? parsed : 1
+}
+
+// D2.2B2: the confirmation-depth lookup (current tip + the tx's own block)
+// is where a transient Base RPC consistency race was observed in production
+// — the transaction receipt was already indexed, but the block that
+// contains it briefly wasn't resolvable ("Block at number ... could not be
+// found") on whichever RPC replica served that specific call. Bounded retry
+// only around this lookup: a few short attempts, never an unbounded wait.
+const BLOCK_LOOKUP_ATTEMPTS = 4
+const BLOCK_LOOKUP_BASE_DELAY_MS = 400
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function withBoundedRetry<T>(fn: () => Promise<T>): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < BLOCK_LOOKUP_ATTEMPTS; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      lastError = err
+      if (attempt < BLOCK_LOOKUP_ATTEMPTS - 1) await sleep(BLOCK_LOOKUP_BASE_DELAY_MS * (attempt + 1))
+    }
+  }
+  throw lastError
 }
 
 // Not cached: createPublicClient() only builds a lightweight config object
@@ -106,6 +132,24 @@ const NOT_FOUND: SettlementObservation = {
 }
 
 /**
+ * The subset of viem's PublicClient this module actually calls. Narrowed
+ * deliberately so tests can inject a minimal fake client (simulating the
+ * observed transient "Block at number ... could not be found" race) without
+ * building a real viem client or hitting a real RPC endpoint. The real
+ * `getClient()` return value satisfies this structurally.
+ */
+export interface MinimalSettlementClient {
+  getTransactionReceipt: (args: { hash: `0x${string}` }) => Promise<{
+    status: 'success' | 'reverted'
+    blockNumber: bigint
+    blockHash: `0x${string}`
+    logs: Log[]
+  }>
+  getBlockNumber: () => Promise<bigint>
+  getBlock: (args: { blockHash: `0x${string}` }) => Promise<{ timestamp: bigint }>
+}
+
+/**
  * Independently inspects a transaction on Base mainnet. Never fabricates a
  * confirmed result: an RPC failure or a not-yet-mined transaction reports
  * `state: 'rpc-unavailable'` / `'not-found'`, never `'success'`.
@@ -113,12 +157,13 @@ const NOT_FOUND: SettlementObservation = {
 export async function observeTransaction(
   transactionHash: `0x${string}`,
   network: string,
-  assetContract: string
+  assetContract: string,
+  deps: { client?: MinimalSettlementClient } = {}
 ): Promise<SettlementObservation> {
   if (!getSupportedAsset(network, assetContract)) {
     throw new UnsupportedSettlementScopeError(network, assetContract)
   }
-  const publicClient = getClient()
+  const publicClient = deps.client ?? getClient()
 
   let receipt
   try {
@@ -128,37 +173,24 @@ export async function observeTransaction(
     return { ...NOT_FOUND, state: 'rpc-unavailable', rpcError: err?.message || 'RPC error fetching transaction receipt' }
   }
 
-  let currentBlock: bigint
-  let blockTimestamp: string | null = null
-  try {
-    currentBlock = await publicClient.getBlockNumber()
-    const block = await publicClient.getBlock({ blockNumber: receipt.blockNumber })
-    blockTimestamp = new Date(Number(block.timestamp) * 1000).toISOString()
-  } catch (err: any) {
-    return {
-      state: 'rpc-unavailable',
-      blockNumber: receipt.blockNumber,
-      blockTimestamp: null,
-      confirmations: null,
-      sufficientlyConfirmed: false,
-      transfers: [],
-      rpcError: err?.message || 'RPC error fetching current block number/timestamp',
-    }
-  }
-  const confirmations = Number(currentBlock - receipt.blockNumber) + 1
-
+  // A revert is knowable directly from the already-fetched receipt --
+  // no block/confirmation lookup required, so a transient block-metadata
+  // race can never hide or delay a definitive revert.
   if (receipt.status !== 'success') {
     return {
       state: 'reverted',
       blockNumber: receipt.blockNumber,
-      blockTimestamp,
-      confirmations,
+      blockTimestamp: null,
+      confirmations: null,
       sufficientlyConfirmed: false,
       transfers: [],
       rpcError: null,
     }
   }
 
+  // Transfers are decoded straight from the receipt's own logs -- no
+  // additional RPC call -- so this evidence survives even if the
+  // block/confirmations lookup below fails.
   const decoded = parseEventLogs({ abi: TRANSFER_ABI, logs: receipt.logs, eventName: 'Transfer' })
   const transfers: ObservedTransfer[] = decoded
     .filter((log) => log.address.toLowerCase() === assetContract.toLowerCase())
@@ -168,6 +200,39 @@ export async function observeTransaction(
       to: getAddress(log.args.to),
       amountAtomic: log.args.value,
     }))
+
+  // Confirmation depth needs the current tip + the tx's own block. Prefer
+  // the receipt's own blockHash over blockNumber: a hash lookup does not
+  // depend on the answering replica's own notion of "current" block height,
+  // which is exactly what was inconsistent in the observed incident.
+  let currentBlock: bigint
+  let blockTimestamp: string | null = null
+  try {
+    ;[currentBlock, blockTimestamp] = await withBoundedRetry(async () => {
+      const [tip, block] = await Promise.all([
+        publicClient.getBlockNumber(),
+        publicClient.getBlock({ blockHash: receipt.blockHash }),
+      ])
+      return [tip, new Date(Number(block.timestamp) * 1000).toISOString()] as const
+    })
+  } catch (err: any) {
+    // Already-observed receipt evidence (success + decoded transfers) is NOT
+    // discarded here: report success with confirmations unknown rather than
+    // fabricating a confirmation depth or throwing this evidence away.
+    // Callers must treat confirmations === null / sufficientlyConfirmed ===
+    // false as retryable, not as "no settlement happened" — see
+    // finalizeRoute.ts's FinalizationPendingError gate.
+    return {
+      state: 'success',
+      blockNumber: receipt.blockNumber,
+      blockTimestamp: null,
+      confirmations: null,
+      sufficientlyConfirmed: false,
+      transfers,
+      rpcError: err?.message || 'RPC error fetching current block number/timestamp',
+    }
+  }
+  const confirmations = Number(currentBlock - receipt.blockNumber) + 1
 
   return {
     state: 'success',

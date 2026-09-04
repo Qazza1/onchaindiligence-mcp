@@ -33,6 +33,7 @@ import {
 } from '../../src/lifecycleCore.js'
 import { canExecuteLifecycle, canRetryTargetStep, type InspectionStatus, type TargetStepFailurePoint } from './gating.js'
 import { extractSafe402Detail } from './safeError.js'
+import { attemptFinalize, type FinalizeCapabilityHolder, type FinalizeAttemptOutcome } from './finalizeClient.js'
 
 // --- local proxy paths (same origin as this page — see operator/server.ts) --
 const PROXY_INSPECT = '/proxy/inspect/payment'
@@ -322,33 +323,47 @@ async function runTargetStep(): Promise<{ transactionHash: string }> {
   return { transactionHash: settlement.transaction }
 }
 
-async function runFinalizeStep(transactionHash: string): Promise<void> {
-  logLine('\n=== Finalization (free) ===')
-  if (!capability) throw new LifecycleAbortError('no finalization capability held in memory')
-  const res = await fetch(PROXY_FINALIZE, {
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** D2.2B2: bounded, clearly-logged auto-retry for the FREE finalize request only. Never applies to any paid step. */
+const MAX_AUTO_FINALIZE_RETRIES = 3
+
+// The capability-holder seam finalizeClient.ts requires. `get`/`clear` only
+// ever touch the one module-level `capability` variable above — this object
+// is not a second place capability lives, just an interface adapter.
+const capabilityHolder: FinalizeCapabilityHolder = {
+  get: () => capability,
+  clear: () => {
+    capability = null
+  },
+}
+
+async function postFinalize(transactionHash: string, cap: string): Promise<Response> {
+  return fetch(PROXY_FINALIZE, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${capability}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cap}` },
     body: JSON.stringify({ transaction_hash: transactionHash, execution_provider: 'x402' }),
   })
-  // The capability is single-use: clear it from memory immediately after the one
-  // request that consumes it, regardless of outcome.
-  capability = null
-  if (res.status !== 200) throw new LifecycleAbortError(`finalization returned HTTP ${res.status}`)
-  const envelope = await res.json()
-  const receipt = envelope.receipt
+}
 
-  if (receipt.receipt_type !== 'COMMERCE') throw new LifecycleAbortError('finalized receipt_type was not COMMERCE')
-  if (receipt.links?.preflight_receipt_id !== preflightReceiptId) throw new LifecycleAbortError('Commerce Receipt does not reference the preflight receipt')
-  if (receipt.decision?.status !== 'ALLOW') throw new LifecycleAbortError(`Commerce Receipt decision was not ALLOW (${receipt.decision?.status})`)
-  if (receipt.execution?.status !== 'CONFIRMED') throw new LifecycleAbortError(`Commerce Receipt execution was not CONFIRMED (${receipt.execution?.status})`)
-  if (receipt.settlement?.status !== 'CONFIRMED') throw new LifecycleAbortError(`Commerce Receipt settlement was not CONFIRMED (${receipt.settlement?.status})`)
+/**
+ * DOM-aware wrapper around finalizeClient.ts's pure attemptFinalize(): does
+ * exactly one POST /receipts/finalize for the given (already-settled) tx
+ * hash, then renders the outcome. See finalizeClient.ts's header for the
+ * capability-handling guarantee (cleared only on a definitive outcome) and
+ * for why this can never call payingFetch or touch a wallet.
+ */
+async function attemptFinalizeAndRender(transactionHash: string): Promise<FinalizeAttemptOutcome> {
+  const outcome = await attemptFinalize(transactionHash, preflightReceiptId ?? '', capabilityHolder, {
+    postFinalize,
+    verifyReceipt: verifyReceiptViaLocalServer,
+  })
+  if (outcome.kind !== 'done') return outcome
 
-  const verification = await verifyReceiptViaLocalServer(envelope)
-  if (verification.state !== 'VALID') {
-    throw new LifecycleAbortError(`COMMERCE receipt did not independently verify VALID (${verification.state}: ${verification.code})`)
-  }
+  const receipt = outcome.envelope.receipt
   logLine(`  COMMERCE receipt ${receipt.receipt_id} — proof VALID, execution CONFIRMED, settlement CONFIRMED`)
-
   $('result-commerce-id').textContent = receipt.receipt_id
   ;($('result-commerce-link') as HTMLAnchorElement).href = explorerUrl(receipt.receipt_id)
   $('result-tx').textContent = transactionHash
@@ -364,12 +379,72 @@ async function runFinalizeStep(transactionHash: string): Promise<void> {
 
   $('result').style.display = 'block'
   logLine('\nLIFECYCLE COMPLETE')
+  return outcome
+}
+
+let pendingFinalizeTransactionHash: string | null = null
+
+function showFinalizeRecovery(message: string): void {
+  const section = $('finalize-recovery')
+  section.style.display = 'block'
+  $('finalize-recovery-message').textContent = message
+}
+
+function hideFinalizeRecovery(): void {
+  $('finalize-recovery').style.display = 'none'
+}
+
+async function runFinalizeStep(transactionHash: string): Promise<void> {
+  logLine('\n=== Finalization (free) ===')
+  for (let attempt = 1; attempt <= MAX_AUTO_FINALIZE_RETRIES; attempt++) {
+    const outcome = await attemptFinalizeAndRender(transactionHash)
+    if (outcome.kind === 'done') {
+      hideFinalizeRecovery()
+      return
+    }
+    if (outcome.kind === 'failed') throw new LifecycleAbortError(outcome.message)
+    // pending -- bounded, clearly-logged automatic retry of the FREE finalize
+    // request only (never a payment). Capability remains in memory.
+    logLine(`  finalization pending (${outcome.reason}): ${outcome.message}`)
+    if (attempt < MAX_AUTO_FINALIZE_RETRIES) {
+      logLine(`  Payment settled. Waiting for independent chain confirmation. Auto-retry ${attempt}/${MAX_AUTO_FINALIZE_RETRIES} in ${outcome.retryAfterSeconds}s…`)
+      await sleep(outcome.retryAfterSeconds * 1000)
+    } else {
+      pendingFinalizeTransactionHash = transactionHash
+      showFinalizeRecovery(
+        `Payment settled. Waiting for independent chain confirmation. (${outcome.reason}: ${outcome.message}) ` +
+          'The finalization capability remains in memory. Click "Retry finalization" once you expect the chain state to have caught up — do not refresh this page.'
+      )
+      return
+    }
+  }
+}
+
+async function retryFinalization(): Promise<void> {
+  if (!pendingFinalizeTransactionHash) return
+  const outcome = await attemptFinalizeAndRender(pendingFinalizeTransactionHash)
+  if (outcome.kind === 'done') {
+    pendingFinalizeTransactionHash = null
+    hideFinalizeRecovery()
+    return
+  }
+  if (outcome.kind === 'failed') {
+    pendingFinalizeTransactionHash = null
+    hideFinalizeRecovery()
+    logLine(`ABORT during finalization retry: ${outcome.message}`)
+    return
+  }
+  logLine(`  finalization still pending (${outcome.reason}): ${outcome.message}`)
+  showFinalizeRecovery(
+    `Still waiting for independent chain confirmation. (${outcome.reason}: ${outcome.message}) The finalization capability remains in memory.`
+  )
 }
 
 async function executeLifecycle(): Promise<void> {
   const btn = $('btn-execute') as HTMLButtonElement
   btn.disabled = true
   $('recovery').style.display = 'none'
+  hideFinalizeRecovery()
   try {
     await runPreflightStep()
   } catch (err: any) {
@@ -411,6 +486,7 @@ async function executeLifecycle(): Promise<void> {
 
 async function retryTargetStep(): Promise<void> {
   $('recovery').style.display = 'none'
+  hideFinalizeRecovery()
   try {
     const { transactionHash } = await runTargetStep()
     await runFinalizeStep(transactionHash)
@@ -427,6 +503,7 @@ $('btn-switch').addEventListener('click', () => void switchToBase())
 $('btn-inspect').addEventListener('click', () => void runInspection())
 $('btn-execute').addEventListener('click', () => void executeLifecycle())
 $('btn-retry-target').addEventListener('click', () => void retryTargetStep())
+$('btn-retry-finalize').addEventListener('click', () => void retryFinalization())
 ;($('confirm-checkbox') as HTMLInputElement).addEventListener('change', (e) => {
   confirmed = (e.target as HTMLInputElement).checked
   renderGate()

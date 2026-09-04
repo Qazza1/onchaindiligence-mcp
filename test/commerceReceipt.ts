@@ -155,7 +155,11 @@ console.log('ok  RPC unavailable -> UNKNOWN/UNVERIFIED, never fake CONFIRMED')
 }
 console.log('ok  transaction confirmed but no matching transfer -> execution CONFIRMED, settlement NOT_CONFIRMED')
 
-// --- recipient mismatch: observed evidence preserved, not hidden --------
+// --- D2.2B2: recipient mismatch -- a REAL settlement still occurred, just
+// not the one preflighted. settlement.status must be CONFIRMED (a supported
+// Base USDC transfer genuinely settled); execution-matches-preflight must be
+// FAIL (it settled the wrong thing). These are independent dimensions --
+// see this file's header and commerceReceipt.ts's. ------------------------
 
 {
   const observation: SettlementObservation = {
@@ -168,17 +172,40 @@ console.log('ok  transaction confirmed but no matching transfer -> execution CON
     rpcError: null,
   }
   const built = buildCommerceReceiptCore(preflightReceipt(), EXECUTION, observation)
+  assert.equal(built.execution.status, 'CONFIRMED', 'the transaction itself did confirm')
   assert.equal(checkFor(built.checks, 'recipient-matches-preflight')?.result, 'FAIL')
   assert.equal(checkFor(built.checks, 'amount-matches-preflight')?.result, 'FAIL')
   assert.equal(checkFor(built.checks, 'execution-matches-preflight')?.result, 'FAIL')
-  assert.equal(built.settlement.status, 'NOT_CONFIRMED')
+  assert.equal(built.settlement.status, 'CONFIRMED', 'a real supported-asset transfer settled, even though it was not the one preflighted')
+  assert.equal(checkFor(built.checks, 'settlement-confirmed')?.result, 'PASS')
   // The receipt must PRESERVE what was actually observed, not hide it.
   assert.equal(built.action.recipient, OTHER_RECIPIENT, 'observed (wrong) recipient must be visible in the receipt, not suppressed')
   assert.equal(built.action.amount, '2', 'observed (wrong) amount must be visible in the receipt, not suppressed')
 }
-console.log('ok  recipient+amount mismatch: observed (wrong) facts are preserved in the receipt, not hidden')
+console.log('ok  successful wrong recipient+amount -> execution CONFIRMED, settlement CONFIRMED, match checks FAIL, observed facts preserved')
 
-// --- sender required and mismatched -> FAIL ------------------------------
+// --- D2.2B2: right recipient, wrong amount only -> same independence -----
+
+{
+  const observation: SettlementObservation = {
+    state: 'success',
+    blockNumber: 100n,
+    blockTimestamp: '2026-09-04T00:01:00.000Z',
+    confirmations: 5,
+    sufficientlyConfirmed: true,
+    transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 2_000_000n }], // preflight asked for 1.00 (1_000_000n)
+    rpcError: null,
+  }
+  const built = buildCommerceReceiptCore(preflightReceipt(), EXECUTION, observation)
+  assert.equal(built.execution.status, 'CONFIRMED')
+  assert.equal(checkFor(built.checks, 'recipient-matches-preflight')?.result, 'PASS')
+  assert.equal(checkFor(built.checks, 'amount-matches-preflight')?.result, 'FAIL')
+  assert.equal(checkFor(built.checks, 'execution-matches-preflight')?.result, 'FAIL')
+  assert.equal(built.settlement.status, 'CONFIRMED', 'the right recipient still received a real settled USDC transfer, just the wrong amount')
+}
+console.log('ok  successful wrong amount only (right recipient) -> execution CONFIRMED, settlement CONFIRMED, amount/execution match FAIL')
+
+// --- sender required and mismatched: same independence -------------------
 
 {
   const observation: SettlementObservation = {
@@ -194,9 +221,9 @@ console.log('ok  recipient+amount mismatch: observed (wrong) facts are preserved
   const built = buildCommerceReceiptCore(pf, EXECUTION, observation)
   assert.equal(checkFor(built.checks, 'sender-matches-preflight')?.result, 'FAIL')
   assert.equal(checkFor(built.checks, 'execution-matches-preflight')?.result, 'FAIL')
-  assert.equal(built.settlement.status, 'NOT_CONFIRMED')
+  assert.equal(built.settlement.status, 'CONFIRMED', 'a real supported-asset transfer settled, even from the wrong sender')
 }
-console.log('ok  required sender mismatch -> FAIL, settlement NOT_CONFIRMED')
+console.log('ok  required sender mismatch -> execution-matches-preflight FAIL, settlement still CONFIRMED')
 
 // --- confirmed but not enough confirmations yet -> UNKNOWN, not fabricated ---
 
@@ -277,7 +304,11 @@ console.log('ok  result_digest recorded as a caller-provided claim only, never a
   }
   const built = buildCommerceReceiptCore(pf, EXECUTION, observation)
   assert.equal(checkFor(built.checks, 'amount-matches-preflight')?.result, 'FAIL', 'over-precise preflight amounts must never be silently rounded into a match')
-  assert.equal(built.settlement.status, 'NOT_CONFIRMED')
+  // D2.2B2: a real USDC transfer still settled (just not the exact
+  // over-precise amount asked for) -- settlement.status reports that a
+  // supported settlement occurred; it is amount-matches-preflight's job,
+  // not settlement.status's, to say it wasn't the requested amount.
+  assert.equal(built.settlement.status, 'CONFIRMED')
 }
 console.log('ok  preflight amount with more precision than the asset supports never silently matches (no rounding)')
 

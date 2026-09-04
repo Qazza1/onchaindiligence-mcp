@@ -64,6 +64,34 @@ export class FinalizationServiceError extends Error {
   }
 }
 
+/**
+ * D2.2B2: thrown when chain observation has not yet produced a DEFINITIVE
+ * result — transaction not yet found, the RPC was unreachable, or the
+ * transaction succeeded but has not yet reached the required confirmation
+ * depth. None of these are a reason to build a receipt or consume the
+ * finalization capability: they are the caller's cue to retry the exact same
+ * request later, once observation is definitive one way or the other
+ * (reverted, or successful + sufficiently confirmed). See
+ * src/settlement.ts's ChainInspectionState and finalizePayment() below,
+ * where this is thrown BEFORE buildCommerceReceiptCore/signing/consumption —
+ * so the capability row is provably untouched on every path that reaches
+ * this error.
+ */
+export type FinalizationPendingReason = 'transaction-not-found' | 'rpc-unavailable' | 'insufficient-confirmations'
+
+export class FinalizationPendingError extends Error {
+  readonly reason: FinalizationPendingReason
+  readonly httpStatus: 425 | 503
+  readonly retryAfterSeconds: number
+  constructor(reason: FinalizationPendingReason, message: string, httpStatus: 425 | 503, retryAfterSeconds = 10) {
+    super(message)
+    this.name = 'FinalizationPendingError'
+    this.reason = reason
+    this.httpStatus = httpStatus
+    this.retryAfterSeconds = retryAfterSeconds
+  }
+}
+
 const EXECUTION_PROVIDERS = new Set(['x402', 'paybox', 'wallet', 'other'])
 const DIGEST_PATTERN = /^sha256:[A-Za-z0-9_-]{43}$/
 // Fields that describe settlement facts. These MUST come only from the bound
@@ -204,6 +232,34 @@ export async function finalizePayment(
     throw err
   }
 
+  // D2.2B2: only a DEFINITIVE observation may proceed past this point --
+  // reverted (definitively failed), or successful with the required
+  // confirmation depth reached. Anything else is retryable: no receipt is
+  // built, nothing is signed, and consumeCapabilityAndPublish (below) is
+  // never reached, so the capability stays unconsumed for a later retry of
+  // this exact same request.
+  if (observation.state === 'not-found') {
+    throw new FinalizationPendingError(
+      'transaction-not-found',
+      'The supplied transaction was not yet found on Base mainnet. This is retryable: the finalization capability has not been consumed.',
+      425
+    )
+  }
+  if (observation.state === 'rpc-unavailable') {
+    throw new FinalizationPendingError(
+      'rpc-unavailable',
+      `The Base RPC endpoint could not be reached: ${observation.rpcError ?? 'unknown error'}. This is retryable: the finalization capability has not been consumed.`,
+      503
+    )
+  }
+  if (observation.state === 'success' && !observation.sufficientlyConfirmed) {
+    throw new FinalizationPendingError(
+      'insufficient-confirmations',
+      'The transaction was observed but has not yet reached the required confirmation depth. This is retryable: the finalization capability has not been consumed.',
+      425
+    )
+  }
+
   const built = buildCommerceReceiptCore(preflightReceipt, execution, observation)
   const core = buildReceiptCore({
     receipt_type: 'COMMERCE',
@@ -309,6 +365,10 @@ export function createFinalizePostHandler(deps: FinalizeDependencies = {}) {
       }
       if (err instanceof FinalizationInputError) return c.json({ error: err.message }, 400)
       if (err instanceof FinalizationConflictError) return c.json({ error: err.message }, 409)
+      if (err instanceof FinalizationPendingError) {
+        c.header('Retry-After', String(err.retryAfterSeconds))
+        return c.json({ error: err.message, reason: err.reason }, err.httpStatus)
+      }
       return c.json({ error: err?.message || 'finalization failed' }, 502)
     }
   }

@@ -87,6 +87,13 @@
     <button id="btn-retry-target" class="secondary" style="display:none; margin-top:8px">Retry target step</button>
   </section>
 
+  <section id="finalize-recovery" style="display:none">
+    <h2>Finalization pending</h2>
+    <div id="finalize-recovery-message"></div>
+    <button id="btn-retry-finalize" class="secondary" style="margin-top:8px">Retry finalization</button>
+    <div class="reasons" style="margin-top:8px">This only re-sends the free finalization request for the same transaction. It never signs, never pays, and never touches your wallet.</div>
+  </section>
+
   <section>
     <h2>Log</h2>
     <div id="log"></div>
