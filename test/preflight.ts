@@ -81,7 +81,18 @@ async function fakeSignReceipt(receipt: Receipt): Promise<PublicActionReceiptEnv
     signature,
   }
 }
-const testDeps = { signReceipt: fakeSignReceipt, fetchKeyRegistry: async () => fakeRegistry }
+// D2.2 introduced durable storage + finalization capability minting as part
+// of a successful preflightPayment(). Fake both here so this suite stays
+// fully offline (no real Postgres writes from a unit test) — real storage
+// wiring is covered by test/finalize.ts against an injectable store.
+const fakeStoreReceipt = async () => {}
+const fakeMintCapability = async () => ({ token: 'test-capability-token', expiresAt: '2026-01-01T00:00:00.000Z' })
+const testDeps = {
+  signReceipt: fakeSignReceipt,
+  fetchKeyRegistry: async () => fakeRegistry,
+  storeReceipt: fakeStoreReceipt,
+  mintCapability: fakeMintCapability,
+}
 
 function baseInput(overrides: Partial<PreflightInput['action']> = {}): unknown {
   return {
@@ -261,6 +272,13 @@ console.log('ok  mandate_digest is referenced by digest only, and never affects 
   assert.equal(result.checks, result.receipt.receipt.checks)
   assert.ok(result.receipt.receipt.limitations.length > 0)
   assert.equal(result.receipt.receipt.links.agent_evidence_bundle_digest, null)
+
+  // D2.2: a finalization capability is minted, and it is never part of the
+  // (public) receipt envelope.
+  assert.equal(result.finalization.capability, 'test-capability-token')
+  assert.equal(result.finalization.expires_at, '2026-01-01T00:00:00.000Z')
+  assert.equal(result.finalization.endpoint, 'https://mcp.onchaindiligence.com/receipts/finalize')
+  assert.ok(!JSON.stringify(result.receipt).includes('test-capability-token'), 'the capability must never appear inside the receipt envelope')
 
   const { verifyReceiptEnvelope } = await import('../src/receipts.js')
   const verification = verifyReceiptEnvelope(result.receipt, fakeRegistry)

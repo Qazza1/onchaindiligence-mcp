@@ -1,36 +1,48 @@
-# Payment Preflight v1 (D2.1)
+# Payment Preflight v1 (D2.1) + Commerce Receipts (D2.2)
 
 "Before an autonomous agent pays, OnChainDiligence evaluates the proposed
 payment against a caller-defined structured policy and evidence, then issues
-a portable signed PREFLIGHT receipt explaining the decision."
+a portable signed PREFLIGHT receipt explaining the decision. After execution,
+OnChainDiligence independently checks what actually happened and produces a
+portable receipt binding the two."
 
 **OCD is not the wallet.** It does not hold funds, does not execute the
 payment, and does not override wallet/PayBox/x402-client authorization.
 Preflight produces a recommendation with a verifiable paper trail; the
-execution layer applies its own, independent authorization afterward:
+execution layer applies its own, independent authorization afterward; and
+finalization only ever records what independently happened:
 
 ```
-agent -> OCD preflight -> ALLOW / REQUIRE_APPROVAL / BLOCK
-                              |
-                              v
-                    wallet / PayBox / x402 client
-                    applies its OWN authorization
-                              |
-                              v
-                          execution
-                              |
-                              v
-                    OCD Commerce Receipt (future)
+FREE inspect_payment (sanity-check the deterministic policy, no evidence, no receipt)
+        |
+        v
+PAID preflight_payment ($0.01) -> PREFLIGHT receipt + one-time finalization capability
+        |
+        v
+wallet / PayBox / x402 client applies its OWN authorization -> execution
+        |
+        v
+FREE POST /receipts/finalize (capability-protected, NOT a second payment)
+        |
+        v
+OCD independently observes settlement on-chain -> COMMERCE receipt
+        |
+        v
+public resolver (opt-in) -> FREE independent verification, by anyone
 ```
 
-Both gates are independent. An `ALLOW` from preflight never means the
-execution provider will proceed, and a wallet's own authorization never
-substitutes for a preflight evaluation.
+Every gate is independent. An `ALLOW` from preflight never means the
+execution provider will proceed; a wallet's own authorization never
+substitutes for a preflight evaluation; and the finalization capability
+**never authorizes payment** — it authorizes exactly one thing: recording one
+Commerce Receipt for the preflight lifecycle it is bound to. See
+`docs/COMMERCE_RECEIPTS.md` for the full D2.2 finalization/settlement design.
 
-Two transports, one service: `POST /x402/preflight-payment` (HTTP x402, $0.01)
-and the `preflight_payment` MCP tool ($0.01) both call the same
-`preflightPayment()` function in `src/preflight.ts` — there is exactly one
-policy engine to keep correct.
+Two transports, one service, for BOTH preflight and inspection:
+`POST /x402/preflight-payment` (HTTP x402, $0.01) / `preflight_payment` MCP
+tool ($0.01) call `preflightPayment()`; `POST /inspect/payment` (free) /
+`inspect_payment` MCP tool (free) call `inspectPayment()` — both in
+`src/preflight.ts`, sharing the identical deterministic policy evaluator.
 
 ## Scope: structured policy only
 
@@ -62,9 +74,20 @@ that translation.
     "allowed_resource_origins": ["https://service.example"]
   },
   "options": { "screen_recipient_sanctions": true },
-  "references": { "mandate_digest": null }
+  "references": { "mandate_digest": null },
+  "publication": { "preflight": false, "commerce": false }
 }
 ```
+
+`publication` (D2.2) is additive and opt-in — **both fields default `false`**.
+The receipt is always returned inline to its caller regardless of this
+setting; it is only ever externally resolvable via `GET /receipts/:id` when
+its owner explicitly asked for that. `publication.preflight` controls the
+PREFLIGHT receipt created by this call; `publication.commerce` is recorded
+against the finalization capability and controls whether the *later*
+Commerce Receipt (if this preflight is ever finalized) is published. Neither
+setting ever exposes raw policy/mandate/evidence — only the existing
+public-safe receipt projection.
 
 - `network` is CAIP-2 (e.g. `eip155:8453` for Base mainnet) — never a bare
   chain name.
@@ -120,9 +143,20 @@ Amount `4.99` against `max_amount: "5.00"`, everything else on its allowlist:
       "settlement": { "status": "NOT_APPLICABLE" }
     },
     "proof": { "signed": true, "algorithm": "ed25519" }
+  },
+  "finalization": {
+    "capability": "<opaque one-time token, returned only here>",
+    "expires_at": "2026-09-05T12:00:00.000Z",
+    "endpoint": "https://mcp.onchaindiligence.com/receipts/finalize"
   }
 }
 ```
+
+`finalization.capability` is operational secret material, not a receipt
+field: it is returned exactly once, in this response, and is **never**
+included inside the receipt envelope, never logged, and never resolvable
+from `GET /receipts/:id`. It does not authorize payment — see
+`docs/COMMERCE_RECEIPTS.md`.
 
 ## Example: BLOCK (policy violation)
 
@@ -169,17 +203,17 @@ never sees or verifies the private mandate content behind it.
 - Sanctions screening does not establish beneficial ownership or general
   safety.
 - Later execution may differ from the proposed action unless the execution
-  layer independently binds itself to this preflight receipt (planned for
-  D2.2).
+  layer independently binds itself to this preflight receipt — as of D2.2,
+  finalization does exactly that; see `docs/COMMERCE_RECEIPTS.md`.
 
-## Dynamic receipt publication: deferred
+## Dynamic receipt publication (D2.2)
 
-`GET /receipts/:receiptId` currently serves only a small **bundled, static**
-registry (D2.0A) — it is not dynamic storage, and this task does not add any.
-This deployment has no database or KV store today; adding one "just because
-preflight receipts need a home" was explicitly out of scope for D2.1.
-Preflight receipts are returned **inline** in the response and are not yet
-independently resolvable by ID. D2.2 needs, at minimum: immutability keyed by
-receipt ID/digest, idempotent duplicate writes, fail-closed handling of a
-conflicting write to the same ID, no public enumeration, no unauthenticated
-writes, and only `VALID`-verified public receipts ever published.
+`GET /receipts/:receiptId` now resolves against durable Postgres storage
+first, falling back to the D2.0A bundled reference registry. Every
+successful preflight is stored (regardless of `publication.preflight`) so
+finalization can later look up the exact proposal it is bound to; `is_public`
+— set only from the caller's explicit `publication` choice — is what the
+resolver actually gates on. A private receipt and an unknown receipt_id are
+indistinguishable externally: both return a plain 404. There is no
+enumeration endpoint. See `docs/COMMERCE_RECEIPTS.md` for the storage
+schema and the full finalization flow.

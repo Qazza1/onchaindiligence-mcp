@@ -139,7 +139,12 @@ console.log('ok  free inspect performs no sanctions call, no signing, and return
 
   const input = baseInput()
   const inspected = await inspectPayment(input)
-  const preflighted = await preflightPayment(input, { signReceipt, fetchKeyRegistry: async () => fakeRegistry })
+  const preflighted = await preflightPayment(input, {
+    signReceipt,
+    fetchKeyRegistry: async () => fakeRegistry,
+    storeReceipt: async () => {}, // D2.2: fake — this test stays offline, no real Postgres writes
+    mintCapability: async () => ({ token: 'test-capability-token', expiresAt: '2026-01-01T00:00:00.000Z' }),
+  })
 
   assert.deepEqual(inspected.decision, preflighted.decision)
   assert.deepEqual(inspected.checks, preflighted.checks)

@@ -54,3 +54,40 @@ assert.equal((await app.request('https://mcp.onchaindiligence.com/receipts')).st
 assert.equal((await app.request(`https://mcp.onchaindiligence.com/receipts/${REFERENCE_RECEIPT.receipt_id}`, { headers: { Origin: 'https://attacker.example' } })).headers.get('access-control-allow-origin'), null)
 
 console.log('receipt resolver and reference data checks passed')
+
+// --- D2.2: durable store resolution order, and fail-open to bundled ------
+
+{
+  const durableApp = new Hono()
+  let durableCalls = 0
+  mountReceipts(durableApp, new BundledReceiptStore([signedEnvelope]), async (id) => {
+    durableCalls++
+    return id === 'OCD-RCP-TEST-DVRB-1E00-0001' ? ({ durable: true } as any) : null
+  })
+
+  const durableHit = await durableApp.request('https://mcp.onchaindiligence.com/receipts/OCD-RCP-TEST-DVRB-1E00-0001')
+  assert.equal(durableHit.status, 200)
+  assert.deepEqual(await durableHit.json(), { durable: true })
+  assert.equal(durableCalls, 1)
+
+  // Not in the durable store -> falls through to the bundled reference store.
+  const bundledFallback = await durableApp.request(`https://mcp.onchaindiligence.com/receipts/${REFERENCE_RECEIPT.receipt_id}`)
+  assert.equal(bundledFallback.status, 200)
+  assert.deepEqual(await bundledFallback.json(), signedEnvelope)
+  console.log('ok  durable store resolves first; bundled reference store is a fallback, not bypassed')
+}
+
+{
+  // The durable store being completely unreachable must not break the
+  // resolver -- the bundled reference receipt must keep resolving.
+  const brokenApp = new Hono()
+  mountReceipts(brokenApp, new BundledReceiptStore([signedEnvelope]), async () => {
+    throw new Error('DATABASE_URL is not configured')
+  })
+  const res = await brokenApp.request(`https://mcp.onchaindiligence.com/receipts/${REFERENCE_RECEIPT.receipt_id}`)
+  assert.equal(res.status, 200)
+  assert.deepEqual(await res.json(), signedEnvelope)
+  console.log('ok  durable store failure falls back to the bundled store rather than failing the request')
+}
+
+console.log('\nAll D2.2 resolver tests passed.')

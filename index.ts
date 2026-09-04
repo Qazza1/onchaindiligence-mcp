@@ -18,7 +18,8 @@
  *   GET  /x402/verdict/:address         paid: PASS / WARN / BLOCK verdict
  *   POST /x402/preflight-payment        paid: structured payment policy preflight (D2.1)
  *   POST /inspect/payment               free: unsigned deterministic policy inspection (D2.1A)
- *   GET  /receipts/:receiptId           free: public receipt resolver (D2.0A)
+ *   GET  /receipts/:receiptId           free: public receipt resolver (D2.0A, durable+bundled D2.2)
+ *   POST /receipts/finalize             free (capability-protected): Commerce Receipt finalization (D2.2)
  */
 import { Hono } from 'hono'
 import { handler } from './src/server.js'
@@ -26,6 +27,7 @@ import { mountDiscovery } from './src/discovery.js'
 import { mountPublicMetadata } from './src/publicMetadata.js'
 import { mountReceipts } from './src/receiptsRoute.js'
 import { mountInspect } from './src/inspectRoute.js'
+import { mountFinalize } from './src/finalizeRoute.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
 import { outcomeForStatus, readMcpEnvelope, recordEvent } from './src/telemetry.js'
 
@@ -121,5 +123,12 @@ mountReceipts(app)
 // middleware — see src/inspectRoute.ts) and outside the funnel/readiness
 // middleware above, which are /x402/*-scoped for exactly this reason.
 mountInspect(app)
+
+// D2.2: mounts POST /receipts/finalize. Free but capability-protected — see
+// src/finalizeRoute.ts. Not an x402 resource: the paid preflight already
+// bought this bounded post-flight capability, so a second payment here
+// would recreate exactly the recursive-payment problem D2.1A was built to
+// avoid on the front end.
+mountFinalize(app)
 
 export default app

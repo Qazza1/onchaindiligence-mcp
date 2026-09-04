@@ -26,6 +26,8 @@ import { screenAddress, type SanctionsResult } from './chainalysis.js'
 import { isValidEvmAddress } from './inputValidation.js'
 import { isCanonicalDecimalAmount, isAmountWithinMax } from './money.js'
 import { attest } from './attest.js'
+import { putReceipt as putReceiptDurable } from './db.js'
+import { mintFinalizationCapability, type FinalizationCapability } from './capability.js'
 import {
   buildReceiptCore,
   finalizeReceiptCore,
@@ -38,6 +40,8 @@ import {
   type Receipt,
   type PublicActionReceiptEnvelope,
 } from './receipts.js'
+
+const FINALIZATION_ENDPOINT = 'https://mcp.onchaindiligence.com/receipts/finalize'
 
 /**
  * Test-only seams. Every field defaults to the real production
@@ -52,6 +56,8 @@ export interface PreflightDependencies {
   screenRecipient?: (address: string) => Promise<SanctionsResult>
   signReceipt?: (receipt: Receipt) => Promise<PublicActionReceiptEnvelope['proof']>
   fetchKeyRegistry?: () => Promise<Parameters<typeof verifyReceiptEnvelope>[1]>
+  storeReceipt?: (envelope: PublicActionReceiptEnvelope, options: { isPublic: boolean }) => Promise<void>
+  mintCapability?: (preflightReceiptId: string, preflightReceiptDigest: string, publishCommerce: boolean) => Promise<FinalizationCapability>
 }
 
 export class PreflightInputError extends Error {
@@ -103,17 +109,41 @@ export interface PreflightReferences {
   mandate_digest: string | null
 }
 
+/**
+ * Opt-in publication preference (D2.2). BOTH default false: a receipt is
+ * always returned inline to its caller regardless of this setting, but is
+ * only ever externally resolvable via GET /receipts/:id when its owner
+ * explicitly asked for that. Never infer "public" from anything else.
+ */
+export interface PreflightPublication {
+  preflight: boolean
+  commerce: boolean
+}
+
 export interface PreflightInput {
   action: PreflightAction
   policy: PreflightPolicy
   options: PreflightOptions
   references: PreflightReferences
+  publication: PreflightPublication
 }
 
 export interface PreflightResult {
   decision: ReceiptDecision
   checks: ReceiptCheck[]
   receipt: PublicActionReceiptEnvelope
+  /**
+   * One-time capability authorizing exactly one thing: finalizing THIS
+   * preflight into a Commerce Receipt at POST /receipts/finalize. It does
+   * NOT authorize payment. `capability` is operational secret material —
+   * returned here once, never stored in plaintext, never logged, and never
+   * included in the (public) receipt envelope above.
+   */
+  finalization: {
+    capability: string
+    expires_at: string
+    endpoint: string
+  }
 }
 
 const CAIP2_PATTERN = /^[-a-z0-9]{3,8}:[-_a-zA-Z0-9]{1,64}$/
@@ -267,7 +297,21 @@ export function parsePreflightInput(raw: unknown): PreflightInput {
   }
   const references: PreflightReferences = { mandate_digest: mandateDigest }
 
-  return { action, policy, options, references }
+  const rawPublication = raw.publication ?? {}
+  if (!isPlainObject(rawPublication)) throw new PreflightInputError('publication must be an object')
+  if (rawPublication.preflight !== undefined && typeof rawPublication.preflight !== 'boolean') {
+    throw new PreflightInputError('publication.preflight must be a boolean')
+  }
+  if (rawPublication.commerce !== undefined && typeof rawPublication.commerce !== 'boolean') {
+    throw new PreflightInputError('publication.commerce must be a boolean')
+  }
+  // Default BOTH false: backwards compatible, and privacy-safe-by-default.
+  const publication: PreflightPublication = {
+    preflight: rawPublication.preflight === true,
+    commerce: rawPublication.commerce === true,
+  }
+
+  return { action, policy, options, references, publication }
 }
 
 // ---------------------------------------------------------------------
@@ -329,6 +373,7 @@ export async function inspectPayment(raw: unknown): Promise<InspectPaymentResult
     policy: input.policy,
     options: { screen_recipient_sanctions: false },
     references: { mandate_digest: null },
+    publication: { preflight: false, commerce: false },
   })
   return { decision, checks, evidence: { external_checks_performed: false }, receipt: null }
 }
@@ -548,5 +593,31 @@ export async function preflightPayment(
     )
   }
 
-  return { decision: envelope.receipt.decision, checks: envelope.receipt.checks, receipt: envelope }
+  // Durable storage happens only after the receipt is confirmed genuinely
+  // VALID — never persist (let alone publish) a receipt whose own signature
+  // doesn't check out. is_public reflects ONLY the caller's explicit
+  // publication.preflight choice; default is private.
+  await (deps.storeReceipt ?? putReceiptDurable)(envelope, { isPublic: input.publication.preflight })
+
+  // One finalization capability per successful preflight, regardless of
+  // decision (ALLOW/REQUIRE_APPROVAL/BLOCK) — it authorizes creating a
+  // Commerce Receipt for this lifecycle, never a payment, so there is no
+  // reason to withhold it even from a BLOCKed proposal (e.g. after a human
+  // overrides a REQUIRE_APPROVAL and executes anyway).
+  const capability = await (deps.mintCapability ?? mintFinalizationCapability)(
+    envelope.receipt.receipt_id,
+    envelope.receipt.receipt_digest,
+    input.publication.commerce
+  )
+
+  return {
+    decision: envelope.receipt.decision,
+    checks: envelope.receipt.checks,
+    receipt: envelope,
+    finalization: {
+      capability: capability.token,
+      expires_at: capability.expiresAt,
+      endpoint: FINALIZATION_ENDPOINT,
+    },
+  }
 }

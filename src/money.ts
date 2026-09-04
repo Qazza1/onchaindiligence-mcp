@@ -40,3 +40,31 @@ export function compareDecimalAmounts(a: string, b: string): -1 | 0 | 1 {
 export function isAmountWithinMax(amount: string, max: string): boolean {
   return compareDecimalAmounts(amount, max) <= 0
 }
+
+/**
+ * Converts a canonical decimal amount string to exact atomic units (BigInt)
+ * for a token with `decimals` decimal places — e.g. ("1.50", 6) -> 1500000n.
+ * Callers MUST validate `amount` with `isCanonicalDecimalAmount` first.
+ *
+ * Returns `null`, rather than rounding, when `amount` carries more
+ * fractional precision than the asset supports (e.g. "1.1234567" against 6
+ * decimals) — D2.2 settlement verification must never silently round a
+ * human-supplied amount into a different on-chain value.
+ */
+export function decimalAmountToAtomicUnits(amount: string, decimals: number): bigint | null {
+  const [intPart, fracPart = ''] = amount.split('.')
+  if (fracPart.length > decimals) return null
+  const paddedFrac = fracPart.padEnd(decimals, '0')
+  return BigInt(intPart + paddedFrac)
+}
+
+/** The inverse of decimalAmountToAtomicUnits — atomic units back to a canonical decimal string. */
+export function atomicUnitsToDecimalAmount(atomicUnits: bigint, decimals: number): string {
+  const negative = atomicUnits < 0n
+  const digits = (negative ? -atomicUnits : atomicUnits).toString().padStart(decimals + 1, '0')
+  const intPart = digits.slice(0, digits.length - decimals) || '0'
+  const fracPart = decimals > 0 ? digits.slice(digits.length - decimals) : ''
+  const trimmedFrac = fracPart.replace(/0+$/, '')
+  const sign = negative ? '-' : ''
+  return trimmedFrac ? `${sign}${intPart}.${trimmedFrac}` : `${sign}${intPart}`
+}
