@@ -59,6 +59,7 @@ import {
 import { attest } from './attest.js'
 import { preflightPayment, inspectPayment } from './preflight.js'
 import { INSPECT_DESCRIPTION } from './inspectRoute.js'
+import { getReceiptById, verifyReceipt, VerifyReceiptInputError } from './receiptTools.js'
 
 // Fail fast if misconfigured — same discipline as the HTTP API.
 assertConfigured()
@@ -131,6 +132,24 @@ export const PREFLIGHT_PAYMENT_TOOL_DESCRIPTION =
   'reasons -- independently verifiable by anyone. Policy evaluation only: OCD never ' +
   'holds, moves, or authorizes funds. The wallet/x402 client separately authorizes ' +
   'execution after; ALLOW does not guarantee it will proceed.'
+
+// D2.5 (Section 7): deferred from D2.3 -- free, structured, reuse the exact
+// converged verification contract (receiptTools.ts -> receipts.ts's
+// verifyReceiptEnvelope), no new bespoke verifier logic. Task-oriented per
+// Section 8's own example wording.
+export const GET_RECEIPT_DESCRIPTION =
+  'Look up a public OCD receipt by its exact receipt_id (format "OCD-RCP-XXXX-XXXX-XXXX-XXXX"). Free, ' +
+  'no payment. Returns the complete signed receipt envelope, or a structured not-found/unavailable ' +
+  'reason -- never a guess. A private (unpublished) receipt and an unknown id are indistinguishable, ' +
+  'both by design: this never confirms or denies that a private receipt exists.'
+
+export const VERIFY_RECEIPT_DESCRIPTION =
+  'Independently checks whether a receipt is cryptographically VALID, INVALID, or UNVERIFIABLE, with a ' +
+  'reason code. Free, no payment. Pass EITHER receipt_id (looks it up first, must be public) OR a ' +
+  'complete receipt envelope you already hold (verified directly, no publication needed). This is a ' +
+  'convenient ONLINE check -- it trusts this server to have honestly fetched the real signing-key ' +
+  'registry. Running the same check yourself offline (the published @onchaindiligence/agent-evidence ' +
+  'package) is a strictly stronger trust position; this tool does not replace that option.'
 
 // Coinbase facilitator (verifies/settles the x402 USDC payment on Base) built
 // from CDP keys. This is what makes the payment non-custodial and accountless.
@@ -367,6 +386,15 @@ export const handler = createPaidMcpHandler(
             .nullable()
             .optional()
             .describe('Allowed https origins for action.resource, or null.'),
+          acknowledge_unconstrained: z
+            .boolean()
+            .optional()
+            .describe('Required (true) if every constraint above is null/omitted, confirming that was intentional and not an accident.'),
+          expected_payer: z
+            .string()
+            .nullable()
+            .optional()
+            .describe('Frozen commitment to the wallet expected to authorize the eventual on-chain payment (D2.4 binding strength) — decision-neutral, or null.'),
         }),
         options: z
           .object({
@@ -425,6 +453,15 @@ export const handler = createPaidMcpHandler(
           allowed_assets: z.array(z.string()).nullable().optional().describe('Allowed token contract addresses, or null for no restriction.'),
           expected_recipient: z.string().nullable().optional().describe('Exact recipient address the caller expects, or null.'),
           allowed_resource_origins: z.array(z.string()).nullable().optional().describe('Allowed https origins for action.resource, or null.'),
+          acknowledge_unconstrained: z
+            .boolean()
+            .optional()
+            .describe('Required (true) if every constraint above is null/omitted, confirming that was intentional and not an accident.'),
+          expected_payer: z
+            .string()
+            .nullable()
+            .optional()
+            .describe('Frozen commitment to the wallet expected to authorize the eventual on-chain payment (D2.4 binding strength) — decision-neutral, or null.'),
         }),
       },
       { readOnlyHint: true, openWorldHint: false },
@@ -437,6 +474,46 @@ export const handler = createPaidMcpHandler(
             isError: true,
             content: [{ type: 'text', text: err?.message || 'Inspection failed.' }],
           }
+        }
+      }
+    )
+
+    // --- get_receipt (D2.5, deferred from D2.3) -- FREE, no payment wrapper ---
+    server.tool(
+      'get_receipt',
+      GET_RECEIPT_DESCRIPTION,
+      { receipt_id: z.string().describe('Exact receipt id, e.g. "OCD-RCP-EMG6-6KR4-PQSG-MZPQ".') },
+      { readOnlyHint: true, openWorldHint: false },
+      async ({ receipt_id }) => {
+        const result = await getReceiptById(receipt_id)
+        if (!result.found) {
+          return { content: [{ type: 'text', text: JSON.stringify({ found: false, reason: result.reason }, null, 2) }] }
+        }
+        return { content: [{ type: 'text', text: JSON.stringify(result.envelope, null, 2) }] }
+      }
+    )
+
+    // --- verify_receipt (D2.5, deferred from D2.3) -- FREE, no payment wrapper ---
+    server.tool(
+      'verify_receipt',
+      VERIFY_RECEIPT_DESCRIPTION,
+      {
+        receipt_id: z.string().optional().describe('Look up and verify a public receipt by exact id. Mutually exclusive with envelope.'),
+        envelope: z
+          .unknown()
+          .optional()
+          .describe('A complete receipt envelope you already hold ({schema, receipt, proof}) to verify directly. Mutually exclusive with receipt_id.'),
+      },
+      { readOnlyHint: true, openWorldHint: false },
+      async (args) => {
+        try {
+          const result = await verifyReceipt(args)
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+        } catch (err: any) {
+          if (err instanceof VerifyReceiptInputError) {
+            return { isError: true, content: [{ type: 'text', text: err.message }] }
+          }
+          return { isError: true, content: [{ type: 'text', text: err?.message || 'Verification failed.' }] }
         }
       }
     )

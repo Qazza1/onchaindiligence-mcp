@@ -7,10 +7,16 @@
  * server's /proxy/* passthrough (same-origin from the browser's point of
  * view — no CORS change to the production API was needed or made).
  *
- * SECURITY: the finalization capability is held ONLY in the module-level
- * `capability` variable below. It is never assigned to localStorage,
- * sessionStorage, IndexedDB, a URL, a DOM attribute, or any console.log /
- * log() call — grep this file for "capability" to confirm before editing.
+ * SECURITY: the finalization capability lives in the module-level
+ * `capability` variable, and — ONLY once payment #2 has actually settled and
+ * a transaction hash is known (D2.5, Section 12) — is ALSO mirrored to this
+ * local server's own disk via saveSession()/restoreSessionOnLoad()
+ * (operator/server.ts), so a refresh no longer strands a capability the
+ * user already paid for. It
+ * is NEVER assigned to the BROWSER's localStorage, sessionStorage, IndexedDB,
+ * a URL, a DOM attribute, or any console.log / log() call — grep this file
+ * for "capability" to confirm before editing. The on-disk copy is cleared as
+ * soon as finalization reaches a definitive outcome (done or failed).
  */
 import { createWalletClient, createPublicClient, custom, http, erc20Abi, formatUnits } from 'viem'
 import { base } from 'viem/chains'
@@ -62,9 +68,78 @@ let inspectionStatus: InspectionStatus = 'idle'
 let confirmed = false
 let targetStepFailurePoint: TargetStepFailurePoint = null
 
-// Finalization capability — IN MEMORY ONLY. Never persisted, never logged,
-// never rendered. See file header.
+// Finalization capability — held in memory during this page's lifetime, and
+// mirrored (D2.5, Section 12) to this LOCAL server's own disk (never to
+// browser storage — see saveSession()/loadSession() below and this file's
+// header) so a refresh/restart can safely resume instead of leaving the
+// user wondering whether to pay again. Never rendered, never console.logged.
 let capability: string | null = null
+
+// --- D2.5 (Section 12): local-only session persistence ----------------------
+// Persists to operator/server.ts's local file store, NOT to
+// localStorage/sessionStorage/IndexedDB (explicitly disallowed for a
+// recovery credential/capability -- this stays on the local machine's own
+// disk, written only by the local Node server this page already trusts).
+async function saveSession(): Promise<void> {
+  try {
+    await fetch('/local/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        preflightReceiptId,
+        capability,
+        capabilityExpiresAt,
+        transactionHash: pendingFinalizeTransactionHash,
+      }),
+    })
+  } catch {
+    // Best-effort: a failure to persist locally must never block the
+    // in-memory lifecycle this session was already using successfully.
+  }
+}
+
+async function clearSession(): Promise<void> {
+  try {
+    await fetch('/local/session', { method: 'DELETE' })
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Called once at page load. If a prior session left a live (unexpired)
+ * capability on disk, restores it into memory and shows the SAME recovery
+ * banner an in-session pending-finalization would show -- the existing
+ * "Retry finalization" button then just works, using the restored values.
+ * Never resumes an EXPIRED capability (that would silently look "safe" when
+ * it no longer authorizes anything); never triggers any payment.
+ */
+async function restoreSessionOnLoad(): Promise<void> {
+  let saved: { preflightReceiptId: string | null; capability: string | null; capabilityExpiresAt: string | null; transactionHash: string | null } | null
+  try {
+    const res = await fetch('/local/session')
+    saved = res.ok ? await res.json() : null
+  } catch {
+    return
+  }
+  if (!saved?.capability || !saved.capabilityExpiresAt || !saved.transactionHash) return
+  if (new Date(saved.capabilityExpiresAt).getTime() <= Date.now()) {
+    logLine('  a saved session was found but its finalization capability has expired -- not resuming it.')
+    await clearSession()
+    return
+  }
+  capability = saved.capability
+  capabilityExpiresAt = saved.capabilityExpiresAt
+  preflightReceiptId = saved.preflightReceiptId
+  pendingFinalizeTransactionHash = saved.transactionHash
+  logLine(
+    `Resumed a saved session from disk: preflight receipt ${saved.preflightReceiptId}, tx ${saved.transactionHash}. ` +
+      'The finalization capability was restored (never re-requested, never re-paid).'
+  )
+  showFinalizeRecovery(
+    `Resumed from a previous session (this page was refreshed or restarted). Click "Retry finalization" to continue -- no new payment will be made.`
+  )
+}
 
 const publicClient = createPublicClient({ chain: base, transport: http() })
 
@@ -248,6 +323,7 @@ function showRecovery(message: string, allowRetry: boolean): void {
 
 // --- the lifecycle itself ----------------------------------------------------
 let preflightReceiptId: string | null = null
+let capabilityExpiresAt: string | null = null
 
 async function runPreflightStep(): Promise<void> {
   logLine('\n=== Payment #1: Payment Preflight ($0.01) ===')
@@ -288,8 +364,9 @@ async function runPreflightStep(): Promise<void> {
   if (!cap) throw new LifecycleAbortError('no finalization capability was returned')
   if (!expiresAt) throw new LifecycleAbortError('no finalization capability expiry was returned')
   capability = cap
+  capabilityExpiresAt = expiresAt
   preflightReceiptId = receipt.receipt_id
-  logLine(`  finalization capability received (kept in memory only), expires ${expiresAt}`)
+  logLine(`  finalization capability received (kept in memory; persisted locally once payment #2 settles), expires ${expiresAt}`)
 
   $('result-preflight-id').textContent = receipt.receipt_id
   ;($('result-preflight-link') as HTMLAnchorElement).href = explorerUrl(receipt.receipt_id)
@@ -396,24 +473,35 @@ function hideFinalizeRecovery(): void {
 
 async function runFinalizeStep(transactionHash: string): Promise<void> {
   logLine('\n=== Finalization (free) ===')
+  // D2.5: persist as soon as the transaction hash + capability are both
+  // known -- BEFORE the first finalize attempt -- so a refresh at any point
+  // from here on can resume via restoreSessionOnLoad(), never re-pay.
+  pendingFinalizeTransactionHash = transactionHash
+  await saveSession()
   for (let attempt = 1; attempt <= MAX_AUTO_FINALIZE_RETRIES; attempt++) {
     const outcome = await attemptFinalizeAndRender(transactionHash)
     if (outcome.kind === 'done') {
+      pendingFinalizeTransactionHash = null
       hideFinalizeRecovery()
+      await clearSession()
       return
     }
-    if (outcome.kind === 'failed') throw new LifecycleAbortError(outcome.message)
+    if (outcome.kind === 'failed') {
+      await clearSession()
+      throw new LifecycleAbortError(outcome.message)
+    }
     // pending -- bounded, clearly-logged automatic retry of the FREE finalize
-    // request only (never a payment). Capability remains in memory.
+    // request only (never a payment). Capability remains in memory (and on
+    // disk, via the save above).
     logLine(`  finalization pending (${outcome.reason}): ${outcome.message}`)
     if (attempt < MAX_AUTO_FINALIZE_RETRIES) {
       logLine(`  Payment settled. Waiting for independent chain confirmation. Auto-retry ${attempt}/${MAX_AUTO_FINALIZE_RETRIES} in ${outcome.retryAfterSeconds}s…`)
       await sleep(outcome.retryAfterSeconds * 1000)
     } else {
-      pendingFinalizeTransactionHash = transactionHash
       showFinalizeRecovery(
         `Payment settled. Waiting for independent chain confirmation. (${outcome.reason}: ${outcome.message}) ` +
-          'The finalization capability remains in memory. Click "Retry finalization" once you expect the chain state to have caught up — do not refresh this page.'
+          'The finalization capability has been saved locally — click "Retry finalization" once you expect the chain state to have caught up. ' +
+          'It is now safe to refresh or restart this page if needed; resuming will not trigger another payment.'
       )
       return
     }
@@ -426,11 +514,13 @@ async function retryFinalization(): Promise<void> {
   if (outcome.kind === 'done') {
     pendingFinalizeTransactionHash = null
     hideFinalizeRecovery()
+    await clearSession()
     return
   }
   if (outcome.kind === 'failed') {
     pendingFinalizeTransactionHash = null
     hideFinalizeRecovery()
+    await clearSession()
     logLine(`ABORT during finalization retry: ${outcome.message}`)
     return
   }
@@ -510,4 +600,5 @@ $('btn-retry-finalize').addEventListener('click', () => void retryFinalization()
 })
 
 logLine(`Pinned aggregate cap: ${AGGREGATE_MAX_ATOMIC} atomic units ($0.02 USDC). Two payments, no more, by construction.`)
+void restoreSessionOnLoad()
 renderGate()

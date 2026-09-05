@@ -294,21 +294,24 @@ const inspectEnvelope = inspectOp.responses['200'].content['application/json'].s
 assert.deepEqual(inspectEnvelope.required, ['decision', 'checks', 'evidence', 'receipt'], '/inspect/payment response shape')
 assert.equal(inspectEnvelope.properties.receipt.type, 'null', '/inspect/payment must declare receipt as always null')
 
-// documented.length = every paid route (PAID_ROUTES) + the one free resource,
-// EXCEPT the D2.4 operation-bound lifecycle preflight variant -- it is fully
-// Bazaar-discoverable (checked above via X402_ROUTES, which is what actually
-// drives x402 agent/facilitator discovery) but is a deliberate, documented
-// scope decision NOT to also duplicate into the hand-authored OpenAPI
-// reference doc for this milestone (publicMetadata.ts's RESOURCES generator
-// has no header-parameter support yet, which the X-OCD-* headers need).
+// documented.length = every paid route (PAID_ROUTES) + the free resources
+// (/inspect/payment, /verify-receipt), EXCEPT the D2.4 operation-bound
+// lifecycle preflight variant -- it is fully Bazaar-discoverable (checked
+// above via X402_ROUTES, which is what actually drives x402 agent/
+// facilitator discovery) but is a deliberate, documented scope decision NOT
+// to also duplicate into the hand-authored OpenAPI reference doc for this
+// milestone (publicMetadata.ts's RESOURCES generator has no header-parameter
+// support yet, which the X-OCD-* headers need). /operations and
+// GET /receipts/:id are the same deliberate scope trim, carried over from D2.4/D2.5.
 const OPENAPI_DOCUMENTED_PAID_ROUTES = PAID_ROUTES.filter((r) => r.key !== 'POST /x402/lifecycle/preflight-payment')
+const OPENAPI_FREE_RESOURCE_COUNT = 2 // /inspect/payment, /verify-receipt
 assert.equal(
   documented.length,
-  OPENAPI_DOCUMENTED_PAID_ROUTES.length + 1,
-  `expected ${OPENAPI_DOCUMENTED_PAID_ROUTES.length + 1} documented resources (paid + 1 free)`
+  OPENAPI_DOCUMENTED_PAID_ROUTES.length + OPENAPI_FREE_RESOURCE_COUNT,
+  `expected ${OPENAPI_DOCUMENTED_PAID_ROUTES.length + OPENAPI_FREE_RESOURCE_COUNT} documented resources (paid + ${OPENAPI_FREE_RESOURCE_COUNT} free)`
 )
 console.log(
-  `ok  /openapi.json is free, valid 3.1, documents ${documented.length} resources (${OPENAPI_DOCUMENTED_PAID_ROUTES.length} paid + 1 free, clearly distinguished)`
+  `ok  /openapi.json is free, valid 3.1, documents ${documented.length} resources (${OPENAPI_DOCUMENTED_PAID_ROUTES.length} paid + ${OPENAPI_FREE_RESOURCE_COUNT} free, clearly distinguished)`
 )
 
 const manifestRes = await app.request('/.well-known/x402')

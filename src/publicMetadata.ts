@@ -509,6 +509,63 @@ export function buildOpenApiDocument(): Record<string, unknown> {
     },
   }
 
+  // POST /verify-receipt (D2.5, deferred from D2.3) — FREE. Same reasoning
+  // as /inspect/payment above: not part of RESOURCES (the paid x402
+  // surface), documented separately. Reuses the exact converged D2.3
+  // verification contract (receiptTools.ts -> receipts.ts's
+  // verifyReceiptEnvelope) — no new verifier semantics.
+  paths['/verify-receipt'] = {
+    post: {
+      operationId: 'verifyReceipt',
+      summary: 'FREE structured receipt verification (VALID / INVALID / UNVERIFIABLE)',
+      description:
+        'Checks whether a receipt is cryptographically VALID, INVALID, or UNVERIFIABLE, with a reason ' +
+        'code. FREE RESOURCE — no payment. Pass exactly one of receipt_id (looked up first; must be ' +
+        'public) or envelope (a complete receipt envelope you already hold, verified directly). This ' +
+        'is a convenient ONLINE check that trusts this server to have honestly fetched the real ' +
+        'signing-key registry — running the same check yourself offline via the published ' +
+        '@onchaindiligence/agent-evidence package is a strictly stronger trust position.',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                receipt_id: { type: 'string', description: 'Exact receipt id, e.g. "OCD-RCP-EMG6-6KR4-PQSG-MZPQ". Mutually exclusive with envelope.' },
+                envelope: { type: 'object', description: 'A complete receipt envelope ({schema, receipt, proof}) to verify directly. Mutually exclusive with receipt_id.' },
+              },
+            },
+            example: { receipt_id: 'OCD-RCP-EMG6-6KR4-PQSG-MZPQ' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Structured verification result.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['state', 'code', 'message'],
+                properties: {
+                  state: { type: 'string', enum: ['VALID', 'INVALID', 'UNVERIFIABLE'] },
+                  code: { type: 'string' },
+                  message: { type: 'string' },
+                  resolution_error: { type: 'string', enum: ['malformed-id', 'not-found', 'unavailable'] },
+                },
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'Neither or both of receipt_id/envelope were supplied, or the body was not valid JSON.',
+          content: { 'application/json': { schema: { type: 'object', properties: { error: { type: 'string' } } } } },
+        },
+      },
+    },
+  }
+
   return {
     openapi: '3.1.0',
     info: {

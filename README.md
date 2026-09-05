@@ -62,6 +62,33 @@ The live service returned `10000` atomic USDC units ($0.01) for
 agents must always read the current requirement from the unpaid response rather
 than hard-coding a price.
 
+### Connecting specific MCP clients
+
+Every client below speaks the same standard MCP protocol to the same server
+(`https://mcp.onchaindiligence.com/mcp`) — these are setup/configuration
+differences, not separate implementations. **The application layer that
+decides whether to act on a tool's result is the real enforcement boundary —
+"the model remembered to call OCD" is never a substitute for that.**
+
+- **Claude Desktop / Claude Code** — add an entry under `mcpServers` in your
+  MCP config (Claude Code: `claude mcp add`, or edit the config file directly):
+  ```json
+  { "mcpServers": { "onchaindiligence": { "url": "https://mcp.onchaindiligence.com/mcp" } } }
+  ```
+- **ChatGPT (custom connector / Apps SDK)** — register the same URL as an MCP
+  connector in the connector/app configuration UI; ChatGPT calls `tools/list`
+  and `tools/call` exactly like any other client.
+- **Gemini / a custom agent tool loop** — any client speaking Streamable HTTP
+  MCP (`tools/list`, `tools/call`, x402 `_meta` payment) works unmodified; see
+  the sequence above and [`test/client.ts`](./test/client.ts) for the exact
+  wire format.
+
+For a TypeScript application (not an MCP-connected chat agent), prefer the
+[`@onchaindiligence/sdk/commerce`](https://github.com/Qazza1/onchaindiligence-sdk)
+client over hand-rolling the MCP/x402 sequence — it orchestrates
+open → preflight → execute → observe/finalize with the D2.4 recovery
+guarantees built in.
+
 ## How payment works
 
 Payment rides on [x402](https://x402.org), the open agent-payment standard built on HTTP `402 Payment Required`:

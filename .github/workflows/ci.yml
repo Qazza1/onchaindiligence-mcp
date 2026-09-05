@@ -62,3 +62,6 @@ jobs:
       - run: npx --no-install tsx test/d24BindingStrength.ts
       - run: npx --no-install tsx test/d24Finality.ts
       - run: npx --no-install tsx test/d24Observation.ts
+      # D2.5 (AGENT INTEGRATION KIT): get_receipt/verify_receipt, reusing the
+      # exact converged D2.3 verification contract -- no new verifier logic.
+      - run: npx --no-install tsx test/d25ReceiptTools.ts

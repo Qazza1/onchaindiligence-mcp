@@ -18,9 +18,10 @@
  * server-side, and the browser only displays the VALID/INVALID/UNVERIFIABLE
  * verdict this endpoint returns.
  */
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile, rename, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { randomBytes } from 'node:crypto'
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { fetchAttestationKeyRegistry, verifyReceiptEnvelope, normalizeReceiptId } from '../src/receipts.js'
@@ -93,6 +94,65 @@ app.post('/local/verify-receipt', async (c) => {
   } catch (err: any) {
     return c.json({ state: 'UNVERIFIABLE', code: 'verification-error', message: err?.message || 'verification failed' }, 200)
   }
+})
+
+// --- D2.5 (Section 12): local-only session persistence ---------------------
+//
+// Fixes "refresh -> capability disappears -> user wonders whether to pay
+// again" WITHOUT moving custody into OCD and WITHOUT putting the
+// finalization capability or any recovery credential into the BROWSER's
+// storage (localStorage/sessionStorage/IndexedDB) -- D2.5's explicit
+// instruction. Instead, the capability is persisted to a single local JSON
+// file on THIS machine, written only by this local Node server (never by
+// the browser directly), and read back only by this same server on request.
+// It is exactly as trustworthy as this machine's own file permissions --
+// the same trust boundary the operator already assumes for
+// BUYER_PRIVATE_KEY-adjacent local tooling. Gitignored; never logged.
+const SESSION_FILE = path.join(__dirname, '.local-session.json')
+
+interface LocalSession {
+  preflightReceiptId: string | null
+  capability: string | null
+  capabilityExpiresAt: string | null
+  transactionHash: string | null
+  savedAt: string
+}
+
+app.post('/local/session', async (c) => {
+  let body: Partial<LocalSession>
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'body must be valid JSON' }, 400)
+  }
+  const session: LocalSession = {
+    preflightReceiptId: body.preflightReceiptId ?? null,
+    capability: body.capability ?? null,
+    capabilityExpiresAt: body.capabilityExpiresAt ?? null,
+    transactionHash: body.transactionHash ?? null,
+    savedAt: new Date().toISOString(),
+  }
+  // Write-then-rename: a crash mid-write can never leave a half-written,
+  // corrupt session file behind.
+  const tempPath = `${SESSION_FILE}.${randomBytes(4).toString('hex')}.tmp`
+  await writeFile(tempPath, JSON.stringify(session, null, 2), 'utf8')
+  await rename(tempPath, SESSION_FILE)
+  return c.json({ ok: true })
+})
+
+app.get('/local/session', async (c) => {
+  try {
+    const text = await readFile(SESSION_FILE, 'utf8')
+    return c.json(JSON.parse(text) as LocalSession, 200)
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return c.json(null, 200)
+    return c.json({ error: 'could not read local session file' }, 500)
+  }
+})
+
+app.delete('/local/session', async (c) => {
+  await unlink(SESSION_FILE).catch(() => {})
+  return c.json({ ok: true })
 })
 
 serve({ fetch: app.fetch, port: PORT }, (info) => {

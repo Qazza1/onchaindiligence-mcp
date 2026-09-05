@@ -45,13 +45,48 @@ const RECEIPT_ALLOWED_ORIGINS = ['https://onchaindiligence.com']
  * trust source), which the resolver has never been able to distinguish
  * from a trustworthy row before this check existed.
  */
-function respondWithIntegrityCheck(c: Context, envelope: PublicActionReceiptEnvelope) {
-  const integrity = checkReceiptStructuralIntegrity(envelope)
+export type ResolveReceiptResult =
+  | { ok: true; envelope: PublicActionReceiptEnvelope }
+  | { ok: false; reason: 'malformed-id' | 'not-found' | 'corrupt' }
+
+/**
+ * D2.5: the exact same resolution logic mountReceipts' HTTP handler uses
+ * (durable store first, bundled fallback, local structural-integrity check
+ * before ever trusting a stored row) — pulled out so the get_receipt/
+ * verify_receipt MCP tools (src/receiptTools.ts) call this ONE function
+ * rather than re-implementing resolution, per "do not duplicate lifecycle
+ * logic inside MCP handlers."
+ */
+export async function resolvePublicReceipt(
+  requestedId: string,
+  deps: {
+    bundledStore?: ReceiptStore
+    getDurablePublicReceipt?: (receiptId: string) => Promise<PublicActionReceiptEnvelope | null>
+  } = {}
+): Promise<ResolveReceiptResult> {
+  const bundledStore = deps.bundledStore ?? receiptStore
+  const getDurablePublicReceipt = deps.getDurablePublicReceipt ?? getPublicReceipt
+
+  const normalized = normalizeReceiptId(requestedId)
+  if (!normalized) return { ok: false, reason: 'malformed-id' }
+
+  let durable: PublicActionReceiptEnvelope | null = null
+  try {
+    durable = await getDurablePublicReceipt(normalized)
+  } catch {
+    // Durable store unreachable: fall through to the bundled store -- see
+    // this function's callers' own comments on why a private receipt and a
+    // temporary outage must never be distinguishable from "not found".
+  }
+  const candidate = durable ?? (await bundledStore.get(normalized))
+  if (!candidate) return { ok: false, reason: 'not-found' }
+
+  const integrity = checkReceiptStructuralIntegrity(candidate)
   if (!integrity.ok) {
     console.error(`receipt resolver: stored envelope failed structural integrity (${integrity.code}): ${integrity.message}`)
-    return c.json({ error: 'stored receipt failed structural integrity check' }, 500)
+    return { ok: false, reason: 'corrupt' }
   }
-  return c.json(envelope, 200)
+  return { ok: true, envelope: candidate }
 }
 
 export function mountReceipts(
@@ -66,28 +101,12 @@ export function mountReceipts(
 
   app.get('/receipts/:receiptId', async (c) => {
     const requested = c.req.param('receiptId')
-    const normalized = normalizeReceiptId(requested)
-    if (!normalized) {
-      return c.json({ error: 'malformed receipt id' }, 400)
-    }
-
-    let durable: PublicActionReceiptEnvelope | null = null
-    try {
-      durable = await getDurablePublicReceipt(normalized)
-    } catch {
-      // Durable store unreachable: fall through to the bundled store rather
-      // than fail the request outright — the D2.0A reference receipt must
-      // keep resolving even if Postgres is temporarily unavailable. A real
-      // durable-only receipt during an actual outage will read as 404
-      // rather than 503; that trade favours never distinguishing "private"
-      // from "unknown" over perfect outage signalling.
-    }
-    if (durable) return respondWithIntegrityCheck(c, durable)
-
-    const bundled = await bundledStore.get(normalized)
-    if (!bundled) {
+    const result = await resolvePublicReceipt(requested, { bundledStore, getDurablePublicReceipt })
+    if (!result.ok) {
+      if (result.reason === 'malformed-id') return c.json({ error: 'malformed receipt id' }, 400)
+      if (result.reason === 'corrupt') return c.json({ error: 'stored receipt failed structural integrity check' }, 500)
       return c.json({ error: 'not found' }, 404)
     }
-    return respondWithIntegrityCheck(c, bundled)
+    return c.json(result.envelope, 200)
   })
 }

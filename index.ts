@@ -30,6 +30,7 @@ import { mountDiscovery } from './src/discovery.js'
 import { mountPublicMetadata } from './src/publicMetadata.js'
 import { mountReceipts } from './src/receiptsRoute.js'
 import { mountInspect } from './src/inspectRoute.js'
+import { mountVerifyReceipt } from './src/receiptToolsRoute.js'
 import { mountFinalize } from './src/finalizeRoute.js'
 import { mountLifecycle } from './src/lifecycleRoute.js'
 import { mountLifecycleFinalize } from './src/lifecycleFinalizeRoute.js'
@@ -136,6 +137,11 @@ mountReceipts(app)
 // middleware — see src/inspectRoute.ts) and outside the funnel/readiness
 // middleware above, which are /x402/*-scoped for exactly this reason.
 mountInspect(app)
+
+// D2.5: mounts POST /verify-receipt, the free structured verify_receipt
+// primitive (GET /receipts/:receiptId, get_receipt's HTTP equivalent,
+// already existed). Deliberately outside /x402/* -- see src/receiptToolsRoute.ts.
+mountVerifyReceipt(app)
 
 // D2.2: mounts POST /receipts/finalize. Free but capability-protected — see
 // src/finalizeRoute.ts. Not an x402 resource: the paid preflight already
