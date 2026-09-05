@@ -62,6 +62,7 @@ const PAID_ROUTES: Array<{ key: string; priceUsd: number }> = [
   { key: 'GET /x402/diligence', priceUsd: config.prices.diligence },
   { key: 'GET /x402/verdict/:address', priceUsd: config.prices.screen },
   { key: 'POST /x402/preflight-payment', priceUsd: config.prices.preflight },
+  { key: 'POST /x402/lifecycle/preflight-payment', priceUsd: config.prices.preflight },
 ]
 
 // The declared route map is what the payment middleware charges on. Asserting
@@ -293,16 +294,31 @@ const inspectEnvelope = inspectOp.responses['200'].content['application/json'].s
 assert.deepEqual(inspectEnvelope.required, ['decision', 'checks', 'evidence', 'receipt'], '/inspect/payment response shape')
 assert.equal(inspectEnvelope.properties.receipt.type, 'null', '/inspect/payment must declare receipt as always null')
 
-// documented.length = every paid route (PAID_ROUTES) + the one free resource.
-assert.equal(documented.length, PAID_ROUTES.length + 1, `expected ${PAID_ROUTES.length + 1} documented resources (paid + 1 free)`)
-console.log(`ok  /openapi.json is free, valid 3.1, documents ${documented.length} resources (${PAID_ROUTES.length} paid + 1 free, clearly distinguished)`)
+// documented.length = every paid route (PAID_ROUTES) + the one free resource,
+// EXCEPT the D2.4 operation-bound lifecycle preflight variant -- it is fully
+// Bazaar-discoverable (checked above via X402_ROUTES, which is what actually
+// drives x402 agent/facilitator discovery) but is a deliberate, documented
+// scope decision NOT to also duplicate into the hand-authored OpenAPI
+// reference doc for this milestone (publicMetadata.ts's RESOURCES generator
+// has no header-parameter support yet, which the X-OCD-* headers need).
+const OPENAPI_DOCUMENTED_PAID_ROUTES = PAID_ROUTES.filter((r) => r.key !== 'POST /x402/lifecycle/preflight-payment')
+assert.equal(
+  documented.length,
+  OPENAPI_DOCUMENTED_PAID_ROUTES.length + 1,
+  `expected ${OPENAPI_DOCUMENTED_PAID_ROUTES.length + 1} documented resources (paid + 1 free)`
+)
+console.log(
+  `ok  /openapi.json is free, valid 3.1, documents ${documented.length} resources (${OPENAPI_DOCUMENTED_PAID_ROUTES.length} paid + 1 free, clearly distinguished)`
+)
 
 const manifestRes = await app.request('/.well-known/x402')
 assert.equal(manifestRes.status, 200, '/.well-known/x402 must be free')
 const manifest = (await manifestRes.json()) as any
 assert.equal(manifest.x402Version, 2)
 assert.equal(manifest.kind, 'resource-server')
-assert.equal(manifest.resources.length, PAID_ROUTES.length)
+// Built from the same hand-maintained RESOURCES list as /openapi.json (see
+// publicMetadata.ts) -- same deliberate D2.4 scope exclusion as above.
+assert.equal(manifest.resources.length, OPENAPI_DOCUMENTED_PAID_ROUTES.length)
 for (const entry of manifest.resources) {
   assert.ok(entry.url.startsWith('https://mcp.onchaindiligence.com/x402/'), 'https, own domain')
   assert.ok(entry.method && entry.description, 'each resource needs method + description')

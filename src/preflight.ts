@@ -99,6 +99,19 @@ export interface PreflightPolicy {
   allowed_assets: string[] | null
   expected_recipient: string | null
   allowed_resource_origins: string[] | null
+  /**
+   * D2.4 (Section 5/6): an OPTIONAL frozen commitment to the wallet expected
+   * to AUTHORIZE the eventual on-chain payment -- distinct from
+   * `expected_recipient` (who gets paid). Never affects the ALLOW/BLOCK
+   * decision (see evaluatePreflightPolicy — deliberately not evaluated
+   * there): declaring who you expect to pay is not itself a policy
+   * violation to check, it is a commitment `commerceLifecycle.ts` compares
+   * against an independently-decoded on-chain authorization AFTER
+   * settlement, to determine binding strength. Null means no commitment was
+   * made, and per the claim model an absent commitment can never be
+   * satisfied by mere field similarity.
+   */
+  expected_payer: string | null
 }
 
 export interface PreflightOptions {
@@ -260,6 +273,7 @@ const POLICY_KEYS = [
   'expected_recipient',
   'allowed_resource_origins',
   'acknowledge_unconstrained',
+  'expected_payer',
 ] as const
 
 function parsePolicy(raw: unknown): PreflightPolicy {
@@ -289,6 +303,12 @@ function parsePolicy(raw: unknown): PreflightPolicy {
   if (allowedResourceOrigins) {
     for (const origin of allowedResourceOrigins) requireOrigin(origin, 'policy.allowed_resource_origins')
   }
+  // D2.4: a commitment, not a constraint -- see the PreflightPolicy field
+  // comment. Deliberately excluded from `noConstraintsSet` below: declaring
+  // only an expected_payer still imposes no ALLOW/BLOCK gate at all, so it
+  // must not be able to silently satisfy "this policy is intentionally
+  // unconstrained".
+  const expectedPayer = optionalEvmAddress(p.expected_payer, 'policy.expected_payer')
 
   // D2.3 (Task 5): a policy where every constraint is null/omitted is
   // indistinguishable, on its face, from a caller who forgot to set policy
@@ -316,6 +336,7 @@ function parsePolicy(raw: unknown): PreflightPolicy {
     allowed_assets: allowedAssets,
     expected_recipient: expectedRecipient,
     allowed_resource_origins: allowedResourceOrigins,
+    expected_payer: expectedPayer,
   }
 }
 
@@ -599,23 +620,25 @@ const PREFLIGHT_LIMITATIONS = [
 ]
 
 /**
- * The one entry point both transports call. Validates input, runs
- * deterministic policy evaluation (with the optional sanctions check),
- * builds and signs a PREFLIGHT receipt via the existing production signer,
- * and independently re-verifies that receipt before returning — a
- * successful result is never returned with anything less than a VALID
- * receipt proof.
+ * D2.4: the same build+sign+store+mint work `preflightPayment` does, but
+ * over an ALREADY-parsed input and an ALREADY-frozen `issuedAt` — pulled out
+ * so a resumable caller (lifecycleRoute.ts) can re-run this over the exact
+ * same frozen candidate after a crash, instead of `preflightPayment`
+ * re-parsing raw input and re-freezing `new Date()` on every retry (Section
+ * 12: "signing retries should use the same frozen signing candidate rather
+ * than creating semantically new content/timestamps"). `preflightPayment`
+ * below is just this function called with a fresh `issuedAt`.
  */
-export async function preflightPayment(
-  raw: unknown,
+export async function preflightPaymentFromInput(
+  input: PreflightInput,
+  issuedAt: string,
   deps: PreflightDependencies = {}
 ): Promise<PreflightResult> {
-  const input = parsePreflightInput(raw)
   const { decision, checks } = await evaluatePreflightPolicy(input, deps)
 
   const core = buildReceiptCore({
     receipt_type: 'PREFLIGHT',
-    issued_at: new Date().toISOString(),
+    issued_at: issuedAt,
     action: input.action,
     decision,
     execution: {
@@ -675,4 +698,15 @@ export async function preflightPayment(
       endpoint: FINALIZATION_ENDPOINT,
     },
   }
+}
+
+/**
+ * The one entry point both (non-operation-bound) transports call. Validates
+ * input, freshly freezes `issued_at`, and delegates to
+ * preflightPaymentFromInput. See that function's header for why the two are
+ * separate.
+ */
+export async function preflightPayment(raw: unknown, deps: PreflightDependencies = {}): Promise<PreflightResult> {
+  const input = parsePreflightInput(raw)
+  return preflightPaymentFromInput(input, new Date().toISOString(), deps)
 }

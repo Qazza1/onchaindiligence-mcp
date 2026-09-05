@@ -19,8 +19,9 @@
  * Reuses the existing viem dependency (already used by chainalysis.ts) —
  * no second blockchain stack.
  */
-import { createPublicClient, http, getAddress, parseAbi, parseEventLogs, type Log } from 'viem'
+import { createPublicClient, http, getAddress, parseAbi, parseEventLogs, type Log, type Hex } from 'viem'
 import { base } from 'viem/chains'
+import { decodeErc3009Authorization, type DecodedPaymentAuthorization } from './paymentAuthorization.js'
 
 const TRANSFER_ABI = parseAbi(['event Transfer(address indexed from, address indexed to, uint256 value)'])
 
@@ -90,7 +91,7 @@ async function withBoundedRetry<T>(fn: () => Promise<T>): Promise<T> {
 // it per call — and doing so sidesteps a gnarly TS inference mismatch
 // between `base`'s OP-stack-specific client type and a module-level
 // `ReturnType<typeof createPublicClient> | null` variable.
-function getClient() {
+export function getClient() {
   return createPublicClient({
     chain: base,
     transport: http(process.env.BASE_RPC_URL || 'https://mainnet.base.org'),
@@ -102,6 +103,17 @@ export interface ObservedTransfer {
   from: string
   to: string
   amountAtomic: bigint
+  /**
+   * D2.4 (Section 8): the exact selected event's own identity -- network is
+   * implicit (this module is Base-only), so block_hash + transaction_hash +
+   * log_index together uniquely identify THIS transfer log, never an
+   * ambiguous "largest transfer in the tx" guess. A reorg/re-inclusion
+   * produces a genuinely different blockHash for what is otherwise the same
+   * intended payment -- see commerceObservation.ts's append-only handling.
+   */
+  blockHash: string
+  transactionHash: string
+  logIndex: number
 }
 
 export type ChainInspectionState = 'not-found' | 'reverted' | 'success' | 'rpc-unavailable'
@@ -119,6 +131,15 @@ export interface SettlementObservation {
   transfers: ObservedTransfer[]
   /** Set only when the RPC call itself failed (distinct from a genuine "transaction not found"). */
   rpcError: string | null
+  /**
+   * D2.4 (Section 6): the ERC-3009 authorizer + nonce decoded directly from
+   * the transaction's own calldata, independent of any caller claim. Null
+   * whenever the transaction's input data isn't a recognized
+   * transferWithAuthorization call (a different payment scheme, a wrapping
+   * contract, or simply not yet available because state !== 'success') --
+   * never fabricated, never inferred from the Transfer log alone.
+   */
+  paymentAuthorization: DecodedPaymentAuthorization | null
 }
 
 const NOT_FOUND: SettlementObservation = {
@@ -129,6 +150,7 @@ const NOT_FOUND: SettlementObservation = {
   sufficientlyConfirmed: false,
   transfers: [],
   rpcError: null,
+  paymentAuthorization: null,
 }
 
 /**
@@ -147,6 +169,8 @@ export interface MinimalSettlementClient {
   }>
   getBlockNumber: () => Promise<bigint>
   getBlock: (args: { blockHash: `0x${string}` }) => Promise<{ timestamp: bigint }>
+  /** D2.4: fetches the transaction's own calldata for ERC-3009 authorization decoding. Optional so existing test fakes built before D2.4 still satisfy this interface structurally. */
+  getTransaction?: (args: { hash: `0x${string}` }) => Promise<{ input: Hex }>
 }
 
 /**
@@ -185,12 +209,17 @@ export async function observeTransaction(
       sufficientlyConfirmed: false,
       transfers: [],
       rpcError: null,
+      paymentAuthorization: null,
     }
   }
 
   // Transfers are decoded straight from the receipt's own logs -- no
   // additional RPC call -- so this evidence survives even if the
-  // block/confirmations lookup below fails.
+  // block/confirmations lookup below fails. Each transfer carries its own
+  // exact log_index (D2.4 Section 8): when a transaction emits multiple
+  // Transfer logs of the expected asset, this is what lets a caller select
+  // and record ONE deterministic event rather than an ambiguous "largest
+  // transfer" guess (see commerceLifecycle.ts's selection logic).
   const decoded = parseEventLogs({ abi: TRANSFER_ABI, logs: receipt.logs, eventName: 'Transfer' })
   const transfers: ObservedTransfer[] = decoded
     .filter((log) => log.address.toLowerCase() === assetContract.toLowerCase())
@@ -199,7 +228,26 @@ export async function observeTransaction(
       from: getAddress(log.args.from),
       to: getAddress(log.args.to),
       amountAtomic: log.args.value,
+      blockHash: log.blockHash as string,
+      transactionHash: log.transactionHash as string,
+      logIndex: Number(log.logIndex),
     }))
+
+  // D2.4 (Section 6): decoded independently from the transaction's own
+  // calldata -- never from the caller's claim, never from the Transfer log
+  // alone (a log only proves value moved, not who authorized it). Best
+  // effort: absent on any transaction that isn't a direct
+  // transferWithAuthorization call (a different scheme, or a relayer that
+  // wraps it through another contract this module doesn't unwrap).
+  let paymentAuthorization: DecodedPaymentAuthorization | null = null
+  if (publicClient.getTransaction) {
+    try {
+      const tx = await publicClient.getTransaction({ hash: transactionHash })
+      paymentAuthorization = decodeErc3009Authorization(tx.input)
+    } catch {
+      paymentAuthorization = null
+    }
+  }
 
   // Confirmation depth needs the current tip + the tx's own block. Prefer
   // the receipt's own blockHash over blockNumber: a hash lookup does not
@@ -230,6 +278,7 @@ export async function observeTransaction(
       sufficientlyConfirmed: false,
       transfers,
       rpcError: err?.message || 'RPC error fetching current block number/timestamp',
+      paymentAuthorization,
     }
   }
   const confirmations = Number(currentBlock - receipt.blockNumber) + 1
@@ -242,5 +291,6 @@ export async function observeTransaction(
     sufficientlyConfirmed: confirmations >= minConfirmations(),
     transfers,
     rpcError: null,
+    paymentAuthorization,
   }
 }

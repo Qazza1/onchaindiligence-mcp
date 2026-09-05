@@ -52,3 +52,13 @@ jobs:
       - run: npx --no-install tsx test/operatorGating.ts
       - run: npx --no-install tsx test/operatorSafeError.ts
       - run: npx --no-install tsx test/operatorFinalizeRetry.ts
+      # D2.4 (ACTION-BOUND + RESUMABLE COMMERCE): operation identity/recovery,
+      # resumable paid preflight, execution-binding concurrency/state machine,
+      # binding-strength claim model, finality policy, append-only
+      # observations. All fully offline -- see each file's own header.
+      - run: npx --no-install tsx test/d24Operation.ts
+      - run: npx --no-install tsx test/d24LifecyclePreflight.ts
+      - run: npx --no-install tsx test/d24ExecutionBinding.ts
+      - run: npx --no-install tsx test/d24BindingStrength.ts
+      - run: npx --no-install tsx test/d24Finality.ts
+      - run: npx --no-install tsx test/d24Observation.ts

@@ -20,6 +20,9 @@
  *   POST /inspect/payment               free: unsigned deterministic policy inspection (D2.1A)
  *   GET  /receipts/:receiptId           free: public receipt resolver (D2.0A, durable+bundled D2.2)
  *   POST /receipts/finalize             free (capability-protected): Commerce Receipt finalization (D2.2)
+ *   POST /operations                    free: create a durable operation (D2.4)
+ *   GET  /operations/:operationId       free (recovery-credential-protected): operation status (D2.4)
+ *   POST /x402/lifecycle/preflight-payment  paid: operation-bound, resumable preflight (D2.4)
  */
 import { Hono } from 'hono'
 import { handler } from './src/server.js'
@@ -28,6 +31,8 @@ import { mountPublicMetadata } from './src/publicMetadata.js'
 import { mountReceipts } from './src/receiptsRoute.js'
 import { mountInspect } from './src/inspectRoute.js'
 import { mountFinalize } from './src/finalizeRoute.js'
+import { mountLifecycle } from './src/lifecycleRoute.js'
+import { mountLifecycleFinalize } from './src/lifecycleFinalizeRoute.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
 import { outcomeForStatus, readMcpEnvelope, recordEvent } from './src/telemetry.js'
 
@@ -108,6 +113,14 @@ app.all('/mcp', async (c) => {
   return handler(c.req.raw)
 })
 
+// D2.4: mounts POST /operations, GET /operations/:operationId, and the
+// operation-bound POST /x402/lifecycle/preflight-payment gate. Registered
+// BEFORE mountDiscovery so its gate middleware (specific path) runs before
+// mountDiscovery's own `/x402/*` paymentMiddleware (see lifecycleRoute.ts's
+// header) -- this is what lets a recognized retry skip payment entirely
+// instead of attempting to charge twice.
+mountLifecycle(app)
+
 // Additive: mounts GET /x402/screen/:address (paid + Bazaar-discoverable).
 // Does not touch the /mcp handler above. Safe to remove by deleting this call
 // and src/discovery.ts.
@@ -130,5 +143,10 @@ mountInspect(app)
 // would recreate exactly the recursive-payment problem D2.1A was built to
 // avoid on the front end.
 mountFinalize(app)
+
+// D2.4: mounts POST /operations/:operationId/execution-bindings (+ .../state)
+// and POST /operations/:operationId/finalize. All additive, layered on top
+// of finalizePayment() above -- see src/lifecycleFinalizeRoute.ts.
+mountLifecycleFinalize(app)
 
 export default app

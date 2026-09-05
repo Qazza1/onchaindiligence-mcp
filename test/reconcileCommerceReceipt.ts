@@ -26,6 +26,7 @@ const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 const RECIPIENT = '0x000000000000000000000000000000000000dEaD'
 const SENDER = '0x2222222222222222222222222222222222222222'
 const TX_HASH = ('0x' + 'ab'.repeat(32)) as `0x${string}`
+const BLOCK_HASH = ('0x' + 'cd'.repeat(32)) as `0x${string}`
 const OTHER_TX_HASH = ('0x' + 'cd'.repeat(32)) as `0x${string}`
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519')
@@ -96,8 +97,9 @@ const SUCCESS_OBSERVATION: SettlementObservation = {
   blockTimestamp: '2026-09-04T21:05:00.000Z',
   confirmations: 12,
   sufficientlyConfirmed: true,
-  transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 1_000_000n }],
+  transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 1_000_000n, blockHash: BLOCK_HASH, transactionHash: TX_HASH, logIndex: 0 }],
   rpcError: null,
+  paymentAuthorization: null,
 }
 const STILL_UNAVAILABLE_OBSERVATION: SettlementObservation = {
   state: 'rpc-unavailable',
@@ -107,6 +109,7 @@ const STILL_UNAVAILABLE_OBSERVATION: SettlementObservation = {
   sufficientlyConfirmed: false,
   transfers: [],
   rpcError: 'still down',
+  paymentAuthorization: null,
 }
 
 const goodCapability: CapabilityRecord = {

@@ -15,6 +15,7 @@ const RECIPIENT = '0x000000000000000000000000000000000000dEaD'
 const OTHER_RECIPIENT = '0x1111111111111111111111111111111111111111'
 const SENDER = '0x2222222222222222222222222222222222222222'
 const TX_HASH = ('0x' + 'ab'.repeat(32)) as `0x${string}`
+const BLOCK_HASH = ('0x' + 'cd'.repeat(32)) as `0x${string}`
 
 function preflightReceipt(overrides: Partial<ReceiptCoreFields['action']> = {}): Receipt {
   const core: ReceiptCoreFields = {
@@ -60,8 +61,9 @@ function checkFor(checks: ReturnType<typeof buildCommerceReceiptCore>['checks'],
     blockTimestamp: '2026-09-04T00:01:00.000Z',
     confirmations: 5,
     sufficientlyConfirmed: true,
-    transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 1_000_000n }],
+    transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 1_000_000n, blockHash: BLOCK_HASH, transactionHash: TX_HASH, logIndex: 0 }],
     rpcError: null,
+    paymentAuthorization: null,
   }
   const built = buildCommerceReceiptCore(preflightReceipt(), EXECUTION, observation)
   assert.equal(built.execution.status, 'CONFIRMED')
@@ -88,6 +90,7 @@ console.log('ok  exact matching Base USDC transfer -> execution CONFIRMED, settl
     sufficientlyConfirmed: false,
     transfers: [],
     rpcError: null,
+    paymentAuthorization: null,
   }
   const built = buildCommerceReceiptCore(preflightReceipt(), EXECUTION, observation)
   assert.equal(built.execution.status, 'FAILED')
@@ -108,6 +111,7 @@ console.log('ok  reverted transaction -> execution FAILED, settlement NOT_CONFIR
     sufficientlyConfirmed: false,
     transfers: [],
     rpcError: null,
+    paymentAuthorization: null,
   }
   const built = buildCommerceReceiptCore(preflightReceipt(), EXECUTION, observation)
   assert.equal(built.execution.status, 'UNKNOWN')
@@ -128,6 +132,7 @@ console.log('ok  transaction not found -> UNKNOWN/UNVERIFIED, never fabricated C
     sufficientlyConfirmed: false,
     transfers: [],
     rpcError: 'connection refused',
+    paymentAuthorization: null,
   }
   const built = buildCommerceReceiptCore(preflightReceipt(), EXECUTION, observation)
   assert.equal(built.execution.status, 'UNKNOWN')
@@ -147,6 +152,7 @@ console.log('ok  RPC unavailable -> UNKNOWN/UNVERIFIED, never fake CONFIRMED')
     sufficientlyConfirmed: true,
     transfers: [], // tx succeeded but never touched the expected asset contract
     rpcError: null,
+    paymentAuthorization: null,
   }
   const built = buildCommerceReceiptCore(preflightReceipt(), EXECUTION, observation)
   assert.equal(built.execution.status, 'CONFIRMED', 'the transaction itself did confirm')
@@ -168,8 +174,9 @@ console.log('ok  transaction confirmed but no matching transfer -> execution CON
     blockTimestamp: '2026-09-04T00:01:00.000Z',
     confirmations: 5,
     sufficientlyConfirmed: true,
-    transfers: [{ assetContract: USDC, from: SENDER, to: OTHER_RECIPIENT, amountAtomic: 2_000_000n }],
+    transfers: [{ assetContract: USDC, from: SENDER, to: OTHER_RECIPIENT, amountAtomic: 2_000_000n, blockHash: BLOCK_HASH, transactionHash: TX_HASH, logIndex: 0 }],
     rpcError: null,
+    paymentAuthorization: null,
   }
   const built = buildCommerceReceiptCore(preflightReceipt(), EXECUTION, observation)
   assert.equal(built.execution.status, 'CONFIRMED', 'the transaction itself did confirm')
@@ -193,8 +200,9 @@ console.log('ok  successful wrong recipient+amount -> execution CONFIRMED, settl
     blockTimestamp: '2026-09-04T00:01:00.000Z',
     confirmations: 5,
     sufficientlyConfirmed: true,
-    transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 2_000_000n }], // preflight asked for 1.00 (1_000_000n)
+    transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 2_000_000n, blockHash: BLOCK_HASH, transactionHash: TX_HASH, logIndex: 0 }], // preflight asked for 1.00 (1_000_000n)
     rpcError: null,
+    paymentAuthorization: null,
   }
   const built = buildCommerceReceiptCore(preflightReceipt(), EXECUTION, observation)
   assert.equal(built.execution.status, 'CONFIRMED')
@@ -214,8 +222,9 @@ console.log('ok  successful wrong amount only (right recipient) -> execution CON
     blockTimestamp: '2026-09-04T00:01:00.000Z',
     confirmations: 5,
     sufficientlyConfirmed: true,
-    transfers: [{ assetContract: USDC, from: OTHER_RECIPIENT, to: RECIPIENT, amountAtomic: 1_000_000n }],
+    transfers: [{ assetContract: USDC, from: OTHER_RECIPIENT, to: RECIPIENT, amountAtomic: 1_000_000n, blockHash: BLOCK_HASH, transactionHash: TX_HASH, logIndex: 0 }],
     rpcError: null,
+    paymentAuthorization: null,
   }
   const pf = preflightReceipt({ sender: SENDER })
   const built = buildCommerceReceiptCore(pf, EXECUTION, observation)
@@ -234,8 +243,9 @@ console.log('ok  required sender mismatch -> execution-matches-preflight FAIL, s
     blockTimestamp: '2026-09-04T00:01:00.000Z',
     confirmations: 0,
     sufficientlyConfirmed: false,
-    transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 1_000_000n }],
+    transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 1_000_000n, blockHash: BLOCK_HASH, transactionHash: TX_HASH, logIndex: 0 }],
     rpcError: null,
+    paymentAuthorization: null,
   }
   const built = buildCommerceReceiptCore(preflightReceipt(), EXECUTION, observation)
   assert.equal(built.settlement.status, 'UNVERIFIED')
@@ -254,8 +264,9 @@ console.log('ok  insufficient confirmations -> settlement UNVERIFIED, never fabr
     blockTimestamp: '2026-09-04T00:01:00.000Z',
     confirmations: 5,
     sufficientlyConfirmed: true,
-    transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 1_000_000n }],
+    transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 1_000_000n, blockHash: BLOCK_HASH, transactionHash: TX_HASH, logIndex: 0 }],
     rpcError: null,
+    paymentAuthorization: null,
   }
   buildCommerceReceiptCore(pf, EXECUTION, observation)
   // buildCommerceReceiptCore does not touch `decision` itself -- the caller
@@ -275,8 +286,9 @@ console.log('ok  limitations disclose that decision is copied unchanged, never r
     blockTimestamp: '2026-09-04T00:01:00.000Z',
     confirmations: 5,
     sufficientlyConfirmed: true,
-    transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 1_000_000n }],
+    transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 1_000_000n, blockHash: BLOCK_HASH, transactionHash: TX_HASH, logIndex: 0 }],
     rpcError: null,
+    paymentAuthorization: null,
   }
   const execWithDigest: FinalizationExecutionInput = { ...EXECUTION, result_digest: 'sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }
   const built = buildCommerceReceiptCore(preflightReceipt(), execWithDigest, observation)
@@ -299,8 +311,9 @@ console.log('ok  result_digest recorded as a caller-provided claim only, never a
     confirmations: 5,
     sufficientlyConfirmed: true,
     // Even the "closest possible" on-chain value must not be treated as a match.
-    transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 1_123_457n }],
+    transfers: [{ assetContract: USDC, from: SENDER, to: RECIPIENT, amountAtomic: 1_123_457n, blockHash: BLOCK_HASH, transactionHash: TX_HASH, logIndex: 0 }],
     rpcError: null,
+    paymentAuthorization: null,
   }
   const built = buildCommerceReceiptCore(pf, EXECUTION, observation)
   assert.equal(checkFor(built.checks, 'amount-matches-preflight')?.result, 'FAIL', 'over-precise preflight amounts must never be silently rounded into a match')

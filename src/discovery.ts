@@ -698,6 +698,78 @@ export const X402_ROUTES: X402RoutesConfig = {
         }),
       },
     },
+    // --- D2.4: operation-bound, resumable Payment Preflight ------------
+    // Same price and evaluation as POST /x402/preflight-payment, priced
+    // identically here so the payment middleware knows to gate it, but
+    // requires the two X-OCD-* headers lifecycleRoute.ts's gate checks
+    // BEFORE this middleware ever runs (see that file's header) — a lost
+    // response is recoverable without a second charge, which the legacy
+    // route above does not guarantee. See docs/PAYMENT_PREFLIGHT.md.
+    'POST /x402/lifecycle/preflight-payment': {
+      accepts: {
+        scheme: 'exact',
+        price: usd(config.prices.preflight),
+        network: CAIP2,
+        payTo: config.x402.recipient,
+      },
+      description:
+        'Operation-bound variant of preflight-payment (same evaluation, same price). Requires ' +
+        'X-OCD-Operation-Id and X-OCD-Recovery-Credential headers from POST /operations. A lost ' +
+        'response for the SAME operation and identical request body is recoverable via retry with ' +
+        'no second charge.',
+      mimeType: 'application/json',
+      extensions: {
+        ...declareDiscoveryExtension({
+          bodyType: 'json',
+          input: {
+            action: {
+              kind: 'PAYMENT',
+              resource: 'https://service.example/api',
+              network: 'eip155:8453',
+              asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+              amount: '1.00',
+              sender: null,
+              recipient: '0x000000000000000000000000000000000000dEaD',
+            },
+            policy: {
+              max_amount: '5.00',
+              allowed_networks: ['eip155:8453'],
+              allowed_assets: ['0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'],
+              expected_recipient: null,
+              allowed_resource_origins: ['https://service.example'],
+            },
+            options: { screen_recipient_sanctions: true },
+            references: { mandate_digest: null },
+          },
+          inputSchema: {
+            properties: {
+              action: { type: 'object' },
+              policy: { type: 'object' },
+              options: { type: 'object' },
+              references: { type: 'object' },
+            },
+          },
+          output: {
+            example: {
+              decision: { status: 'ALLOW', authorized: true, reasons: ['All configured policy checks passed.'] },
+              receipt: {
+                schema: 'onchaindiligence.public-action-receipt.v1',
+                receipt: { receipt_type: 'PREFLIGHT', receipt_id: 'OCD-RCP-EXAMPLE-0000-0000-0000' },
+                proof: { signed: true, key_id: 'ed25519-EXAMPLEKEY000000', algorithm: 'ed25519', signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg' },
+              },
+            },
+            schema: {
+              type: 'object',
+              properties: {
+                decision: { type: 'object' },
+                checks: { type: 'array' },
+                receipt: { type: 'object', description: 'Complete onchaindiligence.public-action-receipt.v1 envelope.' },
+              },
+            },
+          },
+        }),
+      },
+    },
 }
 
 /**

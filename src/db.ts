@@ -316,3 +316,356 @@ export async function recordReconciliation(params: {
     client.release()
   }
 }
+
+// ---------------------------------------------------------------------
+// D2.4 — durable operations, step idempotency, execution bindings, and
+// append-only chain observations. See db/schema.sql's D2.4 section for the
+// table shapes and the reasoning behind each. Every function below is a
+// thin, direct mapping onto one table — the interesting logic (claim
+// semantics, binding-strength derivation, etc.) lives in the modules that
+// call these, not here, mirroring how putReceipt/consumeCapabilityAndPublish
+// above keep the SQL itself boring.
+// ---------------------------------------------------------------------
+
+export interface CommerceOperationRecord {
+  operationId: string
+  recoveryCredentialHash: string
+  preflightState: 'not_started' | 'in_progress' | 'completed'
+  executionState: 'not_submitted' | 'prepared' | 'submission_ambiguous' | 'submitted' | 'outcome_unknown' | 'transaction_known' | 'manual_recovery_required'
+  observationState: 'none' | 'pending' | 'confirmed' | 'contradicted'
+  receiptState: 'none' | 'preflight_only' | 'commerce_issued'
+  preflightReceiptId: string | null
+  createdAt: string
+}
+
+function mapOperationRow(row: any): CommerceOperationRecord {
+  return {
+    operationId: row.operation_id,
+    recoveryCredentialHash: row.recovery_credential_hash,
+    preflightState: row.preflight_state,
+    executionState: row.execution_state,
+    observationState: row.observation_state,
+    receiptState: row.receipt_state,
+    preflightReceiptId: row.preflight_receipt_id ?? null,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+  }
+}
+
+export async function createCommerceOperation(params: { operationId: string; recoveryCredentialHash: string }): Promise<void> {
+  await sql().query(
+    `INSERT INTO commerce_operations (operation_id, recovery_credential_hash) VALUES ($1, $2)`,
+    [params.operationId, params.recoveryCredentialHash]
+  )
+}
+
+export async function getCommerceOperation(operationId: string): Promise<CommerceOperationRecord | null> {
+  const rows = (await sql().query('SELECT * FROM commerce_operations WHERE operation_id = $1', [operationId])) as unknown as any[]
+  const row = rows[0]
+  return row ? mapOperationRow(row) : null
+}
+
+export async function updateCommerceOperationState(
+  operationId: string,
+  fields: Partial<{
+    preflightState: CommerceOperationRecord['preflightState']
+    executionState: CommerceOperationRecord['executionState']
+    observationState: CommerceOperationRecord['observationState']
+    receiptState: CommerceOperationRecord['receiptState']
+    preflightReceiptId: string
+  }>
+): Promise<void> {
+  const sets: string[] = []
+  const values: unknown[] = []
+  let i = 1
+  if (fields.preflightState !== undefined) { sets.push(`preflight_state = $${i++}`); values.push(fields.preflightState) }
+  if (fields.executionState !== undefined) { sets.push(`execution_state = $${i++}`); values.push(fields.executionState) }
+  if (fields.observationState !== undefined) { sets.push(`observation_state = $${i++}`); values.push(fields.observationState) }
+  if (fields.receiptState !== undefined) { sets.push(`receipt_state = $${i++}`); values.push(fields.receiptState) }
+  if (fields.preflightReceiptId !== undefined) { sets.push(`preflight_receipt_id = $${i++}`); values.push(fields.preflightReceiptId) }
+  if (sets.length === 0) return
+  sets.push(`updated_at = now()`)
+  values.push(operationId)
+  await sql().query(`UPDATE commerce_operations SET ${sets.join(', ')} WHERE operation_id = $${i}`, values)
+}
+
+// --- lifecycle_steps -----------------------------------------------------
+
+export interface LifecycleStepRow {
+  operationId: string
+  stepKey: string
+  inputDigest: string
+  status: 'claimed' | 'paid' | 'completed'
+  frozenInput: unknown
+  capabilityToken: string | null
+  capabilityExpiresAt: string | null
+  resultJson: unknown | null
+}
+
+function mapStepRow(row: any): LifecycleStepRow {
+  return {
+    operationId: row.operation_id,
+    stepKey: row.step_key,
+    inputDigest: row.input_digest,
+    status: row.status,
+    frozenInput: row.frozen_input_json,
+    capabilityToken: row.capability_token ?? null,
+    capabilityExpiresAt: row.capability_expires_at
+      ? row.capability_expires_at instanceof Date
+        ? row.capability_expires_at.toISOString()
+        : row.capability_expires_at
+      : null,
+    resultJson: row.result_json ?? null,
+  }
+}
+
+/** Atomic claim: returns the row that now exists for (operationId, stepKey) -- freshly inserted if `claimed` is true, pre-existing otherwise. Never a partial/racy read. */
+export async function claimLifecycleStep(params: {
+  operationId: string
+  stepKey: string
+  inputDigest: string
+  frozenInput: unknown
+}): Promise<{ claimed: boolean; row: LifecycleStepRow }> {
+  const inserted = (await sql().query(
+    `INSERT INTO lifecycle_steps (operation_id, step_key, input_digest, status, frozen_input_json)
+     VALUES ($1, $2, $3, 'claimed', $4::jsonb)
+     ON CONFLICT (operation_id, step_key) DO NOTHING
+     RETURNING *`,
+    [params.operationId, params.stepKey, params.inputDigest, JSON.stringify(params.frozenInput)]
+  )) as unknown as any[]
+  if (inserted[0]) return { claimed: true, row: mapStepRow(inserted[0]) }
+
+  const existing = (await sql().query(
+    'SELECT * FROM lifecycle_steps WHERE operation_id = $1 AND step_key = $2',
+    [params.operationId, params.stepKey]
+  )) as unknown as any[]
+  if (!existing[0]) throw new Error('lifecycle step disappeared between insert and read -- this should never happen')
+  return { claimed: false, row: mapStepRow(existing[0]) }
+}
+
+export async function markLifecycleStepPaid(operationId: string, stepKey: string): Promise<void> {
+  await sql().query(
+    `UPDATE lifecycle_steps SET status = 'paid', updated_at = now() WHERE operation_id = $1 AND step_key = $2 AND status = 'claimed'`,
+    [operationId, stepKey]
+  )
+}
+
+export async function setLifecycleStepCapability(
+  operationId: string,
+  stepKey: string,
+  capabilityToken: string,
+  capabilityExpiresAt: string
+): Promise<void> {
+  await sql().query(
+    `UPDATE lifecycle_steps SET capability_token = $3, capability_expires_at = $4, updated_at = now()
+     WHERE operation_id = $1 AND step_key = $2 AND capability_token IS NULL`,
+    [operationId, stepKey, capabilityToken, capabilityExpiresAt]
+  )
+}
+
+export async function completeLifecycleStep(operationId: string, stepKey: string, resultJson: unknown): Promise<void> {
+  await sql().query(
+    `UPDATE lifecycle_steps SET status = 'completed', result_json = $3::jsonb, updated_at = now()
+     WHERE operation_id = $1 AND step_key = $2`,
+    [operationId, stepKey, JSON.stringify(resultJson)]
+  )
+}
+
+export async function getLifecycleStep(operationId: string, stepKey: string): Promise<LifecycleStepRow | null> {
+  const rows = (await sql().query(
+    'SELECT * FROM lifecycle_steps WHERE operation_id = $1 AND step_key = $2',
+    [operationId, stepKey]
+  )) as unknown as any[]
+  return rows[0] ? mapStepRow(rows[0]) : null
+}
+
+// --- execution_bindings ----------------------------------------------------
+
+export interface ExecutionBindingRecord {
+  executionRequestId: string
+  operationId: string
+  clientSubmissionKey: string
+  executorIdentity: string
+  executorVersion: string
+  recoveryCapabilityClass: 'provider-idempotent' | 'stable-payment-identity' | 'none'
+  frozenPreflightReceiptId: string
+  frozenPreflightReceiptDigest: string
+  expectedPayer: string | null
+  providerReference: string | null
+  submissionState: string
+}
+
+function mapBindingRow(row: any): ExecutionBindingRecord {
+  return {
+    executionRequestId: row.execution_request_id,
+    operationId: row.operation_id,
+    clientSubmissionKey: row.client_submission_key,
+    executorIdentity: row.executor_identity,
+    executorVersion: row.executor_version,
+    recoveryCapabilityClass: row.recovery_capability_class,
+    frozenPreflightReceiptId: row.frozen_preflight_receipt_id,
+    frozenPreflightReceiptDigest: row.frozen_preflight_receipt_digest,
+    expectedPayer: row.expected_payer ?? null,
+    providerReference: row.provider_reference ?? null,
+    submissionState: row.submission_state,
+  }
+}
+
+/** Idempotent by (operationId, clientSubmissionKey): a stale retrying worker can never mint a second binding for what it believes is the same submission attempt. */
+export async function createExecutionBinding(params: {
+  executionRequestId: string
+  operationId: string
+  clientSubmissionKey: string
+  executorIdentity: string
+  executorVersion: string
+  recoveryCapabilityClass: ExecutionBindingRecord['recoveryCapabilityClass']
+  frozenPreflightReceiptId: string
+  frozenPreflightReceiptDigest: string
+  expectedPayer: string | null
+  providerReference: string | null
+}): Promise<{ created: boolean; binding: ExecutionBindingRecord }> {
+  const inserted = (await sql().query(
+    `INSERT INTO execution_bindings
+       (execution_request_id, operation_id, client_submission_key, executor_identity, executor_version,
+        recovery_capability_class, frozen_preflight_receipt_id, frozen_preflight_receipt_digest, expected_payer, provider_reference)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ON CONFLICT (operation_id, client_submission_key) DO NOTHING
+     RETURNING *`,
+    [
+      params.executionRequestId,
+      params.operationId,
+      params.clientSubmissionKey,
+      params.executorIdentity,
+      params.executorVersion,
+      params.recoveryCapabilityClass,
+      params.frozenPreflightReceiptId,
+      params.frozenPreflightReceiptDigest,
+      params.expectedPayer,
+      params.providerReference,
+    ]
+  )) as unknown as any[]
+  if (inserted[0]) return { created: true, binding: mapBindingRow(inserted[0]) }
+
+  const existing = (await sql().query(
+    'SELECT * FROM execution_bindings WHERE operation_id = $1 AND client_submission_key = $2',
+    [params.operationId, params.clientSubmissionKey]
+  )) as unknown as any[]
+  if (!existing[0]) throw new Error('execution binding disappeared between insert and read -- this should never happen')
+  return { created: false, binding: mapBindingRow(existing[0]) }
+}
+
+export async function updateExecutionBindingSubmissionState(executionRequestId: string, submissionState: string): Promise<void> {
+  await sql().query(`UPDATE execution_bindings SET submission_state = $2, updated_at = now() WHERE execution_request_id = $1`, [
+    executionRequestId,
+    submissionState,
+  ])
+}
+
+export async function getExecutionBinding(executionRequestId: string): Promise<ExecutionBindingRecord | null> {
+  const rows = (await sql().query('SELECT * FROM execution_bindings WHERE execution_request_id = $1', [
+    executionRequestId,
+  ])) as unknown as any[]
+  return rows[0] ? mapBindingRow(rows[0]) : null
+}
+
+// --- commerce_observations -------------------------------------------------
+
+export interface CommerceObservationRecord {
+  observationId: string
+  operationId: string
+  network: string
+  blockNumber: string
+  blockHash: string
+  transactionHash: string
+  logIndex: number
+  observedPayer: string | null
+  observedRecipient: string | null
+  observedAmountAtomic: string | null
+  tokenContract: string
+  paymentAuthorizer: string | null
+  paymentAuthorizationNonce: string | null
+  finalityPolicy: string
+  finalityState: string
+  chainHeadUsed: unknown | null
+  bindingStrength: 'TRANSFER_MATCH_ONLY' | 'EXECUTOR_CORRELATED' | 'PAYMENT_IDENTITY_LINKED'
+  bundleDigest: string | null
+}
+
+function mapObservationRow(row: any): CommerceObservationRecord {
+  return {
+    observationId: row.observation_id,
+    operationId: row.operation_id,
+    network: row.network,
+    blockNumber: row.block_number,
+    blockHash: row.block_hash,
+    transactionHash: row.transaction_hash,
+    logIndex: row.log_index,
+    observedPayer: row.observed_payer ?? null,
+    observedRecipient: row.observed_recipient ?? null,
+    observedAmountAtomic: row.observed_amount_atomic ?? null,
+    tokenContract: row.token_contract,
+    paymentAuthorizer: row.payment_authorizer ?? null,
+    paymentAuthorizationNonce: row.payment_authorization_nonce ?? null,
+    finalityPolicy: row.finality_policy,
+    finalityState: row.finality_state,
+    chainHeadUsed: row.chain_head_used_json ?? null,
+    bindingStrength: row.binding_strength,
+    bundleDigest: row.bundle_digest ?? null,
+  }
+}
+
+/**
+ * Append-only by construction: the natural key (network, block_hash,
+ * transaction_hash, log_index) means the SAME exact chain event can never be
+ * recorded twice, while a genuinely different event (reorg re-inclusion, a
+ * later corrective re-observation, a second payment attempt) always inserts
+ * a new row rather than colliding with or overwriting a prior one.
+ */
+export async function recordCommerceObservation(
+  params: Omit<CommerceObservationRecord, 'observationId'> & { observationId: string }
+): Promise<{ created: boolean; observation: CommerceObservationRecord }> {
+  const inserted = (await sql().query(
+    `INSERT INTO commerce_observations
+       (observation_id, operation_id, network, block_number, block_hash, transaction_hash, log_index,
+        observed_payer, observed_recipient, observed_amount_atomic, token_contract,
+        payment_authorizer, payment_authorization_nonce, finality_policy, finality_state,
+        chain_head_used_json, binding_strength, bundle_digest)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18)
+     ON CONFLICT (network, block_hash, transaction_hash, log_index) DO NOTHING
+     RETURNING *`,
+    [
+      params.observationId,
+      params.operationId,
+      params.network,
+      params.blockNumber,
+      params.blockHash,
+      params.transactionHash,
+      params.logIndex,
+      params.observedPayer,
+      params.observedRecipient,
+      params.observedAmountAtomic,
+      params.tokenContract,
+      params.paymentAuthorizer,
+      params.paymentAuthorizationNonce,
+      params.finalityPolicy,
+      params.finalityState,
+      params.chainHeadUsed === null ? null : JSON.stringify(params.chainHeadUsed),
+      params.bindingStrength,
+      params.bundleDigest,
+    ]
+  )) as unknown as any[]
+  if (inserted[0]) return { created: true, observation: mapObservationRow(inserted[0]) }
+
+  const existing = (await sql().query(
+    'SELECT * FROM commerce_observations WHERE network = $1 AND block_hash = $2 AND transaction_hash = $3 AND log_index = $4',
+    [params.network, params.blockHash, params.transactionHash, params.logIndex]
+  )) as unknown as any[]
+  if (!existing[0]) throw new Error('commerce observation disappeared between insert and read -- this should never happen')
+  return { created: false, observation: mapObservationRow(existing[0]) }
+}
+
+export async function listCommerceObservations(operationId: string): Promise<CommerceObservationRecord[]> {
+  const rows = (await sql().query('SELECT * FROM commerce_observations WHERE operation_id = $1 ORDER BY observed_at ASC', [
+    operationId,
+  ])) as unknown as any[]
+  return rows.map(mapObservationRow)
+}
