@@ -304,4 +304,59 @@ console.log("ok  the gate's pre-payment input validation still runs, and still r
 }
 console.log('ok  a recognized retry of an already-completed step is served by the gate directly, with zero additional payment-middleware invocations, in the fixed mount order')
 
+// --- 5. D2.5A second incident, reproduced through the REAL mount functions
+// with a REALISTIC x402-shaped stand-in middleware (402 without a payment
+// header, success with one -- exactly `@x402/hono`'s own check via
+// `payment-signature`/`x-payment`): an unpaid price probe (no payment
+// header -- exactly what the SDK operator's checkLivePrices() sends to
+// read the live preflight fee before any wallet prompt) claims the step
+// and gets its 402, same as always. A LATER real payment attempt (the
+// SDK's payment-wrapped fetch retrying with a payment header attached)
+// for the SAME operation must still be able to complete -- not 425 forever
+// -- reproducing the exact live incident: the operation was left claimed
+// by a probe, and the real "Authorize & run lifecycle" attempt could never
+// get past the gate to reach payment middleware at all. ------------------
+
+function realisticX402Middleware(paymentAttempts: { count: number }) {
+  return async (c: any, next: any) => {
+    const hasPayment = Boolean(c.req.header('payment-signature') || c.req.header('x-payment'))
+    if (!hasPayment) {
+      return c.json({ error: 'payment required (simulated 402, no payment header present)' }, 402)
+    }
+    paymentAttempts.count++
+    await next()
+  }
+}
+
+{
+  const opStore = makeFakeOperationStore()
+  const stepStore = makeFakeStepStore()
+  const deps = buildDeps(opStore, stepStore)
+  const paymentAttempts = { count: 0 }
+
+  const app = new Hono()
+  mountLifecycle(app, deps)
+  app.use('/x402/*', realisticX402Middleware(paymentAttempts))
+  mountLifecyclePreflightHandler(app, deps)
+
+  // Step 1: the price probe -- no payment header, exactly checkLivePrices().
+  const probe = await app.request(PATH, { method: 'POST', headers: headers(), body: JSON.stringify(baseBody()) })
+  assert.equal(probe.status, 402, 'an unpaid probe must reach the 402 challenge')
+  assert.equal(paymentAttempts.count, 0, 'a probe with no payment header must never count as a payment attempt')
+  assert.equal(opStore.op.preflightState, 'not_started', 'a probe must never advance operation state')
+
+  // Step 2: the real "Authorize & run lifecycle" attempt -- a payment
+  // header IS attached this time (simulating wrapFetchWithPayment's retry
+  // after signing). Before the fix, this hit the gate's 425 branch
+  // (status still 'claimed' from step 1) and NEVER reached this
+  // middleware at all.
+  const paid = await app.request(PATH, { method: 'POST', headers: headers({ 'payment-signature': 'fake-signed-payment-payload' }), body: JSON.stringify(baseBody()) })
+  assert.equal(paid.status, 200, 'a real payment attempt for a step left claimed-but-unpaid by an earlier probe must complete, never 425')
+  const paidBody = (await paid.json()) as any
+  assert.equal(paidBody.receipt.receipt.receipt_type, 'PREFLIGHT')
+  assert.equal(paymentAttempts.count, 1, 'the paid attempt must reach payment middleware exactly once')
+  assert.equal(opStore.op.preflightState, 'completed')
+}
+console.log('ok  D2.5A second incident reproduced and fixed: an unpaid price probe claiming the step no longer blocks a later real payment attempt from completing')
+
 console.log('\nAll lifecycle route mounting-order regression tests passed.')

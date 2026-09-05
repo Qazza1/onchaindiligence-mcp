@@ -272,25 +272,36 @@ console.log('ok  retrying a COMPLETED preflight step returns the identical resul
 }
 console.log('ok  resuming a paid-but-incomplete step produces ONE frozen result (same issued_at, same capability), with zero additional payment attempts')
 
-// --- a concurrent duplicate claim while the first is still in flight -> 425, no payment ---
+// --- D2.5A incident: a step claimed but never paid (e.g. an unpaid price
+// probe reading the live 402 challenge before any payment is attempted)
+// must not permanently block a LATER request from completing that same
+// payment -- it previously 425'd forever, with no way to ever resume. See
+// lifecycleRoute.ts's header ("UNPAID PROBES CAN PERMANENTLY CLAIM A STEP").
 
 {
   const opStore = makeFakeOperationStore()
   const stepStore = makeFakeStepStore()
   const { app, paymentCalls } = buildTestApp(opStore, stepStore)
 
-  // Manually simulate "claimed but not yet paid" (the narrow race window).
+  // Simulate exactly what a price probe leaves behind: the step claimed,
+  // with no payment ever attempted against it (claimLifecycleStep alone,
+  // never markLifecycleStepPaid).
   const { parsePreflightInput } = await import('../src/preflight.js')
   const { contentId } = await import('../src/receipts.js')
   const input = parsePreflightInput(baseBody())
   const inputDigest = contentId(input)
   await stepStore.step.claimLifecycleStep!({ operationId: OPERATION_ID, stepKey: 'preflight', inputDigest, frozenInput: { input, issuedAt: new Date().toISOString() } })
 
+  // A later request for the SAME operation + step + input must still be
+  // able to reach payment middleware and complete -- never stuck at 425.
   const res = await app.request('/preflight', { method: 'POST', headers: headers(), body: JSON.stringify(baseBody()) })
-  assert.equal(res.status, 425)
-  assert.equal(paymentCalls.length, 0, 'a concurrent duplicate for a not-yet-paid step must never attempt payment')
+  assert.equal(res.status, 200, 'a step claimed by an earlier unpaid probe must still be resumable to a real payment attempt')
+  const body = (await res.json()) as any
+  assert.equal(body.receipt.receipt.receipt_type, 'PREFLIGHT')
+  assert.equal(paymentCalls.length, 1, 'the resumed request must actually reach payment middleware exactly once')
+  assert.equal(opStore.op.preflightState, 'completed')
 }
-console.log('ok  a concurrent duplicate claim while payment is still pending is refused (425), never double-attempts payment')
+console.log('ok  a step left claimed-but-unpaid by an earlier request (e.g. a price probe) can still be resumed to a real payment attempt, not stuck at 425 forever')
 
 // --- same operation, DIFFERENT input -> explicit conflict, not silently reused ---
 

@@ -32,8 +32,10 @@
  *   - already completed      -> return the stored result, no next(), no payment
  *   - already paid (crashed  -> RESUME from the frozen candidate, no next(),
  *     before completing)        no payment, using the raw signing seam
- *   - claimed but not yet     -> 425, retry shortly (never a second payment
- *     paid (concurrent race)     attempt while the first might still land)
+ *   - claimed but not yet     -> let payment middleware run again (see the
+ *     paid                       "UNPAID PROBES" incident below for why this
+ *                                is NOT the same as a fresh claim skipping
+ *                                the journal, and why it no longer 425s)
  *
  * REGISTRATION ORDER IS LOAD-BEARING (fixed post-D2.5A live re-qualification
  * -- see git history for the incident): Hono composes every handler whose
@@ -50,6 +52,30 @@
  * handler is a separate export, mountLifecyclePreflightHandler(), called
  * AFTER mountDiscovery() so payment middleware sits between them. See each
  * function's own doc comment and index.ts's call sites.
+ *
+ * UNPAID PROBES CAN PERMANENTLY CLAIM A STEP (second incident, same
+ * milestone -- see git history): claimStep() durably claims on ANY request
+ * that reaches this gate, whether or not that request ever carries a
+ * payment authorization. There is no separate "resumable preflight, but
+ * don't actually pay yet" endpoint -- the ONLY way to read the live
+ * preflight price before paying (the SDK operator's checkLivePrices(), and
+ * any well-behaved caller doing the same) is to send a real, unauthenticated
+ * request to this exact route and read its 402 challenge. That request
+ * claims the step, then payment middleware 402s it (no payment header), and
+ * the request ends there -- but the claimed row never advances (there is no
+ * timeout, and nothing else transitions 'claimed' -> 'paid'/'completed'
+ * except a request that actually completes payment). Because the gate used
+ * to treat ANY 'claimed'-but-unpaid row as "a payment might still be
+ * concurrently landing" and refused (425) every further attempt with the
+ * same input, a REAL payment attempt for that operation -- arriving any
+ * time after nothing more than a single price probe -- could never
+ * complete: it hit the 425 branch instead of ever reaching payment
+ * middleware, and stayed stuck there forever (confirmed live: an operation
+ * left claimed by one price probe never recovered on its own). Fixed by
+ * letting a 'claimed'-but-unpaid step fall through to payment middleware
+ * again on any subsequent request with the same input, exactly like a
+ * fresh claim -- see the gate's own comment at the 'claimed' branch for the
+ * reasoning on why this is safe.
  */
 import type { Context, Hono, Next } from 'hono'
 import { createOperation, authenticateOperation, isValidOperationIdFormat } from './operation.js'
@@ -184,16 +210,39 @@ export function createLifecyclePreflightGate(deps: LifecycleRouteDependencies = 
           return c.json({ error: err?.message || 'resuming this operation\'s preflight step failed' }, 502)
         }
       }
-      // status === 'claimed': a concurrent request for the SAME step is
-      // currently between claim and the 'paid' checkpoint. Never attempt
-      // payment again while that might still land -- ask the caller to
-      // retry shortly instead.
-      c.header('Retry-After', '3')
-      return c.json({ error: "this operation's preflight step is already being processed, retry shortly" }, 425)
+      // status === 'claimed': FALL THROUGH to the fresh-claim path below --
+      // see this file's header ("REGISTRATION ORDER IS LOAD-BEARING") for
+      // the sibling incident this is the second half of. Confirmed live
+      // (D2.5A): claimStep() durably claims on ANY request that reaches
+      // this gate, including a plain unauthenticated PRICE PROBE (the
+      // resumable route is the only way to read the live preflight fee
+      // before paying -- see the SDK operator's checkLivePrices()). That
+      // probe's request receives no payment header, so payment middleware
+      // always 402s it and the request ends there -- but the step it
+      // claimed stays 'claimed' forever (there is no timeout and nothing
+      // else advances it). This module used to treat 'claimed' as proof a
+      // payment might still be concurrently landing and refused (425) any
+      // further attempt against the same input -- which meant a REAL
+      // payment attempt for the SAME operation, arriving after nothing
+      // more than an earlier price probe, could never complete: it hit
+      // this exact 425 branch instead of ever reaching payment middleware.
+      // A request that carries no payment authorization can never
+      // complete a charge regardless (payment middleware 402s it every
+      // time), so there is nothing to protect by blocking it -- and a
+      // request that DOES carry one is precisely the resumed attempt this
+      // step exists to allow. Genuinely concurrent duplicate real-payment
+      // attempts (two overlapping requests each independently signed) are
+      // no longer blocked at this layer; x402 payment middleware and the
+      // facilitator's own per-authorization settlement are the actual
+      // authority on whether a given payment is valid, and each concurrent
+      // attempt still needs its own independently signed authorization --
+      // this module was never a substitute for that. See
+      // test/lifecycleRouteMounting.ts for the regression coverage.
     }
 
-    // Fresh claim: stash the frozen candidate for the real handler and let
-    // payment middleware run.
+    // Fresh claim, or a resumed 'claimed'-but-unpaid step (see above):
+    // stash the frozen candidate for the real handler and let payment
+    // middleware run.
     c.set('ocdFrozenPreflightInput', frozen)
     await next()
   }
