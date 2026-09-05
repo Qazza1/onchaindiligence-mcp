@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run typecheck
+      # D2.3 (Task 10): the required lifecycle verification gate. Every file
+      # here is fully offline (no live network, no real signing key, no real
+      # database, no payment) -- see each file's own header for what it
+      # fakes/injects. Deliberately excludes:
+      #   - test/client.ts: makes REAL x402 payments against the live
+      #     deployed server with a funded private key. Never runs in CI.
+      #   - test/storage.ts: needs a real Postgres reachable via
+      #     DATABASE_URL. Not wired into CI yet -- db.ts's
+      #     @neondatabase/serverless client speaks Neon's HTTP/WebSocket
+      #     proxy protocol, not a plain Postgres wire connection, so a
+      #     vanilla `postgres:` service container here would not work
+      #     without an additional local proxy shim. Deferred rather than
+      #     rushed; run it locally via
+      #     `vercel env pull .env.local && npx tsx --env-file=.env.local test/storage.ts`.
+      - run: npx --no-install tsx test/canonicalVerdict.ts
+      - run: npx --no-install tsx test/x402Routes.ts
+      - run: npx --no-install tsx test/mcpToolDescriptions.ts
+      - run: npx --no-install tsx test/preflight.ts
+      - run: npx --no-install tsx test/inspectPayment.ts
+      - run: npx --no-install tsx test/receipts.ts
+      - run: npx --no-install tsx test/receiptConformance.ts
+      - run: npx --no-install tsx test/historicalReceiptCompatibility.ts
+      - run: npx --no-install tsx test/commerceReceipt.ts
+      - run: npx --no-install tsx test/settlement.ts
+      - run: npx --no-install tsx test/finalize.ts
+      - run: npx --no-install tsx test/reconcileCommerceReceipt.ts
+      - run: npx --no-install tsx test/firstCommerceLifecycle.ts
+      - run: npx --no-install tsx test/operatorGating.ts
+      - run: npx --no-install tsx test/operatorSafeError.ts
+      - run: npx --no-install tsx test/operatorFinalizeRetry.ts

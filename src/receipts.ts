@@ -48,6 +48,24 @@ export function contentId(value: unknown): string {
   return `sha256:${createHash('sha256').update(canonicalizeJson(value), 'utf8').digest('base64url')}`
 }
 
+// ---------------------------------------------------------------------
+// D2.3: strict exact-ISO-8601 timestamp parsing, mirroring
+// packages/agent-evidence/src/canonical.ts's parseTimestamp exactly (regex
+// pre-check + toISOString() round-trip) -- never a bare Date.parse()/
+// new Date() on a value that could be malformed, since a malformed value
+// there produces NaN, and NaN comparisons are always false (silently
+// passing checks they should fail). Returns null, never NaN, on anything
+// that isn't an exact "YYYY-MM-DDTHH:mm:ss.sssZ" UTC timestamp.
+// ---------------------------------------------------------------------
+const STRICT_TIMESTAMP_PATTERN = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/
+
+export function parseStrictTimestamp(value: unknown): number | null {
+  if (typeof value !== 'string' || !STRICT_TIMESTAMP_PATTERN.test(value)) return null
+  const ms = Date.parse(value)
+  if (!Number.isFinite(ms) || new Date(ms).toISOString() !== value) return null
+  return ms
+}
+
 /**
  * The exact bytes an `onchaindiligence.attestation.v2` signer must sign over
  * a finalized receipt — identical construction to what `verifyReceiptEnvelope`
@@ -258,21 +276,134 @@ export async function fetchAttestationKeyRegistry(
   return Array.isArray(body) ? body : body.keys ?? []
 }
 
+// ---------------------------------------------------------------------
+// D2.3: strict, closed-schema shape validation -- reused by
+// verifyReceiptEnvelope() so a correctly-signed but schema-invalid receipt
+// (an illegal enum value, an extra field, a missing required field) can
+// never verify VALID. buildReceiptCore() only runs this at CONSTRUCTION
+// time; a receipt assembled by hand (bypassing buildReceiptCore) and then
+// digested/signed would otherwise sail through verification untouched,
+// since digest/id/signature checks alone only prove self-consistency, not
+// schema conformance. Mirrors (by hand; see file header) the closed-schema
+// semantics of spec/agent-evidence/v0/schema/public-action-receipt.schema.json
+// (additionalProperties: false at every level) without an Ajv dependency.
+// ---------------------------------------------------------------------
+function closedKeys(value: unknown, required: readonly string[], label: string, optional: readonly string[] = []): string | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return `${label} must be an object`
+  }
+  const allowedSet = new Set([...required, ...optional])
+  for (const key of Object.keys(value as Record<string, unknown>)) {
+    if (!allowedSet.has(key)) return `${label} has an unexpected field: ${key}`
+  }
+  for (const key of required) {
+    if (!(key in (value as Record<string, unknown>))) return `${label} is missing required field: ${key}`
+  }
+  return null
+}
+
+function validateReceiptShape(envelope: unknown): string | null {
+  const envelopeError = closedKeys(envelope, ['schema', 'receipt', 'proof'], 'envelope')
+  if (envelopeError) return envelopeError
+  const { receipt, proof } = envelope as { receipt: unknown; proof: unknown }
+
+  const receiptError = closedKeys(
+    receipt,
+    ['receipt_id', 'receipt_digest', 'receipt_type', 'issued_at', 'action', 'decision', 'execution', 'settlement', 'checks', 'links', 'limitations'],
+    'receipt'
+  )
+  if (receiptError) return receiptError
+  const r = receipt as ReceiptCoreFields & { receipt_id: unknown; receipt_digest: unknown }
+  if (!RECEIPT_TYPES.has(r.receipt_type)) return `receipt.receipt_type is not a recognized enum value: ${r.receipt_type}`
+  if (typeof r.receipt_id !== 'string' || typeof r.receipt_digest !== 'string') return 'receipt_id/receipt_digest must be strings'
+
+  const actionError = closedKeys(r.action, ['kind', 'resource', 'network', 'asset', 'amount', 'sender', 'recipient'], 'receipt.action')
+  if (actionError) return actionError
+
+  const decisionError = closedKeys(r.decision, ['status', 'authorized', 'reasons'], 'receipt.decision')
+  if (decisionError) return decisionError
+  if (!DECISION_STATUSES.has(r.decision.status)) return `receipt.decision.status is not a recognized enum value: ${r.decision.status}`
+  if (r.decision.authorized !== null && typeof r.decision.authorized !== 'boolean') return 'receipt.decision.authorized must be boolean or null'
+  if (!Array.isArray(r.decision.reasons) || r.decision.reasons.some((x) => typeof x !== 'string')) {
+    return 'receipt.decision.reasons must be an array of strings'
+  }
+
+  const executionError = closedKeys(r.execution, ['provider', 'status', 'transaction_hash', 'submitted_at', 'confirmed_at'], 'receipt.execution')
+  if (executionError) return executionError
+  if (!EXECUTION_STATUSES.has(r.execution.status)) return `receipt.execution.status is not a recognized enum value: ${r.execution.status}`
+
+  const settlementError = closedKeys(r.settlement, ['status', 'detail'], 'receipt.settlement')
+  if (settlementError) return settlementError
+  if (!SETTLEMENT_STATUSES.has(r.settlement.status)) return `receipt.settlement.status is not a recognized enum value: ${r.settlement.status}`
+
+  if (!Array.isArray(r.checks)) return 'receipt.checks must be an array'
+  for (const [index, check] of r.checks.entries()) {
+    const checkError = closedKeys(check, ['id', 'result', 'summary', 'evidence_digest'], `receipt.checks[${index}]`)
+    if (checkError) return checkError
+    if (!CHECK_RESULTS.has(check.result)) return `receipt.checks[${index}].result is not a recognized enum value: ${check.result}`
+  }
+
+  const linksError = closedKeys(r.links, ['agent_evidence_bundle_digest', 'preflight_receipt_id'], 'receipt.links')
+  if (linksError) return linksError
+
+  if (!Array.isArray(r.limitations) || r.limitations.some((x) => typeof x !== 'string')) {
+    return 'receipt.limitations must be an array of strings'
+  }
+
+  const proofError = closedKeys(
+    proof,
+    ['signed', 'schema_version', 'issuer', 'purpose', 'issued_at', 'key_id', 'algorithm', 'canonicalization', 'signature'],
+    'proof',
+    ['signing_input_hint']
+  )
+  if (proofError) return proofError
+
+  return null
+}
+
+export interface StructuralIntegrityResult {
+  ok: boolean
+  code: string
+  message: string
+}
+
+/**
+ * D2.3 (Task 4): the LOCAL, network-free half of receipt verification --
+ * schema shape, receipt_digest, and receipt_id self-consistency. No key
+ * registry, no signature check, no network call of any kind. This is what
+ * the public resolver (receiptsRoute.ts) uses to distinguish a genuinely
+ * corrupt/malformed stored row (reject) from a structurally sound receipt
+ * whose TRUST cannot currently be confirmed because the key registry is
+ * temporarily unreachable (still serve it — see that file's comments).
+ * verifyReceiptEnvelope() below calls this first and continues into the
+ * proof/signature/lifecycle checks only if it passes.
+ */
+export function checkReceiptStructuralIntegrity(envelope: unknown): StructuralIntegrityResult {
+  const shapeError = validateReceiptShape(envelope)
+  if (shapeError) return { ok: false, code: 'schema-invalid', message: shapeError }
+  const e = envelope as PublicActionReceiptEnvelope
+  if (e.schema !== PUBLIC_ACTION_RECEIPT_SCHEMA) {
+    return { ok: false, code: 'schema-mismatch', message: 'envelope.schema is not the expected receipt schema' }
+  }
+  const { receipt_id, receipt_digest, ...core } = e.receipt
+  const recomputedDigest = computeReceiptDigest(core as ReceiptCoreFields)
+  if (recomputedDigest !== receipt_digest) {
+    return { ok: false, code: 'digest-mismatch', message: 'receipt_digest does not match a fresh digest of the receipt content' }
+  }
+  if (formatReceiptId(recomputedDigest) !== receipt_id) {
+    return { ok: false, code: 'id-mismatch', message: 'receipt_id does not match formatReceiptId(receipt_digest)' }
+  }
+  return { ok: true, code: 'ok', message: 'receipt content, digest, and id are self-consistent' }
+}
+
 export function verifyReceiptEnvelope(
   envelope: PublicActionReceiptEnvelope,
   registry: MinimalKeyRecord[],
   options: { expectedIssuer?: string; expectedPurpose?: string; now?: Date } = {}
 ): { state: ReceiptVerificationState; code: string; message: string } {
-  if (envelope.schema !== PUBLIC_ACTION_RECEIPT_SCHEMA) {
-    return { state: 'INVALID', code: 'schema-mismatch', message: 'envelope.schema is not the expected receipt schema' }
-  }
-  const { receipt_id, receipt_digest, ...core } = envelope.receipt
-  const recomputedDigest = computeReceiptDigest(core as ReceiptCoreFields)
-  if (recomputedDigest !== receipt_digest) {
-    return { state: 'INVALID', code: 'digest-mismatch', message: 'receipt_digest does not match a fresh digest of the receipt content' }
-  }
-  if (formatReceiptId(recomputedDigest) !== receipt_id) {
-    return { state: 'INVALID', code: 'id-mismatch', message: 'receipt_id does not match formatReceiptId(receipt_digest)' }
+  const structural = checkReceiptStructuralIntegrity(envelope)
+  if (!structural.ok) {
+    return { state: 'INVALID', code: structural.code, message: structural.message }
   }
 
   const proof = envelope.proof
@@ -283,6 +414,9 @@ export function verifyReceiptEnvelope(
     return { state: 'INVALID', code: 'schema-version-unsupported', message: `unsupported proof schema_version: ${proof.schema_version}` }
   }
   if (proof.algorithm !== 'ed25519') return { state: 'INVALID', code: 'algorithm-unsupported', message: `unsupported algorithm: ${proof.algorithm}` }
+  if (proof.canonicalization !== 'RFC8785') {
+    return { state: 'INVALID', code: 'canonicalization-unsupported', message: `unsupported canonicalization: ${proof.canonicalization}` }
+  }
   if (proof.issuer !== expectedIssuer) return { state: 'INVALID', code: 'issuer-mismatch', message: 'proof issuer does not match the exact expected issuer' }
   if (proof.purpose !== expectedPurpose) return { state: 'INVALID', code: 'purpose-mismatch', message: 'proof purpose does not match the exact expected purpose' }
   if (!proof.signature || !/^[A-Za-z0-9_-]{86}$/.test(proof.signature)) {
@@ -323,12 +457,39 @@ export function verifyReceiptEnvelope(
     return { state: 'INVALID', code: 'signature-invalid', message: 'Ed25519 signature does not verify over the exact canonical signing input' }
   }
 
+  // D2.3: strict timestamp parsing everywhere below -- never Date.parse()
+  // on a value that might be malformed. A NaN comparison is always false,
+  // so "issuedAtMs < validFromMs" with a garbage (non-null) valid_from used
+  // to silently pass this gate entirely (neither side of the OR fired) and
+  // fall through to VALID. Distinguish WHO controls the malformed value:
+  // proof.issued_at is signer-asserted content -> a malformed value there
+  // is INVALID (the signed content itself is broken). key.valid_from/
+  // valid_until are externally-registered infrastructure metadata -> a
+  // malformed value there is UNVERIFIABLE (no defensible trust boundary),
+  // exactly like the already-handled "missing" case above -- never
+  // silently treated as "no boundary" (which is what NaN comparisons did).
   const now = options.now ?? new Date()
-  const issuedAtMs = Date.parse(proof.issued_at ?? '')
-  const validFromMs = Date.parse(key.valid_from)
-  const validUntilMs = key.valid_until ? Date.parse(key.valid_until) : Number.POSITIVE_INFINITY
-  if (!Number.isFinite(issuedAtMs) || issuedAtMs < validFromMs || issuedAtMs > validUntilMs) {
-    return { state: 'INVALID', code: 'key-window-violation', message: 'proof.issued_at falls outside the signing key validity window' }
+  const issuedAtMs = parseStrictTimestamp(proof.issued_at)
+  if (issuedAtMs === null) {
+    return { state: 'INVALID', code: 'issued-at-invalid', message: 'proof.issued_at is not an exact UTC ISO-8601 timestamp' }
+  }
+  const validFromMs = parseStrictTimestamp(key.valid_from)
+  if (validFromMs === null) {
+    return { state: 'UNVERIFIABLE', code: 'key-valid-from-invalid', message: 'signing key valid_from is not a well-formed timestamp -- no defensible activation boundary' }
+  }
+  let validUntilMs = Number.POSITIVE_INFINITY
+  if (key.valid_until !== null && key.valid_until !== undefined) {
+    const parsedValidUntil = parseStrictTimestamp(key.valid_until)
+    if (parsedValidUntil === null) {
+      return { state: 'UNVERIFIABLE', code: 'key-valid-until-invalid', message: 'signing key valid_until is not a well-formed timestamp' }
+    }
+    validUntilMs = parsedValidUntil
+  }
+  if (issuedAtMs < validFromMs) {
+    return { state: 'INVALID', code: 'key-not-yet-valid', message: "proof.issued_at is before the signing key's valid_from" }
+  }
+  if (issuedAtMs > validUntilMs) {
+    return { state: 'INVALID', code: 'key-expired', message: "proof.issued_at is after the signing key's valid_until" }
   }
   if (issuedAtMs > now.getTime() + 5 * 60 * 1000) {
     return { state: 'INVALID', code: 'signature-time-future', message: 'signed time exceeds allowed clock skew' }

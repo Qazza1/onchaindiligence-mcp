@@ -133,6 +133,7 @@ console.log('ok  free inspect performs no sanctions call, no signing, and return
       issued_at,
       key_id: TEST_KEY_ID,
       algorithm: 'ed25519',
+      canonicalization: 'RFC8785',
       signature,
     }
   }

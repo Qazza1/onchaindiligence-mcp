@@ -78,6 +78,7 @@ async function fakeSignReceipt(receipt: Receipt): Promise<PublicActionReceiptEnv
     issued_at,
     key_id: TEST_KEY_ID,
     algorithm: 'ed25519',
+    canonicalization: 'RFC8785',
     signature,
   }
 }
@@ -130,6 +131,54 @@ assert.throws(() => parsePreflightInput(baseInput({ amount: 1.5 as any })), /act
 assert.throws(() => parsePreflightInput(baseInput({ recipient: 'not-an-address' })), /EVM address/)
 assert.doesNotThrow(() => parsePreflightInput(baseInput()))
 console.log('ok  input parsing rejects malformed input before any network call')
+
+// --- D2.3 (Task 5): unknown policy fields are rejected, never silently dropped ---
+
+{
+  const withTypo = baseInput() as any
+  withTypo.policy = { ...withTypo.policy, max_amunt: '5.00' } // typo: real "max_amount" left unset
+  assert.throws(() => parsePreflightInput(withTypo), /policy has an unrecognized field: "max_amunt"/)
+}
+console.log('ok  a typo\'d policy field ("max_amunt") is rejected outright, never silently produces an unconstrained policy')
+
+for (const badObject of [{ ...(baseInput() as Record<string, unknown>), extraTopLevelField: true }]) {
+  assert.throws(() => parsePreflightInput(badObject), /body has an unrecognized field/)
+}
+{
+  const withUnknownAction = baseInput() as any
+  withUnknownAction.action = { ...withUnknownAction.action, recipiant: withUnknownAction.action.recipient } // typo
+  assert.throws(() => parsePreflightInput(withUnknownAction), /action has an unrecognized field: "recipiant"/)
+}
+console.log('ok  unrecognized top-level body and action fields are rejected, not silently ignored')
+
+// --- D2.3 (Task 5): a fully unconstrained policy must be explicitly acknowledged ---
+
+{
+  const noConstraints = baseInput() as any
+  noConstraints.policy = { max_amount: null, allowed_networks: null, allowed_assets: null, expected_recipient: null, allowed_resource_origins: null }
+  assert.throws(
+    () => parsePreflightInput(noConstraints),
+    /policy has no constraints set/,
+    'an accidentally-empty policy must be rejected, not silently treated as "no constraints"'
+  )
+
+  const acknowledged = { ...noConstraints, policy: { ...noConstraints.policy, acknowledge_unconstrained: true } }
+  assert.doesNotThrow(() => parsePreflightInput(acknowledged), 'an EXPLICITLY acknowledged unconstrained policy must be accepted')
+
+  const parsed = parsePreflightInput(acknowledged)
+  assert.equal(parsed.policy.max_amount, null, 'acknowledge_unconstrained is a parse-time confirmation only -- it is not itself a policy field')
+}
+console.log('ok  a fully-empty policy requires explicit policy.acknowledge_unconstrained: true -- distinguishable from an accident')
+
+{
+  // A policy with at least one real constraint never needs the acknowledgment.
+  assert.doesNotThrow(() => parsePreflightInput(baseInput()))
+  // ...and the flag itself must be boolean if present.
+  const badFlag = baseInput() as any
+  badFlag.policy = { ...badFlag.policy, acknowledge_unconstrained: 'yes' }
+  assert.throws(() => parsePreflightInput(badFlag), /policy\.acknowledge_unconstrained must be a boolean/)
+}
+console.log('ok  a policy with real constraints never needs the acknowledgment flag; the flag itself is type-checked when present')
 
 // --- deterministic decision rules --------------------------------------
 

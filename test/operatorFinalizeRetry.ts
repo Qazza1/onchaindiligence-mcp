@@ -101,6 +101,73 @@ for (const status of [401, 409, 400]) {
 }
 console.log('ok  terminal (non-pending) failures clear the capability')
 
+// --- D2.3 (Task 7): 429 (rate limited) retains the capability -------------
+
+{
+  const holder = makeHolder('secret-capability-token')
+  const outcome = await attemptFinalize(TX_HASH, PREFLIGHT_ID, holder, {
+    postFinalize: async () => jsonResponse(429, { error: 'too many finalization attempts' }, { 'retry-after': '30' }),
+    verifyReceipt: async () => VALID_VERIFICATION,
+  })
+  assert.equal(outcome.kind, 'pending')
+  if (outcome.kind === 'pending') {
+    assert.equal(outcome.reason, 'rate-limited')
+    assert.equal(outcome.retryAfterSeconds, 30)
+  }
+  assert.equal(holder.cleared, false, '429 must never discard a usable capability -- it is a client-side rate limit, not a capability verdict')
+}
+console.log('ok  429 (rate limited) retains the capability')
+
+// --- D2.3 (Task 7): ambiguous/unexpected 5xx retains the capability -------
+
+for (const status of [500, 502, 504]) {
+  const holder = makeHolder('secret-capability-token')
+  const outcome = await attemptFinalize(TX_HASH, PREFLIGHT_ID, holder, {
+    postFinalize: async () => jsonResponse(status, { error: 'unexpected server error' }),
+    verifyReceipt: async () => VALID_VERIFICATION,
+  })
+  assert.equal(outcome.kind, 'pending', `an ambiguous ${status} must be treated as unresolved, not a hard failure`)
+  assert.equal(holder.cleared, false, `capability must be retained when a ${status} does not definitively say the capability is unusable`)
+}
+console.log('ok  ambiguous/unexpected 5xx responses retain the capability -- not every 5xx is classified identically')
+
+// --- D2.3 (Task 7): a network-level failure (no response at all) retains the capability ---
+
+{
+  const holder = makeHolder('secret-capability-token')
+  const outcome = await attemptFinalize(TX_HASH, PREFLIGHT_ID, holder, {
+    postFinalize: async () => {
+      throw new TypeError('fetch failed')
+    },
+    verifyReceipt: async () => VALID_VERIFICATION,
+  })
+  assert.equal(outcome.kind, 'pending')
+  assert.equal(holder.cleared, false, 'a lost/failed response must never be assumed to mean the capability was consumed')
+}
+console.log('ok  a network-level failure (response lost entirely) retains the capability rather than guessing')
+
+// --- D2.3 (Task 7): lost-response retry is idempotent -- same tx, no duplicate work ---
+
+{
+  const holder = makeHolder('secret-capability-token')
+  let calls = 0
+  const deps = {
+    postFinalize: async (transactionHash: string, capability: string) => {
+      calls++
+      if (calls === 1) throw new TypeError('fetch failed') // simulated lost response
+      // The retry (idempotent replay path server-side) returns the SAME receipt.
+      return jsonResponse(200, commerceEnvelope())
+    },
+    verifyReceipt: async () => VALID_VERIFICATION,
+  }
+  const first = await attemptFinalize(TX_HASH, PREFLIGHT_ID, holder, deps)
+  assert.equal(first.kind, 'pending')
+  const second = await attemptFinalize(TX_HASH, PREFLIGHT_ID, holder, deps)
+  assert.equal(second.kind, 'done')
+  assert.equal(calls, 2, 'the retry must reuse the exact same transaction hash -- never a new payment, never a new transaction')
+}
+console.log('ok  a lost-response retry is idempotent: same transaction hash, resolves cleanly on retry')
+
 // --- no capability held: fails immediately, never calls postFinalize -----
 
 {

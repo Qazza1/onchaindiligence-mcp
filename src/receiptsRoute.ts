@@ -22,13 +22,37 @@
  * Scoped to this route specifically (not a `/receipts/*` wildcard) so it
  * never accidentally applies to the unrelated POST /receipts/finalize route.
  */
-import type { Hono } from 'hono'
+import type { Context, Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { normalizeReceiptId, type PublicActionReceiptEnvelope } from './receipts.js'
+import { normalizeReceiptId, checkReceiptStructuralIntegrity, type PublicActionReceiptEnvelope } from './receipts.js'
 import { receiptStore, type ReceiptStore } from './receiptStore.js'
 import { getPublicReceipt } from './db.js'
 
 const RECEIPT_ALLOWED_ORIGINS = ['https://onchaindiligence.com']
+
+/**
+ * D2.3 (Task 4): a database row is not automatically trustworthy merely
+ * because it exists. Before returning ANY stored envelope, structurally
+ * self-check it (schema shape, receipt_digest, receipt_id — see
+ * checkReceiptStructuralIntegrity in receipts.ts) without ever mutating the
+ * stored value.
+ *
+ * This check is 100% local: no key registry fetch, no network call, no
+ * signature verification. That's deliberate — a temporary key-registry/RPC
+ * outage must never turn an immutable, structurally sound stored receipt
+ * into a 404 or an error. It only rejects a row that is provably corrupt or
+ * malformed on its face (a bug or storage-layer fault, not an unreachable
+ * trust source), which the resolver has never been able to distinguish
+ * from a trustworthy row before this check existed.
+ */
+function respondWithIntegrityCheck(c: Context, envelope: PublicActionReceiptEnvelope) {
+  const integrity = checkReceiptStructuralIntegrity(envelope)
+  if (!integrity.ok) {
+    console.error(`receipt resolver: stored envelope failed structural integrity (${integrity.code}): ${integrity.message}`)
+    return c.json({ error: 'stored receipt failed structural integrity check' }, 500)
+  }
+  return c.json(envelope, 200)
+}
 
 export function mountReceipts(
   app: Hono,
@@ -58,12 +82,12 @@ export function mountReceipts(
       // rather than 503; that trade favours never distinguishing "private"
       // from "unknown" over perfect outage signalling.
     }
-    if (durable) return c.json(durable, 200)
+    if (durable) return respondWithIntegrityCheck(c, durable)
 
     const bundled = await bundledStore.get(normalized)
     if (!bundled) {
       return c.json({ error: 'not found' }, 404)
     }
-    return c.json(bundled, 200)
+    return respondWithIntegrityCheck(c, bundled)
   })
 }

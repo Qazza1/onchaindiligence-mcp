@@ -63,6 +63,75 @@ import { INSPECT_DESCRIPTION } from './inspectRoute.js'
 // Fail fast if misconfigured — same discipline as the HTTP API.
 assertConfigured()
 
+// D2.3 (Task 9): x402-mcp's paidTool() embeds this description verbatim into
+// paymentRequirements.description, sent to the SAME CDP hosted facilitator
+// as the HTTP x402 routes (see src/discovery.ts's MAX_X402_DESCRIPTION_LENGTH
+// comment) — and that facilitator's /verify rejects any payload whose
+// resource.description exceeds 500 characters, AFTER the buyer has already
+// signed (x402-foundation/x402#2832). Confirmed by reading x402-mcp's own
+// server.js: it builds paymentRequirements.description from this exact
+// string. Four of these six tool descriptions were over that limit before
+// D2.3 (screen_wallet 567, verify_uk_company 484, verify_us_company 574,
+// preflight_payment 786) — the same class of bug that broke the HTTP
+// preflight route in D2.2B1, just never exercised via this transport yet.
+// See test/mcpToolDescriptions.ts for the regression test.
+export const MAX_MCP_TOOL_DESCRIPTION_LENGTH = 480
+
+export const SCREEN_WALLET_DESCRIPTION =
+  'Sanctions-screen an EVM wallet address against the Chainalysis on-chain oracle ' +
+  '(OFAC SDN, EU, UN designations). Reflects current status, including delistings -- ' +
+  'a once-designated address may now screen clean. Returns a sanctioned / ' +
+  'not-sanctioned boolean (no case-level detail). Call before sending USDC or other ' +
+  'funds to an address, for AML compliance and counterparty due diligence.'
+
+export const SCREEN_NAME_DESCRIPTION =
+  'OFAC name screening: fuzzy-match a person or company name against the ' +
+  'official US Treasury OFAC Specially Designated Nationals (SDN) list ' +
+  '(primary names + strong aliases). Returns scored candidate matches ' +
+  'with the matched name, SDN type, and program. SCOPE: this is a ' +
+  'screening aid for AML / KYC / sanctions compliance — a match is a ' +
+  'candidate to investigate with secondary identifiers (DOB, ' +
+  'nationality, ID), NOT a determination. Weak AKAs are not screened, ' +
+  'per OFAC guidance.'
+
+export const VERIFY_UK_COMPANY_DESCRIPTION =
+  'UK company KYB lookup via the official Companies House register. Given a UK ' +
+  'registration number, returns legal status (active/dissolved), company type, ' +
+  'incorporation date, registered office, and people with significant control ' +
+  '(PSC / beneficial owners). Call to confirm a UK business is real, active, and ' +
+  'who controls it, for KYB onboarding and counterparty due diligence. Authoritative ' +
+  'UK government data.'
+
+export const VERIFY_US_COMPANY_DESCRIPTION =
+  'US public company verification via SEC EDGAR. Given a ticker, CIK, or company ' +
+  'name, returns entity name, CIK, industry (SIC), state of incorporation, ' +
+  'exchanges/tickers, address, and latest SEC filing. Ambiguous names return ' +
+  'candidates, never a silent selection. Covers SEC-registered PUBLIC companies and ' +
+  'funds only -- not private US companies. Call for KYB and counterparty due ' +
+  'diligence on listed US entities.'
+
+export const DILIGENCE_TOOL_DESCRIPTION =
+  'Combined counterparty due diligence in one call: runs sanctions ' +
+  'screening on a crypto wallet (Chainalysis oracle — OFAC SDN, EU, ' +
+  'UN) AND a UK Companies House KYB lookup (status, type, PSC / ' +
+  'beneficial owners) in parallel. Built for compliance agents vetting ' +
+  'a counterparty that has both an on-chain wallet and a UK company. ' +
+  'Returns both independent results, plus an explicit disclaimer that ' +
+  'no verified link between the wallet and the company is established ' +
+  'by the data.'
+
+// D2.3 (Task 9): task-oriented per the milestone's own example wording --
+// when to call, required input, structured output, and what OCD does NOT
+// authorize. Shortened from 786 chars (see MAX_MCP_TOOL_DESCRIPTION_LENGTH
+// above) while preserving every one of those points.
+export const PREFLIGHT_PAYMENT_TOOL_DESCRIPTION =
+  'Call BEFORE an agent authorizes an autonomous payment. Evaluates it against your ' +
+  'policy (max amount, allowed networks/assets, expected recipient, allowed origins) ' +
+  'and returns a signed PREFLIGHT receipt -- ALLOW, REQUIRE_APPROVAL, or BLOCK, with ' +
+  'reasons -- independently verifiable by anyone. Policy evaluation only: OCD never ' +
+  'holds, moves, or authorizes funds. The wallet/x402 client separately authorizes ' +
+  'execution after; ALLOW does not guarantee it will proceed.'
+
 // Coinbase facilitator (verifies/settles the x402 USDC payment on Base) built
 // from CDP keys. This is what makes the payment non-custodial and accountless.
 const facilitator = createFacilitatorConfig(
@@ -79,15 +148,7 @@ export const handler = createPaidMcpHandler(
     // --- screen_wallet -------------------------------------------------
     server.paidTool(
       'screen_wallet',
-      'Sanctions screening for a crypto wallet address. Checks an EVM ' +
-        'address against the Chainalysis on-chain sanctions oracle, which ' +
-        'covers OFAC SDN, EU, and UN designated addresses. The oracle ' +
-        'reflects designations as they stand today, including removals — ' +
-        'an address that was once designated may screen clean if it has ' +
-        'since been delisted. Returns a clear sanctioned / not-sanctioned ' +
-        'boolean; the oracle does not return programme-level case detail. Use for AML compliance, ' +
-        'counterparty due diligence, and payment screening before sending ' +
-        'USDC or any funds to an address.',
+      SCREEN_WALLET_DESCRIPTION,
       { price: config.prices.screen },
       { address: z.string().describe('EVM wallet address (0x + 40 hex) to sanctions-screen') },
       { readOnlyHint: true, openWorldHint: true },
@@ -119,14 +180,7 @@ export const handler = createPaidMcpHandler(
     // --- screen_name ---------------------------------------------------
     server.paidTool(
       'screen_name',
-      'OFAC name screening: fuzzy-match a person or company name against the ' +
-        'official US Treasury OFAC Specially Designated Nationals (SDN) list ' +
-        '(primary names + strong aliases). Returns scored candidate matches ' +
-        'with the matched name, SDN type, and program. SCOPE: this is a ' +
-        'screening aid for AML / KYC / sanctions compliance — a match is a ' +
-        'candidate to investigate with secondary identifiers (DOB, ' +
-        'nationality, ID), NOT a determination. Weak AKAs are not screened, ' +
-        'per OFAC guidance.',
+      SCREEN_NAME_DESCRIPTION,
       { price: config.prices.nameScreen },
       {
         name: z
@@ -165,14 +219,7 @@ export const handler = createPaidMcpHandler(
     // --- verify_uk_company ---------------------------------------------
     server.paidTool(
       'verify_uk_company',
-      'UK company verification and KYB (know-your-business) lookup via the ' +
-        'official Companies House register. Given a UK company registration ' +
-        'number, returns legal status (active / dissolved), company type, ' +
-        'incorporation date, registered office address, and the people with ' +
-        'significant control (PSC / beneficial owners). Use for KYB ' +
-        'onboarding, supplier and counterparty due diligence, and confirming ' +
-        'a UK business is real, active, and who controls it. Authoritative ' +
-        'UK government open data.',
+      VERIFY_UK_COMPANY_DESCRIPTION,
       { price: config.prices.company },
       {
         companyNumber: z
@@ -202,15 +249,7 @@ export const handler = createPaidMcpHandler(
     // --- verify_us_company ---------------------------------------------
     server.paidTool(
       'verify_us_company',
-      'US public company verification via the SEC EDGAR system. Given a ' +
-        'ticker, SEC CIK, or company name, returns the registered entity ' +
-        'name, CIK, industry (SIC code), state of incorporation, listed ' +
-        'exchanges and tickers, business address, and most recent SEC ' +
-        'filing. Ambiguous name searches return candidates and never silently ' +
-        'select a company. SCOPE: EDGAR covers SEC-registered PUBLIC companies and ' +
-        'funds only — NOT private US companies, which register at the state ' +
-        'level. Use for KYB and counterparty due diligence on listed US ' +
-        'entities. Authoritative US government open data.',
+      VERIFY_US_COMPANY_DESCRIPTION,
       { price: config.prices.usCompany },
       {
         query: z
@@ -243,14 +282,7 @@ export const handler = createPaidMcpHandler(
     // --- diligence (combined) ------------------------------------------
     server.paidTool(
       'diligence',
-      'Combined counterparty due diligence in one call: runs sanctions ' +
-        'screening on a crypto wallet (Chainalysis oracle — OFAC SDN, EU, ' +
-        'UN) AND a UK Companies House KYB lookup (status, type, PSC / ' +
-        'beneficial owners) in parallel. Built for compliance agents vetting ' +
-        'a counterparty that has both an on-chain wallet and a UK company. ' +
-        'Returns both independent results, plus an explicit disclaimer that ' +
-        'no verified link between the wallet and the company is established ' +
-        'by the data.',
+      DILIGENCE_TOOL_DESCRIPTION,
       { price: config.prices.diligence },
       {
         wallet: z.string().describe('EVM wallet address (0x + 40 hex) to sanctions-screen'),
@@ -293,17 +325,7 @@ export const handler = createPaidMcpHandler(
     // --- preflight_payment (D2.1) ---------------------------------------
     server.paidTool(
       'preflight_payment',
-      'Evaluate a proposed autonomous payment against a structured, caller-supplied ' +
-        'policy and optional recipient sanctions screening, BEFORE any payment is ' +
-        'executed. Returns a deterministic decision — ALLOW, REQUIRE_APPROVAL, or ' +
-        'BLOCK — with reasons, plus a signed OCD PREFLIGHT receipt anyone can ' +
-        'independently verify. This is a POLICY EVALUATION, not payment execution: ' +
-        'OnChainDiligence never holds funds and does not authorize or submit the ' +
-        'payment. The wallet, PayBox, or x402 client applies its OWN separate ' +
-        'authorization after this preflight; both gates are independent and an ' +
-        'ALLOW here does not guarantee the execution provider will proceed. Accepts ' +
-        'only structured, deterministic policy fields in v1 — free-text ' +
-        'natural-language policy (e.g. "don\'t spend too much") is not supported.',
+      PREFLIGHT_PAYMENT_TOOL_DESCRIPTION,
       { price: config.prices.preflight },
       {
         action: z.object({

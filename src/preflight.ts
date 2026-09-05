@@ -153,6 +153,23 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/**
+ * D2.3 (Task 5): unknown fields on a consequential input object must never
+ * be silently discarded — a typo like "max_amunt" would otherwise leave the
+ * real "max_amount" constraint unset, silently producing an UNCONSTRAINED
+ * policy instead of the capped one the caller almost certainly intended.
+ * Reject outright instead.
+ */
+function rejectUnknownKeys(raw: Record<string, unknown>, allowed: readonly string[], label: string): void {
+  for (const key of Object.keys(raw)) {
+    if (!allowed.includes(key)) {
+      throw new PreflightInputError(
+        `${label} has an unrecognized field: "${key}" — rejected rather than silently ignored, since a mistyped field could otherwise silently produce a less restrictive policy than intended`
+      )
+    }
+  }
+}
+
 function requireString(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.length === 0) {
     throw new PreflightInputError(`${field} must be a non-empty string`)
@@ -203,8 +220,11 @@ function requireOrigin(value: string, field: string): string {
  * exact same action/policy validation, so a proposal that is well-formed for
  * one is well-formed for the other. Never touches the network.
  */
+const ACTION_KEYS = ['kind', 'resource', 'network', 'asset', 'amount', 'sender', 'recipient'] as const
+
 function parseAction(raw: unknown): PreflightAction {
   if (!isPlainObject(raw)) throw new PreflightInputError('action must be an object')
+  rejectUnknownKeys(raw, ACTION_KEYS, 'action')
   const a = raw
   if (a.kind !== 'PAYMENT') {
     throw new PreflightInputError('action.kind must be "PAYMENT" (the only supported kind in v1)')
@@ -233,8 +253,18 @@ function parseAction(raw: unknown): PreflightAction {
   return { kind: 'PAYMENT', resource, network, asset, amount, sender, recipient }
 }
 
+const POLICY_KEYS = [
+  'max_amount',
+  'allowed_networks',
+  'allowed_assets',
+  'expected_recipient',
+  'allowed_resource_origins',
+  'acknowledge_unconstrained',
+] as const
+
 function parsePolicy(raw: unknown): PreflightPolicy {
   if (!isPlainObject(raw)) throw new PreflightInputError('policy must be an object')
+  rejectUnknownKeys(raw, POLICY_KEYS, 'policy')
   const p = raw
   const maxAmount = optionalString(p.max_amount, 'policy.max_amount')
   if (maxAmount !== null && !isCanonicalDecimalAmount(maxAmount)) {
@@ -259,6 +289,27 @@ function parsePolicy(raw: unknown): PreflightPolicy {
   if (allowedResourceOrigins) {
     for (const origin of allowedResourceOrigins) requireOrigin(origin, 'policy.allowed_resource_origins')
   }
+
+  // D2.3 (Task 5): a policy where every constraint is null/omitted is
+  // indistinguishable, on its face, from a caller who forgot to set policy
+  // fields at all (e.g. sent `policy: {}` by accident). Since this parser
+  // cannot tell "deliberately unconstrained" from "accidentally empty",
+  // require an explicit, separate acknowledgment in that one case — this is
+  // a structural confirmation that the empty policy was intentional, NOT an
+  // authorization: it changes nothing about what evaluatePreflightPolicy()
+  // decides, only whether a fully-empty policy is accepted at all.
+  if (p.acknowledge_unconstrained !== undefined && typeof p.acknowledge_unconstrained !== 'boolean') {
+    throw new PreflightInputError('policy.acknowledge_unconstrained must be a boolean')
+  }
+  const noConstraintsSet =
+    maxAmount === null && allowedNetworks === null && allowedAssets === null && expectedRecipient === null && allowedResourceOrigins === null
+  if (noConstraintsSet && p.acknowledge_unconstrained !== true) {
+    throw new PreflightInputError(
+      'policy has no constraints set (max_amount, allowed_networks, allowed_assets, expected_recipient, and allowed_resource_origins are all null or omitted). ' +
+        'If an unconstrained policy is genuinely intended, pass policy.acknowledge_unconstrained: true to confirm this was not an accidental empty/invalid policy.'
+    )
+  }
+
   return {
     max_amount: maxAmount,
     allowed_networks: allowedNetworks,
@@ -275,12 +326,14 @@ function parsePolicy(raw: unknown): PreflightPolicy {
  */
 export function parsePreflightInput(raw: unknown): PreflightInput {
   if (!isPlainObject(raw)) throw new PreflightInputError('body must be a JSON object')
+  rejectUnknownKeys(raw, ['action', 'policy', 'options', 'references', 'publication'], 'body')
 
   const action = parseAction(raw.action)
   const policy = parsePolicy(raw.policy)
 
   const rawOptions = raw.options ?? {}
   if (!isPlainObject(rawOptions)) throw new PreflightInputError('options must be an object')
+  rejectUnknownKeys(rawOptions, ['screen_recipient_sanctions'], 'options')
   if (rawOptions.screen_recipient_sanctions !== undefined && typeof rawOptions.screen_recipient_sanctions !== 'boolean') {
     throw new PreflightInputError('options.screen_recipient_sanctions must be a boolean')
   }
@@ -288,6 +341,7 @@ export function parsePreflightInput(raw: unknown): PreflightInput {
 
   const rawReferences = raw.references ?? {}
   if (!isPlainObject(rawReferences)) throw new PreflightInputError('references must be an object')
+  rejectUnknownKeys(rawReferences, ['mandate_digest'], 'references')
   let mandateDigest: string | null = null
   if (rawReferences.mandate_digest !== undefined && rawReferences.mandate_digest !== null) {
     if (typeof rawReferences.mandate_digest !== 'string' || !DIGEST_PATTERN.test(rawReferences.mandate_digest)) {
@@ -299,6 +353,7 @@ export function parsePreflightInput(raw: unknown): PreflightInput {
 
   const rawPublication = raw.publication ?? {}
   if (!isPlainObject(rawPublication)) throw new PreflightInputError('publication must be an object')
+  rejectUnknownKeys(rawPublication, ['preflight', 'commerce'], 'publication')
   if (rawPublication.preflight !== undefined && typeof rawPublication.preflight !== 'boolean') {
     throw new PreflightInputError('publication.preflight must be a boolean')
   }

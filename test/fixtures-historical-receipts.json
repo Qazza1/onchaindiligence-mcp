@@ -1,0 +1,459 @@
+{
+  "envelopes": [
+    {
+      "schema": "onchaindiligence.public-action-receipt.v1",
+      "receipt": {
+        "receipt_type": "ACTION",
+        "issued_at": "2026-08-28T19:53:51.415Z",
+        "action": {
+          "kind": "planned-financial-transfer",
+          "resource": "AAPL counterparty preflight",
+          "network": "ethereum-mainnet",
+          "asset": "pathUSD",
+          "amount": "1.00",
+          "sender": null,
+          "recipient": "0x000000000000000000000000000000000000dEaD"
+        },
+        "decision": {
+          "status": "REQUIRE_APPROVAL",
+          "authorized": false,
+          "reasons": [
+            "Recipient wallet was not bound to the resolved SEC filer.",
+            "Independent public observations do not establish a wallet-to-company identity relationship."
+          ]
+        },
+        "execution": {
+          "provider": "OnChainDiligence Agent Evidence P1.8 reference workflow",
+          "status": "NOT_SUBMITTED",
+          "transaction_hash": null,
+          "submitted_at": null,
+          "confirmed_at": null
+        },
+        "settlement": {
+          "status": "NOT_APPLICABLE",
+          "detail": "No execution was submitted; no value settlement occurred."
+        },
+        "checks": [
+          {
+            "id": "recipient-wallet-not-sanctioned",
+            "result": "PASS",
+            "summary": "The public burn address was reported not sanctioned by the Chainalysis oracle at the recorded observation time.",
+            "evidence_digest": "sha256:-1OOwqRghEqt0CUdq9EO-49aUlWnRBTRj1QDODO9GqA"
+          },
+          {
+            "id": "counterparty-sec-filer-resolved",
+            "result": "PASS",
+            "summary": "AAPL was resolved to Apple Inc. through SEC EDGAR at the recorded observation time.",
+            "evidence_digest": "sha256:cvd9KFwcUlJY_obJrR6OdwFY2Q3wQJSwvp_8yv1wa6U"
+          },
+          {
+            "id": "recipient-wallet-bound-to-counterparty",
+            "result": "FAIL",
+            "summary": "No public evidence in this run established that the recipient wallet belongs to the resolved SEC filer.",
+            "evidence_digest": null
+          }
+        ],
+        "links": {
+          "agent_evidence_bundle_digest": "sha256:b3Y51kb7-JfTCzA-MbVBHAiLdo43xlJLpAbT4eed6rw",
+          "preflight_receipt_id": null
+        },
+        "limitations": [
+          "A valid receipt proof does not prove every underlying evidence statement is objectively true.",
+          "Execution was not submitted.",
+          "No value settlement occurred.",
+          "Wallet and company identity bindings are not implied unless separately proven."
+        ],
+        "receipt_id": "OCD-RCP-EMG6-6KR4-PQSG-MZPQ",
+        "receipt_digest": "sha256:dSBjTwS18wp-15gRHOmTW_2zUKOaXjH9pil1hJcNclY"
+      },
+      "proof": {
+        "signed": true,
+        "schema_version": "onchaindiligence.attestation.v2",
+        "issuer": "https://api.onchaindiligence.com",
+        "purpose": "public-action-receipt",
+        "issued_at": "2026-09-03T20:56:24.757Z",
+        "key_id": "ed25519-P2jIwhCn-Af6pTz4",
+        "algorithm": "ed25519",
+        "canonicalization": "RFC8785",
+        "signature": "URyO6GlX7T9upAaaemBbqBY55CEyslNuioEGWjyoRdH9Dm9YvVQiaxpUpK8OHLs5zwdrIldvFj177wJGwEYXAQ"
+      }
+    },
+    {
+      "proof": {
+        "issuer": "https://api.onchaindiligence.com",
+        "key_id": "ed25519-P2jIwhCn-Af6pTz4",
+        "signed": true,
+        "purpose": "public-action-receipt",
+        "algorithm": "ed25519",
+        "issued_at": "2026-09-04T20:58:41.619Z",
+        "signature": "WKwcRT-Tq1gK9mcKYYGWNlawiRRkAulp1qX0r3q8EB3bEGi45JTV6JrimfJ-hyJYCVTEQXsEPMZYSYI1h8hkDw",
+        "schema_version": "onchaindiligence.attestation.v2",
+        "canonicalization": "RFC8785",
+        "signing_input_hint": "RFC 8785 canonical JSON over { schema_version, issuer, purpose, data, issued_at, key_id }; resolve key_id through /.well-known/attestation-keys/{key_id}"
+      },
+      "schema": "onchaindiligence.public-action-receipt.v1",
+      "receipt": {
+        "links": {
+          "preflight_receipt_id": null,
+          "agent_evidence_bundle_digest": null
+        },
+        "action": {
+          "kind": "PAYMENT",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "amount": "0.01",
+          "sender": null,
+          "network": "eip155:8453",
+          "resource": "https://mcp.onchaindiligence.com/x402/screen/0x63c347d7e42b940e79AfEC3D172bFc2921b6c897",
+          "recipient": "0x63c347d7e42b940e79AfEC3D172bFc2921b6c897"
+        },
+        "checks": [
+          {
+            "id": "amount-within-max",
+            "result": "PASS",
+            "summary": "The proposed amount is within the caller-configured maximum.",
+            "evidence_digest": null
+          },
+          {
+            "id": "network-allowed",
+            "result": "PASS",
+            "summary": "The proposed network is on the caller-configured allowed network list.",
+            "evidence_digest": null
+          },
+          {
+            "id": "asset-allowed",
+            "result": "PASS",
+            "summary": "The proposed asset is on the caller-configured allowed asset list.",
+            "evidence_digest": null
+          },
+          {
+            "id": "recipient-matches-expected",
+            "result": "PASS",
+            "summary": "The proposed recipient matches the caller-expected recipient.",
+            "evidence_digest": null
+          },
+          {
+            "id": "resource-origin-allowed",
+            "result": "PASS",
+            "summary": "The resource origin is on the caller-configured allowed origin list.",
+            "evidence_digest": null
+          }
+        ],
+        "decision": {
+          "status": "ALLOW",
+          "reasons": [
+            "All configured policy checks passed."
+          ],
+          "authorized": true
+        },
+        "execution": {
+          "status": "NOT_SUBMITTED",
+          "provider": null,
+          "confirmed_at": null,
+          "submitted_at": null,
+          "transaction_hash": null
+        },
+        "issued_at": "2026-09-04T20:58:41.556Z",
+        "receipt_id": "OCD-RCP-VZC7-XPV2-NMGC-EH1K",
+        "settlement": {
+          "detail": "No execution was submitted; this is a pre-execution evaluation only.",
+          "status": "NOT_APPLICABLE"
+        },
+        "limitations": [
+          "OnChainDiligence does not execute the payment; this receipt records a pre-execution evaluation only.",
+          "ALLOW does not guarantee the execution provider (wallet, PayBox, or x402 client) will authorize or complete the payment — OCD's preflight authorization and the execution provider's own authorization are independent gates, and both may be required.",
+          "Recipient sanctions screening, where performed, does not establish beneficial ownership or a general safety determination.",
+          "Absence from a sanctions source does not imply the recipient is safe in any general sense — only that it was not found on the specific source checked at evaluation time.",
+          "This evaluation does not assess service delivery, product quality, or counterparty reputation.",
+          "Later execution may differ from the proposed action described here unless the execution layer independently binds itself to this preflight receipt's action fields."
+        ],
+        "receipt_type": "PREFLIGHT",
+        "receipt_digest": "sha256:39h-22KtIMdEM3jd4lzn-HNlpdnOq_-JFQKttWBDhZI"
+      }
+    },
+    {
+      "proof": {
+        "issuer": "https://api.onchaindiligence.com",
+        "key_id": "ed25519-P2jIwhCn-Af6pTz4",
+        "signed": true,
+        "purpose": "public-action-receipt",
+        "algorithm": "ed25519",
+        "issued_at": "2026-09-04T20:59:37.707Z",
+        "signature": "FQxaYeAPC28e7FEcsJN1EPbL6NyfHmbl-_GEwsFGwug9KKH0t4nuI0BQ-oUa3rk2oQQ7bJ9nb2jkXTxGxc60CQ",
+        "schema_version": "onchaindiligence.attestation.v2",
+        "canonicalization": "RFC8785",
+        "signing_input_hint": "RFC 8785 canonical JSON over { schema_version, issuer, purpose, data, issued_at, key_id }; resolve key_id through /.well-known/attestation-keys/{key_id}"
+      },
+      "schema": "onchaindiligence.public-action-receipt.v1",
+      "receipt": {
+        "links": {
+          "preflight_receipt_id": "OCD-RCP-VZC7-XPV2-NMGC-EH1K",
+          "agent_evidence_bundle_digest": null
+        },
+        "action": {
+          "kind": "PAYMENT",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "amount": null,
+          "sender": null,
+          "network": "eip155:8453",
+          "resource": "https://mcp.onchaindiligence.com/x402/screen/0x63c347d7e42b940e79AfEC3D172bFc2921b6c897",
+          "recipient": null
+        },
+        "checks": [
+          {
+            "id": "preflight-receipt-valid",
+            "result": "PASS",
+            "summary": "The finalization capability is bound to a PREFLIGHT receipt whose signature independently verifies VALID.",
+            "evidence_digest": "sha256:39h-22KtIMdEM3jd4lzn-HNlpdnOq_-JFQKttWBDhZI"
+          },
+          {
+            "id": "transaction-found",
+            "result": "UNKNOWN",
+            "summary": "The Base RPC endpoint could not be reached to look up the transaction: Block at number \"50883116\" could not be found.\n\nVersion: viem@2.52.2.",
+            "evidence_digest": null
+          },
+          {
+            "id": "transaction-success",
+            "result": "NOT_CHECKED",
+            "summary": "Not evaluated: the transaction was not found.",
+            "evidence_digest": null
+          },
+          {
+            "id": "network-matches-preflight",
+            "result": "NOT_CHECKED",
+            "summary": "Not evaluated: the transaction did not confirm successfully.",
+            "evidence_digest": null
+          },
+          {
+            "id": "asset-matches-preflight",
+            "result": "NOT_CHECKED",
+            "summary": "Not evaluated: the transaction did not confirm successfully.",
+            "evidence_digest": null
+          },
+          {
+            "id": "recipient-matches-preflight",
+            "result": "NOT_CHECKED",
+            "summary": "Not evaluated: the transaction did not confirm successfully.",
+            "evidence_digest": null
+          },
+          {
+            "id": "amount-matches-preflight",
+            "result": "NOT_CHECKED",
+            "summary": "Not evaluated: the transaction did not confirm successfully.",
+            "evidence_digest": null
+          },
+          {
+            "id": "sender-matches-preflight",
+            "result": "NOT_CHECKED",
+            "summary": "Not evaluated: the transaction did not confirm successfully.",
+            "evidence_digest": null
+          },
+          {
+            "id": "execution-matches-preflight",
+            "result": "NOT_CHECKED",
+            "summary": "Not evaluated: the transaction did not confirm successfully.",
+            "evidence_digest": null
+          },
+          {
+            "id": "settlement-confirmed",
+            "result": "UNKNOWN",
+            "summary": "The exact payment proposed in the preflight was not confirmed settled — see the match checks above for the specific discrepancy, if any.",
+            "evidence_digest": null
+          },
+          {
+            "id": "service-delivery-verification",
+            "result": "NOT_CHECKED",
+            "summary": "Not evaluated: no result digest was supplied, and OnChainDiligence does not independently observe service/resource delivery in v1.",
+            "evidence_digest": null
+          }
+        ],
+        "decision": {
+          "status": "ALLOW",
+          "reasons": [
+            "All configured policy checks passed."
+          ],
+          "authorized": true
+        },
+        "execution": {
+          "status": "UNKNOWN",
+          "provider": "x402",
+          "confirmed_at": null,
+          "submitted_at": null,
+          "transaction_hash": "0x9d4c5353381d914714649d08784e43926cf17a263723c8cebb182c95c1b4f9b6"
+        },
+        "issued_at": "2026-09-04T20:59:37.669Z",
+        "receipt_id": "OCD-RCP-3HP5-CSBH-EGH9-PCNK",
+        "settlement": {
+          "detail": "Settlement could not be independently verified (RPC unavailable, or insufficient confirmations).",
+          "status": "UNVERIFIED"
+        },
+        "limitations": [
+          "This receipt records the OBSERVED execution and settlement; `decision` is copied unchanged from the original PREFLIGHT receipt and was not re-evaluated here.",
+          "A transaction hash was supplied by the caller; OnChainDiligence independently inspected Base mainnet rather than trusting the caller, PayBox, or any x402 facilitator report of success.",
+          "v1 settlement verification supports Base mainnet USDC ERC-20 transfers only.",
+          "service-delivery-verification is NOT_CHECKED in v1: a caller-supplied result digest, where present, is recorded as a claim only, not independently verified.",
+          "No identity is inferred for the sender or recipient wallet beyond the address itself."
+        ],
+        "receipt_type": "COMMERCE",
+        "receipt_digest": "sha256:HGxWZXF0Ipsys-26rhXM2n8_JBEsWhkPKDpLp4Rki3A"
+      }
+    },
+    {
+      "proof": {
+        "issuer": "https://api.onchaindiligence.com",
+        "key_id": "ed25519-P2jIwhCn-Af6pTz4",
+        "signed": true,
+        "purpose": "public-action-receipt",
+        "algorithm": "ed25519",
+        "issued_at": "2026-09-05T10:03:59.904Z",
+        "signature": "D-dzeMvX0HOmNknUkTt0c8loAzFdDURAUVe_Fohhla3OULz_U4nhY_L3pgMVorOPUXMBrHqutvwHnI4kJ9V0BQ",
+        "schema_version": "onchaindiligence.attestation.v2",
+        "canonicalization": "RFC8785",
+        "signing_input_hint": "RFC 8785 canonical JSON over { schema_version, issuer, purpose, data, issued_at, key_id }; resolve key_id through /.well-known/attestation-keys/{key_id}"
+      },
+      "schema": "onchaindiligence.public-action-receipt.v1",
+      "receipt": {
+        "links": {
+          "preflight_receipt_id": "OCD-RCP-VZC7-XPV2-NMGC-EH1K",
+          "agent_evidence_bundle_digest": null
+        },
+        "action": {
+          "kind": "PAYMENT",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "amount": "0.01",
+          "sender": "0x3EeF0a7Ee9420a1035a4541582B384bc4405A439",
+          "network": "eip155:8453",
+          "resource": "https://mcp.onchaindiligence.com/x402/screen/0x63c347d7e42b940e79AfEC3D172bFc2921b6c897",
+          "recipient": "0x63c347d7e42b940e79AfEC3D172bFc2921b6c897"
+        },
+        "checks": [
+          {
+            "id": "preflight-receipt-valid",
+            "result": "PASS",
+            "summary": "The finalization capability is bound to a PREFLIGHT receipt whose signature independently verifies VALID.",
+            "evidence_digest": "sha256:39h-22KtIMdEM3jd4lzn-HNlpdnOq_-JFQKttWBDhZI"
+          },
+          {
+            "id": "transaction-found",
+            "result": "PASS",
+            "summary": "A transaction matching the supplied hash was found on Base mainnet.",
+            "evidence_digest": null
+          },
+          {
+            "id": "transaction-success",
+            "result": "PASS",
+            "summary": "The transaction executed successfully on-chain (did not revert).",
+            "evidence_digest": null
+          },
+          {
+            "id": "network-matches-preflight",
+            "result": "PASS",
+            "summary": "The observed settlement network matches the network proposed in the preflight.",
+            "evidence_digest": null
+          },
+          {
+            "id": "asset-matches-preflight",
+            "result": "PASS",
+            "summary": "A transfer of the exact asset contract proposed in the preflight was observed in this transaction.",
+            "evidence_digest": null
+          },
+          {
+            "id": "recipient-matches-preflight",
+            "result": "PASS",
+            "summary": "The observed recipient matches the recipient proposed in the preflight.",
+            "evidence_digest": null
+          },
+          {
+            "id": "amount-matches-preflight",
+            "result": "PASS",
+            "summary": "The observed amount matches the amount proposed in the preflight.",
+            "evidence_digest": null
+          },
+          {
+            "id": "sender-matches-preflight",
+            "result": "NOT_CHECKED",
+            "summary": "No preflight constraint was set for this field.",
+            "evidence_digest": null
+          },
+          {
+            "id": "execution-matches-preflight",
+            "result": "PASS",
+            "summary": "The observed settlement matches every field the preflight proposed.",
+            "evidence_digest": null
+          },
+          {
+            "id": "settlement-confirmed",
+            "result": "PASS",
+            "summary": "A transfer of the asset proposed in the preflight was independently observed settled on-chain with sufficient confirmations. Whether it matches the preflight exactly is reported separately by the *-matches-preflight checks.",
+            "evidence_digest": null
+          },
+          {
+            "id": "service-delivery-verification",
+            "result": "NOT_CHECKED",
+            "summary": "Not evaluated: no result digest was supplied, and OnChainDiligence does not independently observe service/resource delivery in v1.",
+            "evidence_digest": null
+          },
+          {
+            "id": "prior-commerce-observation",
+            "result": "PASS",
+            "summary": "This receipt is a later independent re-observation of the same transaction after the prior Commerce Receipt (OCD-RCP-3HP5-CSBH-EGH9-PCNK) could not obtain complete RPC confirmation.",
+            "evidence_digest": "sha256:HGxWZXF0Ipsys-26rhXM2n8_JBEsWhkPKDpLp4Rki3A"
+          }
+        ],
+        "decision": {
+          "status": "ALLOW",
+          "reasons": [
+            "All configured policy checks passed."
+          ],
+          "authorized": true
+        },
+        "execution": {
+          "status": "CONFIRMED",
+          "provider": "x402",
+          "confirmed_at": "2026-09-04T20:59:39.000Z",
+          "submitted_at": null,
+          "transaction_hash": "0x9d4c5353381d914714649d08784e43926cf17a263723c8cebb182c95c1b4f9b6"
+        },
+        "issued_at": "2026-09-05T10:03:59.897Z",
+        "receipt_id": "OCD-RCP-ASER-TH5K-ZN3B-TVC5",
+        "settlement": {
+          "detail": "Independently observed on Base mainnet: the proposed transfer settled exactly as preflighted.",
+          "status": "CONFIRMED"
+        },
+        "limitations": [
+          "This receipt records the OBSERVED execution and settlement; `decision` is copied unchanged from the original PREFLIGHT receipt and was not re-evaluated here.",
+          "A transaction hash was supplied by the caller; OnChainDiligence independently inspected Base mainnet rather than trusting the caller, PayBox, or any x402 facilitator report of success.",
+          "v1 settlement verification supports Base mainnet USDC ERC-20 transfers only.",
+          "service-delivery-verification is NOT_CHECKED in v1: a caller-supplied result digest, where present, is recorded as a claim only, not independently verified.",
+          "No identity is inferred for the sender or recipient wallet beyond the address itself.",
+          "Prior Commerce Receipt for this transaction: OCD-RCP-3HP5-CSBH-EGH9-PCNK (issued 2026-09-04T20:59:37.669Z, recorded execution UNKNOWN / settlement UNVERIFIED due to a transient RPC failure; not deleted or modified)."
+        ],
+        "receipt_type": "COMMERCE",
+        "receipt_digest": "sha256:Vl2NRLP9Rr1thbNiCOarSErM2eHIgOt5prSSUisujFg"
+      }
+    }
+  ],
+  "registry": [
+    {
+      "key_id": "ed25519-P2jIwhCn-Af6pTz4",
+      "algorithm": "ed25519",
+      "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEARCxQg8J+f2d5qcrJmCoeLjpJIDeKbE6dbB1mXHTsn04=\n-----END PUBLIC KEY-----\n",
+      "status": "active",
+      "valid_from": "2026-09-03T19:50:00.000Z",
+      "valid_until": null,
+      "status_changed_at": "2026-09-03T19:50:00.000Z",
+      "replacement_key_id": null,
+      "compromised_at": null
+    },
+    {
+      "key_id": "ed25519-D8wfc7civVNG05Ds",
+      "algorithm": "ed25519",
+      "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAfnv7489CJ2vQLMYimr8Ot9g/8ZFYbs3dH5M5tDFBV+w=\n-----END PUBLIC KEY-----\n",
+      "status": "retired",
+      "valid_from": null,
+      "valid_until": "2026-09-03T19:50:00.000Z",
+      "status_changed_at": "2026-09-03T19:50:00.000Z",
+      "replacement_key_id": "ed25519-P2jIwhCn-Af6pTz4",
+      "compromised_at": null
+    }
+  ]
+}

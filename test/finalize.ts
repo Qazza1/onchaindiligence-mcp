@@ -42,7 +42,7 @@ async function fakeSignReceipt(receipt: Receipt): Promise<PublicActionReceiptEnv
     keyId: KEY_ID,
   })
   const signature = ed25519Sign(null, Buffer.from(signingInput, 'utf8'), privateKey).toString('base64url')
-  return { signed: true, schema_version: 'onchaindiligence.attestation.v2', issuer: PUBLIC_ACTION_RECEIPT_ISSUER, purpose: PUBLIC_ACTION_RECEIPT_PURPOSE, issued_at, key_id: KEY_ID, algorithm: 'ed25519', signature }
+  return { signed: true, schema_version: 'onchaindiligence.attestation.v2', issuer: PUBLIC_ACTION_RECEIPT_ISSUER, purpose: PUBLIC_ACTION_RECEIPT_PURPOSE, issued_at, key_id: KEY_ID, algorithm: 'ed25519', canonicalization: 'RFC8785', signature }
 }
 
 async function makePreflightEnvelope(): Promise<PublicActionReceiptEnvelope> {
@@ -358,7 +358,7 @@ console.log('ok  successful finalization produces a VALID COMMERCE receipt and c
         VALID_BODY,
         baseDeps({
           fetchKeyRegistry: async () => fakeRegistry, // valid for the preflight check...
-          signReceipt: async () => ({ signed: true, schema_version: 'onchaindiligence.attestation.v2', issuer: 'https://wrong-issuer.example', purpose: PUBLIC_ACTION_RECEIPT_PURPOSE, issued_at: new Date().toISOString(), key_id: KEY_ID, algorithm: 'ed25519', signature: 'x'.repeat(86) }), // ...but the COMMERCE receipt's own signature is bogus (wrong issuer)
+          signReceipt: async () => ({ signed: true, schema_version: 'onchaindiligence.attestation.v2', issuer: 'https://wrong-issuer.example', purpose: PUBLIC_ACTION_RECEIPT_PURPOSE, issued_at: new Date().toISOString(), key_id: KEY_ID, algorithm: 'ed25519', canonicalization: 'RFC8785', signature: 'x'.repeat(86) }), // ...but the COMMERCE receipt's own signature is bogus (wrong issuer)
           consumeCapabilityAndPublish: async () => {
             consumeCalled = true
             return { kind: 'consumed' }
