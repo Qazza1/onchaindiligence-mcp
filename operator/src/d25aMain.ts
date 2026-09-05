@@ -252,7 +252,7 @@ async function probeOcdPreflightChallenge(
   action: CommerceAction,
   policy: CommercePolicy,
   publication: { preflight: boolean; commerce: boolean }
-): Promise<LiveChallenge> {
+): Promise<LiveChallenge | { alreadyCompleted: true; receiptId: string; decision: string }> {
   const record = operation.currentRecord()
   const res = await fetch('/x402/lifecycle/preflight-payment', {
     method: 'POST',
@@ -263,7 +263,16 @@ async function probeOcdPreflightChallenge(
     },
     body: JSON.stringify({ action, policy, options: {}, references: {}, publication }),
   })
-  if (res.status !== 402) throw new Error(`expected 402 from OCD preflight probe, got ${res.status}`)
+  if (res.status === 200) {
+    // The preflight step already completed (e.g. resumed after a page
+    // reload, following a real paid preflight) -- the resumable route
+    // replays its stored result instead of a fresh 402 challenge. Nothing
+    // left to probe/pay for this step; surface what already happened
+    // instead of treating this as an error.
+    const body = (await res.json()) as { receipt: { receipt: { receipt_id: string } }; decision: { status: string } }
+    return { alreadyCompleted: true, receiptId: body.receipt.receipt.receipt_id, decision: body.decision.status }
+  }
+  if (res.status !== 402) throw new Error(`expected 402 or 200(completed) from OCD preflight probe, got ${res.status}`)
   return challengeFromResponse(res, 'OCD preflight')
 }
 
@@ -312,7 +321,12 @@ async function checkLivePrices(): Promise<void> {
     $('live-merchant-price').textContent = `$${merchant.decimalAmount} USDC → ${merchant.recipient}`
     logLine(`Live OneSource price: $${merchant.decimalAmount} (${merchant.atomicAmount} atomic) -> ${merchant.recipient}`)
 
-    if (!op) {
+    if (!pinnedAction || !pinnedPolicy) {
+      // Re-derived every time this runs (fresh session, or a resumed one
+      // after a page reload) -- never persisted/restored from storage,
+      // since CommerceOperation itself does not carry it across a reload
+      // (see client.ts's own comment: re-supply action/policy via
+      // client.open({operationId, action, policy}) after a restart).
       pinnedAction = {
         kind: 'PAYMENT',
         resource: ONESOURCE_TRUE_RESOURCE,
@@ -329,23 +343,50 @@ async function checkLivePrices(): Promise<void> {
         expectedRecipient: merchant.recipient,
       })
       pinnedPolicy = { ...policy, expected_payer: account }
+    }
+
+    if (!op) {
       op = await discoveryClient.open({ intent: 'D2.5A first independent merchant reference', action: pinnedAction, policy: pinnedPolicy, publication: PUBLICATION })
       localStorage.setItem(OPERATION_STORAGE_KEY, op.operationId)
       $('result-operation-id').textContent = op.operationId
       logLine(`Operation opened (free): ${op.operationId} (narrow policy: max ${merchant.decimalAmount}, recipient pinned, expected_payer ${account})`)
+    } else {
+      // Resumed from storage (e.g. after a page reload) -- the SAME
+      // operation, never a new one. CommerceOperation itself has no
+      // in-memory action/policy after a reload; re-attach the freshly
+      // re-derived (but otherwise IDENTICAL) action/policy so preflight()
+      // can be called again. This is exactly client.open({operationId,
+      // action, policy})'s own resume path, applied to an already-loaded
+      // CommerceOperation instance instead of creating a second one.
+      op.setPendingPreflightInput(pinnedAction, pinnedPolicy, PUBLICATION)
+      logLine(`Resumed operation ${op.operationId} -- re-attached action/policy, no new operation created.`)
     }
 
-    const ocd = await probeOcdPreflightChallenge(op, pinnedAction as CommerceAction, pinnedPolicy as CommercePolicy, PUBLICATION)
-    ocdChallenge = ocd
-    $('live-ocd-fee').textContent = `$${ocd.decimalAmount} USDC → ${ocd.recipient}`
-    const aggregate = (BigInt(ocd.atomicAmount) + BigInt(merchant.atomicAmount)).toString()
+    const ocdResult = await probeOcdPreflightChallenge(op, pinnedAction as CommerceAction, pinnedPolicy as CommercePolicy, PUBLICATION)
+    if ('alreadyCompleted' in ocdResult) {
+      // OCD preflight already paid and completed (this operation's real
+      // state right now) -- nothing left to charge for that step. Model it
+      // as a zero-amount "challenge" purely so the aggregate-max math below
+      // still works, and say so plainly rather than implying a second OCD
+      // charge is coming.
+      ocdChallenge = { network: pinnedAction!.network, asset: pinnedAction!.asset, recipient: '(already paid)', atomicAmount: '0', decimalAmount: '0' }
+      $('live-ocd-fee').textContent = `already paid — PREFLIGHT receipt ${ocdResult.receiptId} (${ocdResult.decision}), no further OCD charge`
+      logLine(`OCD preflight already completed: receipt ${ocdResult.receiptId}, decision ${ocdResult.decision} -- resuming will NOT trigger another OCD payment.`)
+    } else {
+      ocdChallenge = ocdResult
+      $('live-ocd-fee').textContent = `$${ocdResult.decimalAmount} USDC → ${ocdResult.recipient}`
+      logLine(`Live OCD preflight fee: $${ocdResult.decimalAmount} (${ocdResult.atomicAmount} atomic) -> ${ocdResult.recipient}`)
+    }
+    const aggregate = (BigInt(ocdChallenge.atomicAmount) + BigInt(merchant.atomicAmount)).toString()
     $('live-aggregate').textContent = `$${atomicToDecimal6(aggregate)} USDC (${aggregate} atomic)`
     $('challenge-status').textContent = `live as of ${new Date().toISOString()}`
     $('confirm-text').textContent =
-      `You are about to authorize TWO real Base USDC payments: $${ocd.decimalAmount} to OCD (${ocd.recipient}), then ` +
-      `$${merchant.decimalAmount} to OneSource (${merchant.recipient}). Aggregate maximum: $${atomicToDecimal6(aggregate)} USDC.`
+      ocdChallenge.recipient === '(already paid)'
+        ? `The OCD preflight fee was already paid (receipt above). You are about to authorize ONE real Base USDC payment: ` +
+          `$${merchant.decimalAmount} to OneSource (${merchant.recipient}). Maximum: $${atomicToDecimal6(aggregate)} USDC.`
+        : `You are about to authorize TWO real Base USDC payments: $${ocdChallenge.decimalAmount} to OCD (${ocdChallenge.recipient}), then ` +
+          `$${merchant.decimalAmount} to OneSource (${merchant.recipient}). Aggregate maximum: $${atomicToDecimal6(aggregate)} USDC.`
     ;($('confirm-checkbox') as HTMLInputElement).disabled = false
-    logLine(`Live OCD preflight fee: $${ocd.decimalAmount} (${ocd.atomicAmount} atomic) -> ${ocd.recipient}`)
     logLine(`Aggregate maximum: $${atomicToDecimal6(aggregate)} USDC`)
   } catch (err: any) {
     $('challenge-status').textContent = `error: ${err?.message ?? err}`
