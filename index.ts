@@ -32,7 +32,7 @@ import { mountReceipts } from './src/receiptsRoute.js'
 import { mountInspect } from './src/inspectRoute.js'
 import { mountVerifyReceipt } from './src/receiptToolsRoute.js'
 import { mountFinalize } from './src/finalizeRoute.js'
-import { mountLifecycle } from './src/lifecycleRoute.js'
+import { mountLifecycle, mountLifecyclePreflightHandler } from './src/lifecycleRoute.js'
 import { mountLifecycleFinalize } from './src/lifecycleFinalizeRoute.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
 import { outcomeForStatus, readMcpEnvelope, recordEvent } from './src/telemetry.js'
@@ -115,17 +115,28 @@ app.all('/mcp', async (c) => {
 })
 
 // D2.4: mounts POST /operations, GET /operations/:operationId, and the
-// operation-bound POST /x402/lifecycle/preflight-payment gate. Registered
-// BEFORE mountDiscovery so its gate middleware (specific path) runs before
-// mountDiscovery's own `/x402/*` paymentMiddleware (see lifecycleRoute.ts's
-// header) -- this is what lets a recognized retry skip payment entirely
-// instead of attempting to charge twice.
+// operation-bound POST /x402/lifecycle/preflight-payment GATE ONLY.
+// Registered BEFORE mountDiscovery so its gate middleware (specific path)
+// runs before mountDiscovery's own `/x402/*` paymentMiddleware -- this is
+// what lets a recognized retry skip payment entirely instead of attempting
+// to charge twice. The TERMINAL handler for that same route is mounted
+// separately, below, AFTER mountDiscovery -- see lifecycleRoute.ts's header
+// for why registering it here (as this used to do) silently made the route
+// free in production.
 mountLifecycle(app)
 
-// Additive: mounts GET /x402/screen/:address (paid + Bazaar-discoverable).
-// Does not touch the /mcp handler above. Safe to remove by deleting this call
-// and src/discovery.ts.
+// Additive: mounts GET /x402/screen/:address (paid + Bazaar-discoverable),
+// and (Section 4) the broad `/x402/*` paymentMiddleware that
+// /x402/lifecycle/preflight-payment's terminal handler (mounted next) relies
+// on already being in place. Does not touch the /mcp handler above. Safe to
+// remove by deleting this call and src/discovery.ts.
 mountDiscovery(app)
+
+// D2.4: mounts the TERMINAL POST /x402/lifecycle/preflight-payment handler.
+// Must be registered AFTER mountDiscovery (immediately above) so that call's
+// paymentMiddleware is already in Hono's dispatch chain for this path ahead
+// of this handler -- see lifecycleRoute.ts's mountLifecyclePreflightHandler().
+mountLifecyclePreflightHandler(app)
 
 // D2.0A: mounts GET /receipts/:receiptId, the public Agent Evidence receipt
 // resolver. Free, unauthenticated, read-only. Safe to remove by deleting

@@ -11,6 +11,10 @@
  *   POST /operations                                  free -- create
  *   GET  /operations/:operationId                      recovery-credential-gated -- status
  *   POST /x402/lifecycle/preflight-payment              paid, resumable, operation-bound
+ *                                                        (gate mounted by mountLifecycle(), BEFORE
+ *                                                        mountDiscovery(); terminal handler mounted by
+ *                                                        mountLifecyclePreflightHandler(), AFTER it —
+ *                                                        see this file's header for why)
  *   POST /operations/:operationId/execution-bindings    recovery-credential-gated
  *   POST /operations/:operationId/finalize              capability-gated (same capability as legacy finalize)
  *
@@ -22,10 +26,7 @@
  * idempotency key, the middleware has already tried to settle payment for
  * THIS request. The fix here is structural: a gate middleware, registered
  * on the SAME specific path and therefore run BEFORE the broad `/x402/*`
- * payment middleware (Hono runs `app.use` middleware in registration order
- * for matching paths — exactly the existing pattern already used for
- * /x402/preflight-payment's own pre-payment validator), claims the step
- * BEFORE payment is ever attempted:
+ * payment middleware, claims the step BEFORE payment is ever attempted:
  *
  *   - fresh claim            -> let payment middleware run, then complete
  *   - already completed      -> return the stored result, no next(), no payment
@@ -33,6 +34,22 @@
  *     before completing)        no payment, using the raw signing seam
  *   - claimed but not yet     -> 425, retry shortly (never a second payment
  *     paid (concurrent race)     attempt while the first might still land)
+ *
+ * REGISTRATION ORDER IS LOAD-BEARING (fixed post-D2.5A live re-qualification
+ * -- see git history for the incident): Hono composes every handler whose
+ * pattern matches a request in REGISTRATION order, not specificity order. A
+ * gate + terminal handler registered back-to-back for the SAME exact path
+ * (as this file originally did) run one after the other regardless of when
+ * a broader `/x402/*` middleware is mounted elsewhere -- if that broader
+ * middleware is registered LATER, it never gets inserted between them. That
+ * shipped live: mountLifecycle() was called before mountDiscovery(), so the
+ * terminal preflight handler answered (and signed a real receipt) before
+ * mountDiscovery's payment middleware was ever in the chain -- the
+ * "resumable, paid" preflight was actually free. The fix: mountLifecycle()
+ * registers ONLY the gate (still before mountDiscovery()); the terminal
+ * handler is a separate export, mountLifecyclePreflightHandler(), called
+ * AFTER mountDiscovery() so payment middleware sits between them. See each
+ * function's own doc comment and index.ts's call sites.
  */
 import type { Context, Hono, Next } from 'hono'
 import { createOperation, authenticateOperation, isValidOperationIdFormat } from './operation.js'
@@ -231,13 +248,42 @@ export function createOperationsGetHandler(deps: LifecycleRouteDependencies = {}
   }
 }
 
+/**
+ * Mounts /operations, GET /operations/:operationId, and the pre-payment GATE
+ * for /x402/lifecycle/preflight-payment. Call this BEFORE mountDiscovery().
+ *
+ * The terminal POST handler for /x402/lifecycle/preflight-payment is
+ * DELIBERATELY NOT registered here -- see mountLifecyclePreflightHandler()
+ * below and its header comment for why. Registering it here was a confirmed
+ * live defect (D2.5A): Hono composes handlers matching a path in
+ * REGISTRATION order, so a terminal `app.post` registered here (before
+ * mountDiscovery has mounted its broad `/x402/*` paymentMiddleware) responds
+ * and ends the chain before that payment middleware is ever inserted --
+ * the route evaluated and signed a real PREFLIGHT receipt for free, with no
+ * 402 ever issued. See test/lifecycleRoute.ts for the regression test.
+ */
 export function mountLifecycle(app: Hono, deps: LifecycleRouteDependencies = {}): void {
   app.post('/operations', operationsCreateHandler)
   app.get('/operations/:operationId', createOperationsGetHandler(deps))
 
   // Registered BEFORE the broad `/x402/*` paymentMiddleware in
-  // discovery.ts's mountDiscovery -- see that file, which mounts this
-  // module's routes ahead of its own paymentMiddleware call.
+  // discovery.ts's mountDiscovery -- so a recognized retry (already
+  // completed, or paid-but-crashed) is served from this gate directly,
+  // never re-attempting payment.
   app.use('/x402/lifecycle/preflight-payment', createLifecyclePreflightGate(deps))
+}
+
+/**
+ * Mounts the TERMINAL handler for /x402/lifecycle/preflight-payment. Call
+ * this AFTER mountDiscovery() -- so that call's `app.use('/x402/*',
+ * paymentMiddleware(...))` is already registered ahead of this handler in
+ * Hono's dispatch chain for this path. The resulting order for a fresh
+ * request is: mountLifecycle's gate (claims the step) -> mountDiscovery's
+ * paymentMiddleware (settles payment) -> this handler (evaluates and signs
+ * the receipt) -- exactly the "gate -> payment -> handler" sequence this
+ * file's header describes, and the same sequence discovery.ts itself uses
+ * for the legacy /x402/preflight-payment route.
+ */
+export function mountLifecyclePreflightHandler(app: Hono, deps: LifecycleRouteDependencies = {}): void {
   app.post('/x402/lifecycle/preflight-payment', createLifecyclePreflightHandler(deps))
 }
