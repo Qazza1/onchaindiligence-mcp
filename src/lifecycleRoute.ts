@@ -260,7 +260,7 @@ export function createOperationsGetHandler(deps: LifecycleRouteDependencies = {}
  * mountDiscovery has mounted its broad `/x402/*` paymentMiddleware) responds
  * and ends the chain before that payment middleware is ever inserted --
  * the route evaluated and signed a real PREFLIGHT receipt for free, with no
- * 402 ever issued. See test/lifecycleRoute.ts for the regression test.
+ * 402 ever issued. See test/lifecycleRouteMounting.ts for the regression test.
  */
 export function mountLifecycle(app: Hono, deps: LifecycleRouteDependencies = {}): void {
   app.post('/operations', operationsCreateHandler)

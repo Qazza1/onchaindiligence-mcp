@@ -244,4 +244,64 @@ console.log('ok  mountLifecycle() -> broad /x402/* middleware -> mountLifecycleP
 }
 console.log('ok  when payment middleware short-circuits with 402, the terminal handler never runs and no receipt is issued')
 
+// --- 3. The gate's own pre-payment validation still runs, and still runs
+// BEFORE payment middleware, when mounted via the real split functions --
+// a malformed body must never reach (or pay) the broad middleware --------
+
+{
+  const opStore = makeFakeOperationStore()
+  const stepStore = makeFakeStepStore()
+  const deps = buildDeps(opStore, stepStore)
+  let paymentMiddlewareRuns = 0
+
+  const app = new Hono()
+  mountLifecycle(app, deps)
+  app.use('/x402/*', async (c, next) => {
+    paymentMiddlewareRuns++
+    await next()
+  })
+  mountLifecyclePreflightHandler(app, deps)
+
+  const res = await app.request(PATH, { method: 'POST', headers: headers(), body: JSON.stringify({ action: { kind: 'PAYMENT' } }) })
+  assert.equal(res.status, 400, 'a malformed body must be rejected by the gate, not reach the handler')
+  assert.equal(paymentMiddlewareRuns, 0, "the gate's own input validation must reject before payment middleware ever runs")
+}
+console.log("ok  the gate's pre-payment input validation still runs, and still runs before payment middleware, in the fixed mount order")
+
+// --- 4. D2.4 Section 4's core guarantee, re-proven through the real split
+// mount functions: a recognized retry of an ALREADY-COMPLETED step is
+// served directly by the gate -- no second payment-middleware invocation,
+// no second evaluation, no second receipt -------------------------------
+
+{
+  const opStore = makeFakeOperationStore()
+  const stepStore = makeFakeStepStore()
+  const deps = buildDeps(opStore, stepStore)
+  let paymentMiddlewareRuns = 0
+
+  const app = new Hono()
+  mountLifecycle(app, deps)
+  app.use('/x402/*', async (c, next) => {
+    paymentMiddlewareRuns++
+    await next()
+  })
+  mountLifecyclePreflightHandler(app, deps)
+
+  const first = await app.request(PATH, { method: 'POST', headers: headers(), body: JSON.stringify(baseBody()) })
+  assert.equal(first.status, 200)
+  const firstBody = (await first.json()) as any
+  assert.equal(paymentMiddlewareRuns, 1)
+
+  // The client never saw the response (simulated: it just retries the exact
+  // same request over the exact same operation) -- this must be served from
+  // the gate's own "completed" branch, never touching payment middleware
+  // again, regardless of how the terminal handler is mounted relative to it.
+  const second = await app.request(PATH, { method: 'POST', headers: headers(), body: JSON.stringify(baseBody()) })
+  assert.equal(second.status, 200)
+  const secondBody = (await second.json()) as any
+  assert.equal(secondBody.receipt.receipt.receipt_id, firstBody.receipt.receipt.receipt_id, 'a retry must return the IDENTICAL receipt, never a second one')
+  assert.equal(paymentMiddlewareRuns, 1, 'a recognized retry of a completed step must never invoke payment middleware a second time')
+}
+console.log('ok  a recognized retry of an already-completed step is served by the gate directly, with zero additional payment-middleware invocations, in the fixed mount order')
+
 console.log('\nAll lifecycle route mounting-order regression tests passed.')
