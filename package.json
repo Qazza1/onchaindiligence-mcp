@@ -11,9 +11,11 @@
     "test:client": "tsx test/client.ts",
     "db:migrate": "tsx scripts/migrate.ts",
     "operator:build": "esbuild operator/src/main.ts --bundle --format=esm --platform=browser --target=es2020 --outfile=operator/dist/app.js",
-    "operator:commerce": "npm run operator:build && tsx operator/server.ts"
+    "operator:build:d25a": "esbuild operator/src/d25aMain.ts --bundle --format=esm --platform=browser --target=es2020 --outfile=operator/dist/d25a.js",
+    "operator:commerce": "npm run operator:build && npm run operator:build:d25a && tsx operator/server.ts"
   },
   "dependencies": {
+    "@onchaindiligence/sdk": "file:../onchaindiligence-sdk",
     "@coinbase/x402": "^2.1.0",
     "@hono/node-server": "^1.19.14",
     "@modelcontextprotocol/sdk": "^1.17.5",

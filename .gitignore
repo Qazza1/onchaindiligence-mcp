@@ -9,3 +9,11 @@ mcp-publisher
 mcp-publisher.exe
 mcp-publisher.tar.gz
 *.tar.gz
+
+.vercel
+.env*
+
+# Local-only operator state -- can contain a recovery credential or
+# finalization capability (D2.2B/D2.5A). Never committed.
+operator/.local-session.json
+operator/.d25a-recovery/

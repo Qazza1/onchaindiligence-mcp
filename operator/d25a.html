@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>D2.5A — First Independent Merchant Commerce Lifecycle (LOCAL ONLY)</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background: #0b0e14; color: #d8dee9; font: 14px/1.5 -apple-system, Segoe UI, sans-serif; max-width: 760px; margin: 32px auto; padding: 0 16px; }
+  h1 { font-size: 18px; margin-bottom: 4px; }
+  .banner { background: #3a2a00; border: 1px solid #7a5900; color: #ffcf6e; padding: 8px 12px; border-radius: 6px; margin-bottom: 20px; font-size: 13px; }
+  section { border: 1px solid #2a3040; border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
+  section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #8b95a7; margin: 0 0 10px; }
+  button { background: #2f6fed; color: #fff; border: none; border-radius: 6px; padding: 8px 14px; font-size: 13px; cursor: pointer; }
+  button:disabled { background: #33394a; color: #6b7280; cursor: not-allowed; }
+  button.secondary { background: #33394a; }
+  .row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 13px; gap: 12px; }
+  .row .v { font-family: ui-monospace, Menlo, monospace; text-align: right; word-break: break-all; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; }
+  .pill.ok { background: #123b23; color: #4ade80; }
+  .pill.bad { background: #3b1212; color: #f87171; }
+  .pill.wait { background: #2a2a12; color: #eab308; }
+  .reasons { font-size: 12px; color: #8b95a7; margin-top: 6px; }
+  .reasons li { margin-bottom: 2px; }
+  #log { background: #05070c; border-radius: 6px; padding: 10px 12px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; }
+  a { color: #6fa8ff; }
+  .confirm-text { font-size: 13px; background: #15202e; border: 1px solid #2a3040; border-radius: 6px; padding: 10px; margin: 10px 0; }
+  label.confirm { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; }
+  #result { display: none; }
+  #result .receipt { border: 1px solid #2a3040; border-radius: 6px; padding: 10px; margin-top: 8px; }
+  #challenge-status { font-size: 12px; color: #8b95a7; }
+</style>
+</head>
+<body>
+  <h1>D2.5A — FIRST INDEPENDENT MERCHANT COMMERCE LIFECYCLE</h1>
+  <div class="banner">
+    LOCAL OPERATOR TOOL — not part of the deployed OCD site. Drives the real
+    <code>@onchaindiligence/sdk/commerce</code> client against production
+    OCD and the real OneSource merchant. Exactly two real Base USDC payments
+    will be requested from your wallet: the OCD preflight fee, then the
+    OneSource merchant payment. Nothing is signed until you click "Authorize
+    &amp; run lifecycle" and approve each wallet prompt yourself.
+  </div>
+
+  <section>
+    <h2>Wallet</h2>
+    <div class="row"><span>Status</span><span class="v" id="wallet-status">not connected</span></div>
+    <div class="row"><span>Address (payer)</span><span class="v" id="wallet-address">—</span></div>
+    <div class="row"><span>Network</span><span class="v" id="wallet-chain">—</span></div>
+    <div style="margin-top:10px; display:flex; gap:8px;">
+      <button id="btn-connect">Connect wallet</button>
+      <button id="btn-switch" class="secondary" style="display:none">Switch to Base</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Balances (Base mainnet)</h2>
+    <div class="row"><span>USDC</span><span class="v" id="bal-usdc">—</span></div>
+    <div class="row"><span>ETH</span><span class="v" id="bal-eth">—</span></div>
+  </section>
+
+  <section>
+    <h2>Live challenge check (re-probed fresh, not assumed)</h2>
+    <div id="challenge-status">Connect your wallet to fetch live prices.</div>
+    <div class="row"><span>Merchant</span><span class="v">OneSource — api.onesource.io</span></div>
+    <div class="row"><span>Resource</span><span class="v" id="live-resource">—</span></div>
+    <div class="row"><span>Network</span><span class="v" id="live-network">—</span></div>
+    <div class="row"><span>Asset</span><span class="v" id="live-asset">—</span></div>
+    <div class="row"><span>Merchant recipient</span><span class="v" id="live-recipient">—</span></div>
+    <div class="row"><span>OCD preflight fee</span><span class="v" id="live-ocd-fee">—</span></div>
+    <div class="row"><span>OneSource merchant price</span><span class="v" id="live-merchant-price">—</span></div>
+    <div class="row"><strong>Aggregate maximum</strong><span class="v" id="live-aggregate"><strong>—</strong></span></div>
+    <div style="margin-top:8px"><button id="btn-check-prices" class="secondary">Re-check live prices</button></div>
+  </section>
+
+  <section>
+    <h2>Payment plan (frozen from the live challenges above)</h2>
+    <div class="confirm-text" id="confirm-text">Connect your wallet and check live prices first.</div>
+    <label class="confirm">
+      <input type="checkbox" id="confirm-checkbox" disabled />
+      <span>I understand and want to proceed. I will not refresh or close this page during the lifecycle (the operation itself is safely resumable — see the recovery note below — but this page's own in-progress UI state is not).</span>
+    </label>
+    <div style="margin-top:10px">
+      <button id="btn-execute" disabled>Authorize &amp; run lifecycle</button>
+    </div>
+    <ul class="reasons" id="gate-reasons"></ul>
+  </section>
+
+  <section id="recovery" style="display:none">
+    <h2>Recovery</h2>
+    <div id="recovery-message"></div>
+    <button id="btn-resume" class="secondary" style="margin-top:8px">Resume this operation</button>
+    <div class="reasons" style="margin-top:8px">Resuming never creates a new operation and never makes a second merchant payment — it re-runs only the step that was interrupted, against the SAME operation.</div>
+  </section>
+
+  <section>
+    <h2>Log</h2>
+    <div id="log"></div>
+  </section>
+
+  <section id="result">
+    <h2>Lifecycle complete</h2>
+    <div class="row"><span>Operation</span><span class="v" id="result-operation-id">—</span></div>
+    <div class="receipt">
+      <div><strong>PREFLIGHT</strong></div>
+      <div class="v" id="result-preflight-id">—</div>
+      <div id="result-preflight-verify"></div>
+      <div><a id="result-preflight-link" href="#" target="_blank" rel="noopener">Open Receipt</a></div>
+    </div>
+    <div class="receipt">
+      <div><strong>COMMERCE</strong></div>
+      <div class="v" id="result-commerce-id">—</div>
+      <div id="result-commerce-verify"></div>
+      <div class="row"><span>Binding strength</span><span class="v" id="result-binding">—</span></div>
+      <div><a id="result-commerce-link" href="#" target="_blank" rel="noopener">Open Receipt</a></div>
+    </div>
+    <div class="row" style="margin-top:8px"><span>Transaction</span><span class="v" id="result-tx">—</span></div>
+    <div><a id="result-tx-link" href="#" target="_blank" rel="noopener">View on Base explorer</a></div>
+    <div class="row" style="margin-top:8px"><span>Merchant response digest</span><span class="v" id="result-response-digest">—</span></div>
+    <div class="row"><span>Evidence export digest</span><span class="v" id="result-evidence-digest">—</span></div>
+  </section>
+
+  <script type="module" src="/d25a.js"></script>
+</body>
+</html>
