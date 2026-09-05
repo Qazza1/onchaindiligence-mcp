@@ -354,6 +354,34 @@ console.log('ok  bound preflight receipt failing VALID verification blocks final
 }
 console.log('ok  successful finalization produces a VALID COMMERCE receipt and consumes the capability last')
 
+// --- D2.5A: agentEvidenceBundleDigest is committed into links BEFORE signing ---
+//
+// Confirmed live defect: the D2.4 lifecycle evidence bundle digest was only
+// ever attached to the HTTP response as an unsigned sibling property
+// (`{...envelope, ocd_lifecycle_evidence}`), never to the receipt's own
+// links.agent_evidence_bundle_digest -- so the SIGNED content always
+// carried `null` there, with no way to fix an already-signed receipt.
+// finalizePayment()'s new 4th options parameter is the fix: the caller
+// (lifecycleFinalizeRoute.ts) now computes the bundle digest first and
+// passes it in here, where it is embedded before finalizeReceiptCore()/
+// signing -- so it is part of what gets independently re-verified VALID
+// below, not bolted on afterward.
+
+{
+  const bundleDigest = 'sha256:fake-lifecycle-bundle-digest-AAAAAAAAAAAAAAAAAAAAAAA'
+  const result = await finalizePayment('Bearer x', VALID_BODY, baseDeps(), { agentEvidenceBundleDigest: bundleDigest })
+  assert.equal(result.envelope.receipt.links.agent_evidence_bundle_digest, bundleDigest, 'the digest must be committed into the SIGNED receipt, not left null')
+}
+console.log('ok  a supplied agentEvidenceBundleDigest is committed into links.agent_evidence_bundle_digest before signing')
+
+{
+  // Omitting the option (the legacy /receipts/finalize route's own call
+  // site never passes it) must behave EXACTLY as before: null, unchanged.
+  const result = await finalizePayment('Bearer x', VALID_BODY, baseDeps())
+  assert.equal(result.envelope.receipt.links.agent_evidence_bundle_digest, null, 'omitting the option must leave the legacy behavior (null) completely unchanged')
+}
+console.log('ok  omitting agentEvidenceBundleDigest leaves the legacy (null) behavior unchanged')
+
 // --- generated receipt fails VALID verification -> capability never consumed ---
 
 {

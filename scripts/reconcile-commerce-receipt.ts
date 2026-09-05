@@ -43,6 +43,8 @@ import {
   getCapabilityByCommerceReceiptId,
   getReconciliationForPriorReceipt,
   recordReconciliation,
+  getCommerceOperation,
+  listCommerceObservations,
   type ReconciliationOutcome,
 } from '../src/db.js'
 import {
@@ -253,14 +255,235 @@ export async function reconcileCommerceReceipt(
 }
 
 // ---------------------------------------------------------------------
+// D2.5A: reconciling a Commerce Receipt that is ALREADY correctly
+// definitive (execution CONFIRMED, settlement CONFIRMED) but was signed
+// before its commerce-lifecycle evidence bundle digest was committed into
+// links.agent_evidence_bundle_digest (a confirmed live defect, since fixed
+// at the source in lifecycleFinalizeRoute.ts/finalizeRoute.ts -- see those
+// files' own headers). This is the OPPOSITE precondition of
+// reconcileCommerceReceipt() above (which is for a still-INDEFINITE
+// receipt) -- deliberately a separate function so that well-tested,
+// already-proven D2.2B2 logic is never touched to add this narrower case.
+//
+// NEVER re-observes or re-derives the chain conclusion: execution and
+// settlement did not change and are copied verbatim from the prior
+// receipt. The evidence bundle itself is not recomputed either -- it is
+// read back from the EXACT SAME commerce_observations row the original
+// (buggy) finalize call already wrote, so the reconciled receipt links to
+// the identical bundle_digest/binding_strength that was already reported.
+// No executor call, no payment, no chain write of any kind.
+// ---------------------------------------------------------------------
+
+export interface EvidenceLinkReconcileDependencies {
+  getReceiptForFinalization?: typeof getReceiptForFinalization
+  getCapabilityByCommerceReceiptId?: typeof getCapabilityByCommerceReceiptId
+  getReconciliationForPriorReceipt?: typeof getReconciliationForPriorReceipt
+  recordReconciliation?: typeof recordReconciliation
+  getCommerceOperation?: typeof getCommerceOperation
+  listCommerceObservations?: typeof listCommerceObservations
+  fetchKeyRegistry?: () => Promise<Parameters<typeof verifyReceiptEnvelope>[1]>
+  signReceipt?: (receipt: Receipt) => Promise<PublicActionReceiptEnvelope['proof']>
+}
+
+export type EvidenceLinkReconcileOutcome =
+  | { kind: 'already-reconciled'; reconciledReceiptId: string }
+  | { kind: 'dry-run'; bundleDigest: string; bindingStrength: string }
+  | { kind: 'reconciled'; envelope: PublicActionReceiptEnvelope }
+  | { kind: 'race-already-reconciled'; reconciledReceiptId: string }
+
+/**
+ * `operationId` is a required, explicit argument (never derived/guessed):
+ * there is no reverse lookup from a Commerce Receipt back to the operation
+ * that produced it, and inventing one for a one-off reconciliation script
+ * would be a wider, riskier change than this fix needs.
+ */
+export async function reconcileMissingEvidenceLink(
+  priorReceiptId: string,
+  operationId: string,
+  options: { confirmed: boolean },
+  deps: EvidenceLinkReconcileDependencies = {}
+): Promise<EvidenceLinkReconcileOutcome> {
+  const d = {
+    getReceiptForFinalization: deps.getReceiptForFinalization ?? getReceiptForFinalization,
+    getCapabilityByCommerceReceiptId: deps.getCapabilityByCommerceReceiptId ?? getCapabilityByCommerceReceiptId,
+    getReconciliationForPriorReceipt: deps.getReconciliationForPriorReceipt ?? getReconciliationForPriorReceipt,
+    recordReconciliation: deps.recordReconciliation ?? recordReconciliation,
+    getCommerceOperation: deps.getCommerceOperation ?? getCommerceOperation,
+    listCommerceObservations: deps.listCommerceObservations ?? listCommerceObservations,
+    fetchKeyRegistry: deps.fetchKeyRegistry ?? fetchAttestationKeyRegistry,
+    signReceipt:
+      deps.signReceipt ??
+      (async (r: Receipt) => (await attest(r, { purpose: PUBLIC_ACTION_RECEIPT_PURPOSE })).attestation as PublicActionReceiptEnvelope['proof']),
+  }
+
+  // --- load + validate the prior Commerce Receipt ---------------------------
+  const stored = await d.getReceiptForFinalization(priorReceiptId)
+  if (!stored) fail(`no receipt found for id ${priorReceiptId}`)
+  const { envelope: priorEnvelope, isPublic } = stored
+  if (priorEnvelope.receipt.receipt_type !== 'COMMERCE') {
+    fail(`${priorReceiptId} is not a COMMERCE receipt (found ${priorEnvelope.receipt.receipt_type})`)
+  }
+
+  const registry = await d.fetchKeyRegistry()
+  const priorVerification = verifyReceiptEnvelope(priorEnvelope, registry)
+  if (priorVerification.state !== 'VALID') {
+    fail(`${priorReceiptId} does not independently verify VALID (${priorVerification.state}: ${priorVerification.code})`)
+  }
+
+  if (priorEnvelope.receipt.links.agent_evidence_bundle_digest !== null) {
+    fail(`${priorReceiptId} already carries an evidence bundle link -- nothing to reconcile`)
+  }
+  const executionStatus = priorEnvelope.receipt.execution.status
+  const settlementStatus = priorEnvelope.receipt.settlement.status
+  if (executionStatus !== 'CONFIRMED' || settlementStatus !== 'CONFIRMED') {
+    fail(
+      `${priorReceiptId} is not a definitively confirmed receipt (execution=${executionStatus}, settlement=${settlementStatus}) -- ` +
+        `use reconcileCommerceReceipt() for a still-indefinite receipt instead; this function never re-derives the chain conclusion`
+    )
+  }
+
+  const transactionHash = priorEnvelope.receipt.execution.transaction_hash
+  if (!isValidTransactionHash(transactionHash)) fail(`${priorReceiptId} has no valid transaction_hash recorded`)
+
+  const preflightReceiptId = priorEnvelope.receipt.links.preflight_receipt_id
+  if (!preflightReceiptId) fail(`${priorReceiptId} has no linked preflight_receipt_id`)
+
+  const preflightStored = await d.getReceiptForFinalization(preflightReceiptId)
+  if (!preflightStored) fail(`linked preflight receipt ${preflightReceiptId} could not be found`)
+  if (preflightStored.envelope.receipt.receipt_type !== 'PREFLIGHT') fail(`${preflightReceiptId} is not a PREFLIGHT receipt`)
+  const preflightVerification = verifyReceiptEnvelope(preflightStored.envelope, registry)
+  if (preflightVerification.state !== 'VALID') {
+    fail(`linked preflight ${preflightReceiptId} does not independently verify VALID (${preflightVerification.state}: ${preflightVerification.code})`)
+  }
+
+  // --- cross-check the consumed capability record ---------------------------
+  const capability = await d.getCapabilityByCommerceReceiptId(priorReceiptId)
+  if (!capability) fail(`no finalization capability record references ${priorReceiptId} -- refusing to reconcile an unexplained receipt`)
+  if (capability.preflightReceiptId !== preflightReceiptId) {
+    fail('consumed capability references a different preflight receipt than the one linked from the Commerce Receipt')
+  }
+  if (capability.consumedTransactionHash !== transactionHash) {
+    fail('consumed capability references a different transaction hash than the one recorded on the Commerce Receipt')
+  }
+  if (capability.commerceReceiptId !== priorReceiptId) {
+    fail('consumed capability references a different Commerce Receipt id')
+  }
+
+  // --- cross-check the operation matches this receipt's own preflight ------
+  const op = await d.getCommerceOperation(operationId)
+  if (!op) fail(`no commerce operation found for id ${operationId}`)
+  if (op.preflightReceiptId !== preflightReceiptId) {
+    fail(`operation ${operationId}'s own preflight receipt does not match the one linked from ${priorReceiptId} -- wrong operation supplied`)
+  }
+
+  // --- idempotency: never generate more than one reconciliation ------------
+  const existingReconciliation = await d.getReconciliationForPriorReceipt(priorReceiptId)
+  if (existingReconciliation) {
+    return { kind: 'already-reconciled', reconciledReceiptId: existingReconciliation.reconciledReceiptId }
+  }
+
+  // --- find the EXISTING lifecycle evidence for this exact transaction -----
+  // Never recomputed/re-observed: reused exactly as the original (buggy)
+  // finalize call already derived and durably stored it.
+  const observations = await d.listCommerceObservations(operationId)
+  const matching = observations.find((o) => o.transactionHash.toLowerCase() === transactionHash.toLowerCase() && o.bundleDigest !== null)
+  if (!matching || !matching.bundleDigest) {
+    fail(`no stored lifecycle-evidence observation with a bundle digest was found for operation ${operationId} / transaction ${transactionHash} -- nothing to link`)
+  }
+  const bundleDigest = matching.bundleDigest
+  const bindingStrength = matching.bindingStrength
+
+  if (!options.confirmed) return { kind: 'dry-run', bundleDigest, bindingStrength }
+
+  // --- build, sign, verify, and durably record the reconciliation ----------
+  const priorReceiptCheck: ReceiptCheck = {
+    id: 'prior-commerce-receipt',
+    result: 'PASS',
+    summary:
+      `This receipt is a corrected re-issue of ${priorReceiptId}, carrying the SAME independently-observed execution and ` +
+      `settlement conclusion (neither was re-derived), now with its commerce-lifecycle evidence bundle properly linked -- the ` +
+      `prior receipt was signed before that link was committed to links.agent_evidence_bundle_digest.`,
+    evidence_digest: priorEnvelope.receipt.receipt_digest,
+  }
+  const limitations = [
+    ...priorEnvelope.receipt.limitations,
+    `Prior Commerce Receipt for this transaction: ${priorReceiptId} (issued ${priorEnvelope.receipt.issued_at}; historical, not ` +
+      `deleted or modified; missing its evidence bundle link due to a since-fixed defect in the finalize route).`,
+  ]
+
+  const core = buildReceiptCore({
+    receipt_type: 'COMMERCE',
+    issued_at: new Date().toISOString(),
+    action: priorEnvelope.receipt.action,
+    decision: priorEnvelope.receipt.decision, // copied verbatim -- never re-evaluated here
+    execution: priorEnvelope.receipt.execution, // copied verbatim -- the chain conclusion did not change
+    settlement: priorEnvelope.receipt.settlement, // copied verbatim -- the chain conclusion did not change
+    checks: [...priorEnvelope.receipt.checks, priorReceiptCheck],
+    links: { agent_evidence_bundle_digest: bundleDigest, preflight_receipt_id: preflightReceiptId },
+    limitations,
+  })
+  const receipt = finalizeReceiptCore(core)
+  const proof = await d.signReceipt(receipt)
+  const envelope: PublicActionReceiptEnvelope = { schema: PUBLIC_ACTION_RECEIPT_SCHEMA, receipt, proof }
+
+  const finalVerification = verifyReceiptEnvelope(envelope, registry)
+  if (finalVerification.state !== 'VALID') {
+    fail(`generated reconciliation receipt did not verify VALID (${finalVerification.code}: ${finalVerification.message}) -- not published`)
+  }
+
+  const outcome: ReconciliationOutcome = await d.recordReconciliation({ priorReceiptId, reconciledEnvelope: envelope, isPublic })
+  if (outcome.kind === 'already-reconciled') {
+    return { kind: 'race-already-reconciled', reconciledReceiptId: outcome.reconciledReceiptId }
+  }
+  return { kind: 'reconciled', envelope }
+}
+
+// ---------------------------------------------------------------------
 // CLI adapter — console-only concerns, no logic of its own.
 // ---------------------------------------------------------------------
+
+function readOperationArg(argv: string[]): string | null {
+  const idx = argv.indexOf('--operation')
+  return idx !== -1 ? (argv[idx + 1] ?? null) : null
+}
 
 async function main(): Promise<void> {
   const priorReceiptId = readReceiptArg(process.argv)
   const confirmed = process.argv.includes(CONFIRM_FLAG)
+  const operationId = readOperationArg(process.argv)
   console.log(confirmed ? 'MODE: CONFIRM (will write to the database if reconcilable)' : 'MODE: DRY RUN (no database write)')
   console.log(`Reconciling: ${priorReceiptId}`)
+
+  // --operation switches to the D2.5A evidence-link reconciliation path
+  // (an already-definitive receipt missing its evidence bundle link) --
+  // otherwise, the original D2.2B2 path (a still-indefinite receipt) runs
+  // exactly as before.
+  if (operationId) {
+    console.log(`Mode: evidence-link reconciliation for operation ${operationId}`)
+    const evidenceOutcome = await reconcileMissingEvidenceLink(priorReceiptId, operationId, { confirmed })
+
+    if (evidenceOutcome.kind === 'already-reconciled') {
+      console.log(`\nALREADY RECONCILED: ${priorReceiptId} -> ${evidenceOutcome.reconciledReceiptId}`)
+      console.log('No further action taken (idempotent).')
+      return
+    }
+    if (evidenceOutcome.kind === 'dry-run') {
+      console.log('\n=== Existing stored lifecycle evidence for this transaction ===')
+      console.log(`  bundle_digest:    ${evidenceOutcome.bundleDigest}`)
+      console.log(`  binding_strength: ${evidenceOutcome.bindingStrength}`)
+      console.log('\nThis was a DRY RUN. Nothing was written to the database.')
+      console.log(`To publish this reconciliation: npx tsx scripts/reconcile-commerce-receipt.ts --receipt ${priorReceiptId} --operation ${operationId} ${CONFIRM_FLAG}`)
+      return
+    }
+    if (evidenceOutcome.kind === 'race-already-reconciled') {
+      console.log(`\nRACE: another run already reconciled this receipt -> ${evidenceOutcome.reconciledReceiptId}. Nothing new was written.`)
+      return
+    }
+    console.log(`\nRECONCILED: ${priorReceiptId} -> ${evidenceOutcome.envelope.receipt.receipt_id}`)
+    console.log(`  GET /receipts/${priorReceiptId}                     (historical: agent_evidence_bundle_digest null, unchanged)`)
+    console.log(`  GET /receipts/${evidenceOutcome.envelope.receipt.receipt_id}  (evidence bundle now linked)`)
+    return
+  }
 
   const outcome = await reconcileCommerceReceipt(priorReceiptId, { confirmed })
 

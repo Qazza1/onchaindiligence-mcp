@@ -26,7 +26,7 @@
 import type { Context, Hono } from 'hono'
 import { authenticateOperation } from './operation.js'
 import { getStepState, type LifecycleStepDependencies } from './lifecycleSteps.js'
-import { updateCommerceOperationState, getReceiptForFinalization, type CommerceOperationRecord } from './db.js'
+import { updateCommerceOperationState, getCommerceOperation, getReceiptForFinalization, type CommerceOperationRecord } from './db.js'
 import {
   registerExecutionBinding,
   getExecutionBinding,
@@ -35,6 +35,7 @@ import {
 } from './executionBinding.js'
 import { recordObservation, selectExactTransfer } from './commerceObservation.js'
 import { buildPreflightCommitment, type PreflightCommitment } from './commerceLifecycle.js'
+import { buildCommerceReceiptCore } from './commerceReceipt.js'
 import { finalizePayment, parseFinalizationExecutionInput, FinalizationAuthError, FinalizationInputError, FinalizationConflictError, FinalizationPendingError, type FinalizeDependencies } from './finalizeRoute.js'
 import { finalizationTtlHours } from './capability.js'
 import { observeTransaction, getSupportedAsset, getClient, BASE_CAIP2 } from './settlement.js'
@@ -214,9 +215,98 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
     const body = isPlainObject(rawBody) ? rawBody : {}
     const executionRequestId = typeof body.execution_request_id === 'string' ? body.execution_request_id : null
 
+    // Validated strictly up front, before ANY evidence computation or state
+    // mutation (including finalizePayment() itself): an execution_request_id
+    // that doesn't belong to this operation must never be silently treated
+    // as "no binding" and allowed to proceed -- that would let a caller-
+    // supplied mismatched id durably pollute the append-only observation
+    // table with evidence computed under the wrong executor-correlation
+    // assumption for a request that should have been rejected outright.
+    let binding = null
+    if (executionRequestId) {
+      binding = await getExecutionBinding(executionRequestId)
+      if (!binding || binding.operationId !== operationId) {
+        return c.json({ error: 'execution_request_id does not belong to this operation' }, 400)
+      }
+    }
+
+    // D2.5A fix: compute the D2.4 lifecycle evidence bundle BEFORE calling
+    // finalizePayment(), so its digest can be committed into the new
+    // receipt's own links.agent_evidence_bundle_digest field before it is
+    // signed -- never bolted on afterward as an unsigned sibling property
+    // on the HTTP response (confirmed live defect: the signed receipt's own
+    // content always carried agent_evidence_bundle_digest: null, and there
+    // was no way to retroactively fix an already-signed receipt). Only
+    // possible when this operation actually has a completed preflight step
+    // on record; when it doesn't, this degrades to exactly the same
+    // fallback behavior as before -- legacy finalize is never blocked on
+    // the evidence layer. See finalizeRoute.ts's FinalizePaymentOptions.
+    let noEvidenceNote: string | null = null
+    let evidence: { bundle_digest: string; binding_strength: string } | null = null
+    let agentEvidenceBundleDigest: string | null = null
+
+    const op = await getCommerceOperation(operationId)
+    const frozenStep = op ? await getStepState(operationId, 'preflight', deps.step) : null
+    if (!op || !op.preflightReceiptId || !frozenStep || frozenStep.status !== 'completed') {
+      noEvidenceNote = 'operation has no completed preflight step on record; D2.4 evidence not attached'
+    } else {
+      const frozen = frozenStep.frozenInput as FrozenPreflightInput
+      const preflightReceiptId = op.preflightReceiptId
+      const preflightStored = await getReceiptForFinalization(preflightReceiptId)
+      let parsedExecution: ReturnType<typeof parseFinalizationExecutionInput> | null = null
+      try {
+        parsedExecution = parseFinalizationExecutionInput(rawBody)
+      } catch {
+        // Invalid input -- finalizePayment() below will parse it again and
+        // report the real FinalizationInputError; nothing to precompute here.
+        parsedExecution = null
+      }
+
+      if (preflightStored && preflightStored.envelope.receipt.receipt_type === 'PREFLIGHT' && parsedExecution) {
+        const preflightReceipt = preflightStored.envelope.receipt
+        const preflightReceiptDigest = preflightReceipt.receipt_digest
+        const commitment = reconstructPreflightCommitment(frozen, preflightReceiptId, preflightReceiptDigest)
+
+        let observation
+        try {
+          observation = await observeTransaction(parsedExecution.transaction_hash, frozen.input.action.network ?? BASE_CAIP2, frozen.input.action.asset ?? '')
+        } catch {
+          observation = null
+        }
+
+        if (observation) {
+          // Pure, side-effect-free: independently derives the SAME
+          // execution-matches-preflight verdict finalizePayment() will
+          // derive moments later for the signed receipt itself, without
+          // waiting for that receipt to exist first.
+          const built = buildCommerceReceiptCore(preflightReceipt, parsedExecution, observation)
+          const transferFieldsMatch = built.checks.find((chk) => chk.id === 'execution-matches-preflight')?.result === 'PASS'
+          const selectedTransfer = observation.state === 'success' ? selectExactTransfer(observation.transfers, frozen.input.action.recipient) : null
+
+          const result = await recordObservation({
+            operationId,
+            network: frozen.input.action.network,
+            observation,
+            selectedTransfer,
+            expectedPayer: frozen.input.policy.expected_payer,
+            transferFieldsMatch,
+            executionBinding: binding,
+            preflightReceiptId,
+            preflightReceiptDigest,
+            preflightCommitment: commitment,
+            tokenContract: frozen.input.action.asset,
+            finalityClient: observation.state === 'success' ? getClient() : null,
+            priorObservation: null,
+          })
+          evidence = { bundle_digest: result.bundleDigest, binding_strength: result.bindingStrength }
+          agentEvidenceBundleDigest = result.bundleDigest
+        }
+      }
+    }
+
     let legacyResult
     try {
-      legacyResult = await finalizePayment(authHeader, rawBody, deps.finalize)
+      legacyResult = await finalizePayment(authHeader, rawBody, deps.finalize, { agentEvidenceBundleDigest })
     } catch (err: any) {
       if (err instanceof FinalizationAuthError) {
         c.header('WWW-Authenticate', 'Bearer realm="finalization"')
@@ -236,60 +326,22 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
       return c.json({ error: 'finalized receipt carries no preflight link -- cannot attach operation-bound evidence' }, 500)
     }
 
-    const frozenStep = await getStepState(operationId, 'preflight', deps.step)
-    if (!frozenStep || frozenStep.status !== 'completed') {
+    if (!evidence) {
       // The receipt WAS legitimately finalized (legacy behavior above is
-      // unaffected) — but without this operation's own frozen preflight
-      // input, the D2.4 evidence layer cannot be reconstructed. Report the
-      // legacy result anyway rather than discarding a successful, paid-for
-      // finalization; only the extra evidence is unavailable.
-      return c.json({ ...envelope, ocd_lifecycle_evidence: null, ocd_lifecycle_note: 'operation has no completed preflight step on record; D2.4 evidence not attached' })
-    }
-    const frozen = frozenStep.frozenInput as FrozenPreflightInput
-
-    let binding = null
-    if (executionRequestId) {
-      binding = await getExecutionBinding(executionRequestId)
-      if (!binding || binding.operationId !== operationId) {
-        return c.json({ error: 'execution_request_id does not belong to this operation' }, 400)
-      }
+      // unaffected) — but the D2.4 evidence layer could not be attached
+      // this time (no completed preflight step on record, or a transient
+      // failure computing the evidence bundle). Report the legacy result
+      // anyway rather than discarding a successful, paid-for finalization;
+      // only the extra evidence is unavailable.
+      return c.json({ ...envelope, ocd_lifecycle_evidence: null, ...(noEvidenceNote ? { ocd_lifecycle_note: noEvidenceNote } : {}) })
     }
 
-    const preflightReceiptId = envelope.receipt.links.preflight_receipt_id
-    const preflightReceiptDigest = envelope.receipt.checks.find((chk) => chk.id === 'preflight-receipt-valid')?.evidence_digest ?? ''
-    const commitment = reconstructPreflightCommitment(frozen, preflightReceiptId, preflightReceiptDigest)
-
-    const parsedExecution = parseFinalizationExecutionInput(rawBody)
-    let observation
-    try {
-      observation = await observeTransaction(parsedExecution.transaction_hash, frozen.input.action.network ?? BASE_CAIP2, frozen.input.action.asset ?? '')
-    } catch {
-      observation = null
-    }
-
-    const transferFieldsMatch = envelope.receipt.checks.find((chk) => chk.id === 'execution-matches-preflight')?.result === 'PASS'
-    const selectedTransfer = observation && observation.state === 'success' ? selectExactTransfer(observation.transfers, frozen.input.action.recipient) : null
-
-    let evidence = null
-    if (observation) {
-      const result = await recordObservation({
-        operationId,
-        network: frozen.input.action.network,
-        observation,
-        selectedTransfer,
-        expectedPayer: frozen.input.policy.expected_payer,
-        transferFieldsMatch,
-        executionBinding: binding,
-        preflightReceiptId,
-        preflightReceiptDigest,
-        preflightCommitment: commitment,
-        tokenContract: frozen.input.action.asset,
-        finalityClient: observation.state === 'success' ? getClient() : null,
-        priorObservation: null,
-      })
-      evidence = { bundle_digest: result.bundleDigest, binding_strength: result.bindingStrength }
-      await updateCommerceOperationState(operationId, { observationState: 'confirmed', receiptState: 'commerce_issued' })
-    }
+    // D2.5A: a known, independently-confirmed execution must not be left
+    // reading execution_state: "prepared" forever -- the client's own
+    // mirror update (execution-bindings/:id/state) is best-effort and can
+    // silently fail; this is the point where the server itself definitively
+    // knows the outcome, so it sets the authoritative state directly.
+    await updateCommerceOperationState(operationId, { observationState: 'confirmed', receiptState: 'commerce_issued', executionState: 'transaction_known' })
 
     return c.json({ ...envelope, ocd_lifecycle_evidence: evidence })
   }

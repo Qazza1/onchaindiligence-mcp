@@ -169,6 +169,23 @@ async function loadExistingCommerceReceipt(
   return stored.envelope
 }
 
+export interface FinalizePaymentOptions {
+  /**
+   * D2.4/D2.5A: the commerce-lifecycle evidence bundle digest for THIS
+   * exact execution, if the caller (the operation-bound route) has already
+   * computed it -- committed into the new receipt's own
+   * links.agent_evidence_bundle_digest field BEFORE signing, never bolted
+   * on afterward as an unsigned sibling property on the HTTP response
+   * (that was a confirmed live defect: the receipt's own signed content
+   * always carried agent_evidence_bundle_digest: null, and the caller had
+   * no way to retroactively fix an already-signed receipt). The legacy
+   * /receipts/finalize route (which has no concept of D2.4 lifecycle
+   * evidence) never passes this, so its behavior is completely unchanged:
+   * null, exactly as before.
+   */
+  agentEvidenceBundleDigest?: string | null
+}
+
 /**
  * The service function both the HTTP route and (if ever needed) a future
  * transport adapt to. `rawAuthorizationHeader` is the literal
@@ -178,7 +195,8 @@ async function loadExistingCommerceReceipt(
 export async function finalizePayment(
   rawAuthorizationHeader: string | null | undefined,
   rawBody: unknown,
-  deps: FinalizeDependencies = {}
+  deps: FinalizeDependencies = {},
+  options: FinalizePaymentOptions = {}
 ): Promise<FinalizeResult> {
   const token = extractBearerCapability(rawAuthorizationHeader)
   if (!token) {
@@ -269,7 +287,7 @@ export async function finalizePayment(
     execution: built.execution,
     settlement: built.settlement,
     checks: built.checks,
-    links: { agent_evidence_bundle_digest: null, preflight_receipt_id: preflightReceipt.receipt_id },
+    links: { agent_evidence_bundle_digest: options.agentEvidenceBundleDigest ?? null, preflight_receipt_id: preflightReceipt.receipt_id },
     limitations: built.limitations,
   })
   const receipt = finalizeReceiptCore(core)
