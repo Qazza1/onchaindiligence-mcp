@@ -65,3 +65,15 @@ assert.match(PREFLIGHT_PAYMENT_TOOL_DESCRIPTION, /does not guarantee it will pro
 console.log('ok  preflight_payment description still states what OCD does NOT authorize')
 
 console.log('\nAll D2.3 MCP tool description tests passed.')
+
+// Importing ../src/server.js (to read the description constants) transitively
+// initializes the MCP/x402 transport machinery, which leaves an open handle
+// (e.g. a keep-alive HTTP agent for the CDP facilitator) that Node's event
+// loop waits on forever -- this test's own assertions finish correctly (see
+// the output above), but the process never exits on its own, which hangs
+// this exact `npx tsx` step in CI (D2.5B: confirmed this is not an
+// environment-specific artifact -- the committed CI runs this file the same
+// way). This test performs no further work after this point, so an explicit
+// exit is the correct, narrow fix -- not a workaround for a failing
+// assertion (there isn't one).
+process.exit(0)
