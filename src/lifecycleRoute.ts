@@ -151,12 +151,11 @@ export async function runPreflightStepAndComplete(
     preflightState: 'completed',
     preflightReceiptId: result.receipt.receipt.receipt_id,
   })
-  // D2.7B: best-effort, bounded (see webhookDelivery.ts's DELIVERY_TIMEOUT_MS),
-  // NEVER throws, no-op for operations with no account owner (e.g. every
-  // D2.6 reference-harness operation) -- see webhookEvents.ts's header.
-  // Awaited (not fire-and-forget) because a serverless function's process
-  // may freeze the instant this handler's response is sent, which would
-  // silently kill an un-awaited delivery attempt before it ever runs.
+  // D2.7B (corrected): DB-only enqueue, no outbound HTTP call on this path
+  // -- the Vercel Cron delivers it within ~1 minute. NEVER throws, no-op
+  // for operations with no account owner (e.g. every D2.6 reference-harness
+  // operation) -- see webhookEvents.ts's header. Still awaited (cheap, DB-
+  // only) so the enqueue durably completes before this handler returns.
   await emitPreflightCompleted(operationId, result.receipt.receipt.decision.status)
   return result
 }

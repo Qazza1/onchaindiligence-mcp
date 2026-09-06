@@ -107,7 +107,6 @@ console.log('ok  webhook deliveries are signed with a versioned HMAC-SHA256 (v1=
       return { created: true, delivery }
     },
     listActiveWebhookEndpointsForAccount: async () => [endpoint],
-    attemptDelivery: async () => {}, // delivery mechanics tested separately below
   }
 
   await emitOperationEvent({ accountId: ACCOUNT_A.accountId, operationId: 'OCD-OP-retry-test', type: 'operation.execution_updated', dedupeKey: 'transaction_known', data: { execution_state: 'transaction_known' } }, deps)
@@ -127,6 +126,82 @@ console.log('ok  webhook deliveries are signed with a versioned HMAC-SHA256 (v1=
   assert.equal(events.size, 2, 'a genuinely different lifecycle transition must still produce a new event')
 }
 console.log('ok  retrying the same lifecycle transition reuses the same event id and creates no duplicate event or delivery; a genuinely new transition still gets its own event')
+
+// --- D2.7B correction, test 1: emitting a lifecycle event enqueues delivery without outbound fetch ---
+
+let enqueueOnlyEvent!: WebhookEventRecord
+let enqueueOnlyDelivery!: WebhookDeliveryRecord
+let enqueueOnlyEndpoint!: WebhookEndpointRecord
+{
+  const events = new Map<string, WebhookEventRecord>()
+  const deliveries = new Map<string, WebhookDeliveryRecord>()
+  const endpoint: WebhookEndpointRecord = { webhookId: 'OCD-WHK-enqueue-only', accountId: ACCOUNT_A.accountId, url: 'https://customer.example/hook', signingSecret: 's', status: 'active', createdAt: new Date().toISOString() }
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => {
+    throw new Error('emitOperationEvent must never perform outbound HTTP -- delivery is the cron\'s job now')
+  }) as typeof fetch
+
+  try {
+    const deps = {
+      createWebhookEvent: async (params: any) => {
+        const event: WebhookEventRecord = { eventId: 'OCD-EVT-enqueue-only', accountId: params.accountId, operationId: params.operationId, type: params.type, dedupeKey: params.dedupeKey, data: params.data, createdAt: new Date().toISOString() }
+        events.set(event.eventId, event)
+        return { created: true, event }
+      },
+      createWebhookDelivery: async (params: any) => {
+        const delivery: WebhookDeliveryRecord = { deliveryId: params.deliveryId, eventId: params.eventId, webhookId: params.webhookId, status: 'pending', attemptCount: 0, nextAttemptAt: new Date().toISOString(), lastHttpStatus: null, lastError: null, createdAt: new Date().toISOString(), deliveredAt: null }
+        deliveries.set(delivery.deliveryId, delivery)
+        return { created: true, delivery }
+      },
+      listActiveWebhookEndpointsForAccount: async () => [endpoint],
+    }
+
+    await emitOperationEvent({ accountId: ACCOUNT_A.accountId, operationId: 'OCD-OP-enqueue-only', type: 'operation.receipt_produced', dedupeKey: 'OCD-RCP-enqueue-only', data: { receipt_id: 'OCD-RCP-enqueue-only' } }, deps)
+
+    assert.equal(events.size, 1, 'the event must still be enqueued')
+    assert.equal(deliveries.size, 1, 'a delivery row must still be created')
+    const delivery = [...deliveries.values()][0]
+    assert.equal(delivery.status, 'pending', 'the delivery must be left pending -- no inline attempt was made')
+    assert.equal(delivery.attemptCount, 0, 'no attempt has been made yet')
+    assert.ok(new Date(delivery.nextAttemptAt).getTime() <= Date.now() + 1000, 'next_attempt_at must be ~now, so the cron picks it up on its very next tick')
+
+    // Store these for the next test, which simulates the cron picking this exact row up.
+    enqueueOnlyEvent = [...events.values()][0]
+    enqueueOnlyDelivery = delivery
+    enqueueOnlyEndpoint = endpoint
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+console.log('ok  emitting a lifecycle event enqueues an event + pending delivery WITHOUT making any outbound fetch call')
+
+// --- D2.7B correction, test 2: cron processes that delivery normally ------
+
+{
+  let deliveredHttpStatus: number | null = null
+  let sawOutboundRequest = false
+  const deps = {
+    listDueWebhookDeliveries: async () => [enqueueOnlyDelivery],
+    getWebhookEventById: async (eventId: string) => (eventId === enqueueOnlyEvent.eventId ? enqueueOnlyEvent : null),
+    getWebhookEndpoint: async (webhookId: string) => (webhookId === enqueueOnlyEndpoint.webhookId ? enqueueOnlyEndpoint : null),
+    markWebhookDeliveryDelivered: async (_deliveryId: string, httpStatus: number) => {
+      deliveredHttpStatus = httpStatus
+    },
+    markWebhookDeliveryRetry: async () => assert.fail('must not need a retry -- the fake endpoint returns 200'),
+    markWebhookDeliveryFailed: async () => assert.fail('must not fail -- the fake endpoint returns 200'),
+    fetchImpl: (async () => {
+      sawOutboundRequest = true
+      return new Response(null, { status: 200 })
+    }) as any,
+  }
+
+  const result = await processDueDeliveries(50, deps)
+  assert.equal(result.attempted, 1, 'the cron must attempt exactly the one due delivery')
+  assert.ok(sawOutboundRequest, 'the cron (not the original request) is what makes the outbound HTTP call')
+  assert.equal(deliveredHttpStatus, 200)
+}
+console.log('ok  the cron\'s processDueDeliveries() picks up an enqueued-only delivery and delivers it normally')
 
 // --- 4. secrets are absent from the payload --------------------------------
 

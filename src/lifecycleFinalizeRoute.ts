@@ -224,7 +224,7 @@ export function createExecutionBindingStateHandler(deps: LifecycleFinalizeDepend
         return c.json({ error: err?.message || 'invalid state transition' }, 409)
       }
       await updateCommerceOperationState(operationId, { executionState: body.state as CommerceOperationRecord['executionState'] })
-      // D2.7B: best-effort, bounded, never throws -- see webhookEvents.ts.
+      // D2.7B (corrected): DB-only enqueue, no outbound HTTP call on this path -- see webhookEvents.ts's header.
       await emitExecutionUpdated(operationId, body.state as CommerceOperationRecord['executionState'], executionRequestId, currentBinding.providerReference)
     }
     return c.json({ execution_request_id: executionRequestId, submission_state: hasState ? body.state : currentBinding.submissionState, provider_reference: currentBinding.providerReference })
@@ -335,7 +335,7 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
           evidence = { bundle_digest: result.bundleDigest, binding_strength: result.bindingStrength }
           agentEvidenceBundleDigest = result.bundleDigest
           if (result.observation) {
-            // D2.7B: best-effort, bounded, never throws -- see webhookEvents.ts.
+            // D2.7B (corrected): DB-only enqueue, no outbound HTTP call on this path -- see webhookEvents.ts's header.
             await emitSettlementUpdated(operationId, result.observation)
           }
         }

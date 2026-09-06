@@ -9,14 +9,27 @@
  *   operation.settlement_updated   <- a new commerce_observations row
  *   operation.receipt_produced     <- a Commerce receipt is issued
  *
+ * D2.7B CORRECTION: this module used to attempt outbound HTTP delivery
+ * inline, awaited from the same request that changed operation state --
+ * meaning a slow/down customer endpoint could add up to the delivery
+ * timeout to a real OCD preflight/execution/finalization HTTP request.
+ * emitOperationEvent() now does ONLY the durable, DB-local part (create the
+ * event row, create the delivery rows with next_attempt_at = now) and
+ * returns -- no fetch() of any kind. The already-existing Vercel Cron
+ * (every minute, see vercel.json) hitting POST/GET /internal/webhooks/deliver
+ * is now the ONLY thing that ever performs an outbound webhook HTTP call
+ * (webhookDelivery.ts's processDueDeliveries()/attemptDelivery(), both
+ * unchanged). Worst case, a fresh event waits up to ~1 minute for its first
+ * delivery attempt -- an explicitly accepted tradeoff for never blocking
+ * the lifecycle request path on a customer's endpoint.
+ *
  * Every emit* function here:
  *   - is a no-op (silently) when the operation has no owner_id -- there is
  *     no account to notify, and this is the overwhelming majority case for
  *     D2.6 harness / anonymous operations, which must stay entirely
  *     unaffected by D2.7B's existence.
- *   - NEVER throws. A webhook customer's endpoint being down, or even this
- *     module having a bug, must never break preflight/execution/
- *     finalization -- see webhookDelivery.ts's header.
+ *   - NEVER throws. A bug in this module must never break preflight/
+ *     execution/finalization -- see webhookDelivery.ts's header.
  *   - relies on createWebhookEvent()'s (operation_id, type, dedupe_key)
  *     UNIQUE constraint for idempotency: calling emit* again for a
  *     transition that already produced an event is a safe no-op, and reuses
@@ -33,11 +46,8 @@ import {
   listCommerceObservations,
   type CommerceOperationRecord,
   type CommerceObservationRecord,
-  type WebhookDeliveryRecord,
-  type WebhookEndpointRecord,
 } from './db.js'
 import { deriveRecoveryStatus } from './operationHistory.js'
-import { attemptDelivery } from './webhookDelivery.js'
 
 function generateEventId(): string {
   return 'OCD-EVT-' + randomBytes(16).toString('base64url')
@@ -58,13 +68,13 @@ export interface EmitOperationEventDependencies {
   createWebhookEvent?: typeof createWebhookEvent
   createWebhookDelivery?: typeof createWebhookDelivery
   listActiveWebhookEndpointsForAccount?: typeof listActiveWebhookEndpointsForAccount
-  attemptDelivery?: typeof attemptDelivery
 }
 
 /**
- * Core enqueue + best-effort immediate delivery. Exported for tests AND for
- * the specific emit* helpers below, which supply the correct dedupe_key/
- * data shape for each event type rather than leaving that to call sites.
+ * Core enqueue-ONLY step. Exported for tests AND for the specific emit*
+ * helpers below, which supply the correct dedupe_key/data shape for each
+ * event type rather than leaving that to call sites. Performs no network
+ * I/O of any kind -- see this file's header.
  */
 export async function emitOperationEvent(
   params: {
@@ -79,7 +89,6 @@ export async function emitOperationEvent(
   const doCreateEvent = deps.createWebhookEvent ?? createWebhookEvent
   const doCreateDelivery = deps.createWebhookDelivery ?? createWebhookDelivery
   const doListEndpoints = deps.listActiveWebhookEndpointsForAccount ?? listActiveWebhookEndpointsForAccount
-  const doAttemptDelivery = deps.attemptDelivery ?? attemptDelivery
   try {
     const { event } = await doCreateEvent({
       eventId: generateEventId(),
@@ -95,15 +104,11 @@ export async function emitOperationEvent(
     const endpoints = await doListEndpoints(params.accountId)
     if (endpoints.length === 0) return
 
-    const attempts: Array<{ delivery: WebhookDeliveryRecord; endpoint: WebhookEndpointRecord } | null> = await Promise.all(
-      endpoints.map(async (endpoint) => {
-        const { created, delivery } = await doCreateDelivery({ deliveryId: generateDeliveryId(), eventId: event.eventId, webhookId: endpoint.webhookId })
-        if (!created) return null // this event/endpoint pair already has a delivery in flight or resolved -- nothing new to attempt inline
-        return { delivery, endpoint }
-      })
-    )
+    // Enqueue only -- next_attempt_at defaults to now() (schema.sql), so the
+    // cron's very next tick (within ~1 minute) picks these up. No fetch()
+    // happens on this call path.
     await Promise.all(
-      attempts.map((attempt) => (attempt ? doAttemptDelivery(attempt.delivery, event, attempt.endpoint).catch(() => {}) : Promise.resolve()))
+      endpoints.map((endpoint) => doCreateDelivery({ deliveryId: generateDeliveryId(), eventId: event.eventId, webhookId: endpoint.webhookId }))
     )
   } catch (err) {
     console.error('D2.7B webhook event emission failed (non-fatal, operation flow is unaffected):', err)
