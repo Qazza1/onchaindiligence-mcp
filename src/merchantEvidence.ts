@@ -135,6 +135,16 @@ function computeEvidenceId(operationId: string, input: MerchantEvidenceInput): s
     executionRequestId: input.executionRequestId,
     providerReference: input.providerReference,
     transactionHash: input.transactionHash,
+    // D2.9A correction: must be part of the digest, or two records that
+    // differ ONLY in their allowlisted response headers (e.g. a genuinely
+    // different ETag) would collapse onto the same evidence_id and the
+    // second submission would be silently treated as a replay of the
+    // first, rather than the append-only new record it actually is. Uses
+    // the ALREADY-SANITIZED value (input.responseHeaders has already been
+    // through sanitizeResponseHeaders() by the time this runs) -- never
+    // raw/arbitrary headers, and contentId()'s own canonicalizer sorts
+    // object keys, so header order never affects the digest.
+    responseHeaders: input.responseHeaders,
   })
 }
 

@@ -139,6 +139,33 @@ console.log('ok  merchant evidence is recorded (CALLER_REPORTED, correctly corre
 }
 console.log('ok  retrying identical merchant evidence is idempotent (same evidence id, no duplicate row); a genuinely different response creates a new append-only record')
 
+// --- correction: a different allowlisted response header produces a DIFFERENT evidence_id / a new append-only record ---
+
+{
+  const store = makeFakeStore()
+  const rawInput = {
+    resource_url: 'https://api.onesource.io/api/chain/block-number',
+    http_status: 200,
+    content_type: 'application/json',
+    response_body_digest: digest('{"ok":true}'),
+    response_bytes: 11,
+    execution_request_id: EXECUTION_REQUEST_ID,
+  }
+  const withEtagA = await recordMerchantEvidence(OPERATION_ID, parseMerchantEvidenceInput({ ...rawInput, response_headers: { etag: 'W/"aaa"' } }), store)
+  const withEtagB = await recordMerchantEvidence(OPERATION_ID, parseMerchantEvidenceInput({ ...rawInput, response_headers: { etag: 'W/"bbb"' } }), store)
+  assert.equal(withEtagA.created, true)
+  assert.equal(withEtagB.created, true, 'a genuinely different allowlisted response header must create a new append-only record, not collapse onto the first')
+  assert.notEqual(withEtagA.evidence.evidenceId, withEtagB.evidence.evidenceId, 'a different ETag must produce a different evidence_id')
+  assert.equal(store.rows.size, 2)
+
+  // Same allowlisted header content -> same evidence_id (still idempotent).
+  const withEtagARepeat = await recordMerchantEvidence(OPERATION_ID, parseMerchantEvidenceInput({ ...rawInput, response_headers: { etag: 'W/"aaa"' } }), store)
+  assert.equal(withEtagARepeat.created, false)
+  assert.equal(withEtagARepeat.evidence.evidenceId, withEtagA.evidence.evidenceId)
+  assert.equal(store.rows.size, 2, 'the identical-header retry must not create a third record')
+}
+console.log('ok  a different allowlisted response header (e.g. ETag) produces a different evidence_id and a new append-only record; identical headers stay idempotent')
+
 // --- 3. confirmed settlement + caller-reported HTTP 500 produces MERCHANT_RESPONSE_ERROR ---
 
 function baseInvestigation(overrides: Partial<Omit<Investigation, 'findings'>> = {}): Omit<Investigation, 'findings'> {
