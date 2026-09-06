@@ -68,3 +68,6 @@ jobs:
       # D2.7A (AUTHENTICATED OPERATION HISTORY + RECOVERY CENTER): the new
       # account-scoped read surface layered on top of the D2.4 tables above.
       - run: npx --no-install tsx test/d27aAccountHistory.ts
+      # D2.7B (ACCOUNT WEBHOOKS): outbound lifecycle-event webhooks layered
+      # on top of the D2.7A account identity.
+      - run: npx --no-install tsx test/d27bWebhooks.ts

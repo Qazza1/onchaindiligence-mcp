@@ -204,3 +204,61 @@ CREATE INDEX IF NOT EXISTS commerce_operations_owner_idx ON commerce_operations 
 -- column on commerce_operations itself -- see src/db.ts's
 -- getCommerceReceiptIdForPreflightReceipt().
 CREATE INDEX IF NOT EXISTS finalization_capabilities_preflight_receipt_idx ON finalization_capabilities (preflight_receipt_id);
+
+-- D2.7B -- account-scoped outbound webhooks for operation lifecycle events.
+--
+-- `signing_secret` is stored in PLAIN TEXT deliberately -- a different
+-- discipline from recovery_credential/api_key_hash above. Those are
+-- credentials callers present TO us (so only a hash is ever needed, to
+-- compare). A webhook signing secret is the reverse: WE use it to prove
+-- OUR authenticity to the customer's endpoint on every delivery, so the
+-- raw value must remain usable server-side, exactly like any third-party
+-- API secret a backend stores to call out with. It is still never returned
+-- by GET /me/webhooks -- only once, at creation.
+CREATE TABLE IF NOT EXISTS webhook_endpoints (
+  webhook_id      TEXT PRIMARY KEY,
+  account_id      TEXT NOT NULL REFERENCES accounts (account_id),
+  url             TEXT NOT NULL,
+  signing_secret  TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS webhook_endpoints_account_idx ON webhook_endpoints (account_id);
+
+-- One row per MEANINGFUL lifecycle transition, not per DB write. UNIQUE
+-- (operation_id, type, dedupe_key) is what makes emitting an event
+-- idempotent: re-running the same state transition (e.g. a retried
+-- request resuming the same operation) hits this constraint and enqueues
+-- no new event/deliveries -- see src/webhookEvents.ts.
+CREATE TABLE IF NOT EXISTS webhook_events (
+  event_id        TEXT PRIMARY KEY,
+  account_id      TEXT NOT NULL REFERENCES accounts (account_id),
+  operation_id    TEXT NOT NULL REFERENCES commerce_operations (operation_id),
+  type            TEXT NOT NULL,
+  dedupe_key      TEXT NOT NULL,
+  data_json       JSONB NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (operation_id, type, dedupe_key)
+);
+CREATE INDEX IF NOT EXISTS webhook_events_account_idx ON webhook_events (account_id, created_at DESC);
+
+-- One row per (event, endpoint) delivery attempt lineage. A delivery
+-- retry updates the SAME row (bumping attempt_count/next_attempt_at) --
+-- it never creates a second event or a second delivery row for the same
+-- (event_id, webhook_id) pair.
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  delivery_id       TEXT PRIMARY KEY,
+  event_id          TEXT NOT NULL REFERENCES webhook_events (event_id),
+  webhook_id        TEXT NOT NULL REFERENCES webhook_endpoints (webhook_id) ON DELETE CASCADE,
+  status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'failed')),
+  attempt_count     INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_http_status  INTEGER,
+  last_error        TEXT,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  delivered_at      TIMESTAMPTZ,
+  UNIQUE (event_id, webhook_id)
+);
+CREATE INDEX IF NOT EXISTS webhook_deliveries_webhook_idx ON webhook_deliveries (webhook_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS webhook_deliveries_due_idx ON webhook_deliveries (status, next_attempt_at) WHERE status = 'pending';

@@ -784,3 +784,214 @@ export async function getCommerceReceiptIdForPreflightReceipt(preflightReceiptId
   )) as unknown as any[]
   return rows[0]?.commerce_receipt_id ?? null
 }
+
+// ---------------------------------------------------------------------
+// D2.7B — account-scoped outbound webhooks. See db/schema.sql's "D2.7B"
+// section for the table shapes and idempotency/retry discipline.
+// ---------------------------------------------------------------------
+
+export interface WebhookEndpointRecord {
+  webhookId: string
+  accountId: string
+  url: string
+  signingSecret: string
+  status: 'active' | 'disabled'
+  createdAt: string
+}
+
+function mapWebhookEndpointRow(row: any): WebhookEndpointRecord {
+  return {
+    webhookId: row.webhook_id,
+    accountId: row.account_id,
+    url: row.url,
+    signingSecret: row.signing_secret,
+    status: row.status,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+  }
+}
+
+export async function createWebhookEndpoint(params: { webhookId: string; accountId: string; url: string; signingSecret: string }): Promise<WebhookEndpointRecord> {
+  const rows = (await sql().query(
+    `INSERT INTO webhook_endpoints (webhook_id, account_id, url, signing_secret) VALUES ($1, $2, $3, $4) RETURNING *`,
+    [params.webhookId, params.accountId, params.url, params.signingSecret]
+  )) as unknown as any[]
+  return mapWebhookEndpointRow(rows[0])
+}
+
+export async function countActiveWebhookEndpointsForAccount(accountId: string): Promise<number> {
+  const rows = (await sql().query(`SELECT count(*)::int AS n FROM webhook_endpoints WHERE account_id = $1 AND status = 'active'`, [
+    accountId,
+  ])) as unknown as Array<{ n: number }>
+  return rows[0]?.n ?? 0
+}
+
+export async function listWebhookEndpointsForAccount(accountId: string): Promise<WebhookEndpointRecord[]> {
+  const rows = (await sql().query('SELECT * FROM webhook_endpoints WHERE account_id = $1 ORDER BY created_at DESC', [
+    accountId,
+  ])) as unknown as any[]
+  return rows.map(mapWebhookEndpointRow)
+}
+
+/** Active endpoints only -- what an event fan-out actually delivers to. */
+export async function listActiveWebhookEndpointsForAccount(accountId: string): Promise<WebhookEndpointRecord[]> {
+  const rows = (await sql().query(`SELECT * FROM webhook_endpoints WHERE account_id = $1 AND status = 'active'`, [
+    accountId,
+  ])) as unknown as any[]
+  return rows.map(mapWebhookEndpointRow)
+}
+
+export async function getWebhookEndpoint(webhookId: string): Promise<WebhookEndpointRecord | null> {
+  const rows = (await sql().query('SELECT * FROM webhook_endpoints WHERE webhook_id = $1', [webhookId])) as unknown as any[]
+  return rows[0] ? mapWebhookEndpointRow(rows[0]) : null
+}
+
+/** Ownership-checked: deletes only if the endpoint belongs to accountId. Returns whether a row was actually deleted. Cascades to webhook_deliveries (schema ON DELETE CASCADE). */
+export async function deleteWebhookEndpointForAccount(webhookId: string, accountId: string): Promise<boolean> {
+  const rows = (await sql().query('DELETE FROM webhook_endpoints WHERE webhook_id = $1 AND account_id = $2 RETURNING webhook_id', [
+    webhookId,
+    accountId,
+  ])) as unknown as any[]
+  return rows.length > 0
+}
+
+export interface WebhookEventRecord {
+  eventId: string
+  accountId: string
+  operationId: string
+  type: string
+  dedupeKey: string
+  data: unknown
+  createdAt: string
+}
+
+function mapWebhookEventRow(row: any): WebhookEventRecord {
+  return {
+    eventId: row.event_id,
+    accountId: row.account_id,
+    operationId: row.operation_id,
+    type: row.type,
+    dedupeKey: row.dedupe_key,
+    data: row.data_json,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+  }
+}
+
+/**
+ * Idempotent by (operation_id, type, dedupe_key): a retried lifecycle
+ * transition that re-runs the same enqueue call never creates a second
+ * event. Returns `created: false` (with the EXISTING event) on a dedupe
+ * hit -- the caller uses this to skip creating deliveries a second time.
+ */
+export async function createWebhookEvent(params: {
+  eventId: string
+  accountId: string
+  operationId: string
+  type: string
+  dedupeKey: string
+  data: unknown
+}): Promise<{ created: boolean; event: WebhookEventRecord }> {
+  const inserted = (await sql().query(
+    `INSERT INTO webhook_events (event_id, account_id, operation_id, type, dedupe_key, data_json)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+     ON CONFLICT (operation_id, type, dedupe_key) DO NOTHING
+     RETURNING *`,
+    [params.eventId, params.accountId, params.operationId, params.type, params.dedupeKey, JSON.stringify(params.data)]
+  )) as unknown as any[]
+  if (inserted[0]) return { created: true, event: mapWebhookEventRow(inserted[0]) }
+
+  const existing = (await sql().query('SELECT * FROM webhook_events WHERE operation_id = $1 AND type = $2 AND dedupe_key = $3', [
+    params.operationId,
+    params.type,
+    params.dedupeKey,
+  ])) as unknown as any[]
+  if (!existing[0]) throw new Error('webhook event disappeared between insert and read -- this should never happen')
+  return { created: false, event: mapWebhookEventRow(existing[0]) }
+}
+
+export interface WebhookDeliveryRecord {
+  deliveryId: string
+  eventId: string
+  webhookId: string
+  status: 'pending' | 'delivered' | 'failed'
+  attemptCount: number
+  nextAttemptAt: string
+  lastHttpStatus: number | null
+  lastError: string | null
+  createdAt: string
+  deliveredAt: string | null
+}
+
+function mapWebhookDeliveryRow(row: any): WebhookDeliveryRecord {
+  return {
+    deliveryId: row.delivery_id,
+    eventId: row.event_id,
+    webhookId: row.webhook_id,
+    status: row.status,
+    attemptCount: row.attempt_count,
+    nextAttemptAt: row.next_attempt_at instanceof Date ? row.next_attempt_at.toISOString() : row.next_attempt_at,
+    lastHttpStatus: row.last_http_status ?? null,
+    lastError: row.last_error ?? null,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    deliveredAt: row.delivered_at ? (row.delivered_at instanceof Date ? row.delivered_at.toISOString() : row.delivered_at) : null,
+  }
+}
+
+/** Idempotent by (event_id, webhook_id) -- re-enqueueing for an event/endpoint pair that already has a delivery row is a no-op, never a duplicate. */
+export async function createWebhookDelivery(params: { deliveryId: string; eventId: string; webhookId: string }): Promise<{ created: boolean; delivery: WebhookDeliveryRecord }> {
+  const inserted = (await sql().query(
+    `INSERT INTO webhook_deliveries (delivery_id, event_id, webhook_id) VALUES ($1, $2, $3) ON CONFLICT (event_id, webhook_id) DO NOTHING RETURNING *`,
+    [params.deliveryId, params.eventId, params.webhookId]
+  )) as unknown as any[]
+  if (inserted[0]) return { created: true, delivery: mapWebhookDeliveryRow(inserted[0]) }
+  const existing = (await sql().query('SELECT * FROM webhook_deliveries WHERE event_id = $1 AND webhook_id = $2', [
+    params.eventId,
+    params.webhookId,
+  ])) as unknown as any[]
+  return { created: false, delivery: mapWebhookDeliveryRow(existing[0]) }
+}
+
+export async function markWebhookDeliveryDelivered(deliveryId: string, httpStatus: number): Promise<void> {
+  await sql().query(
+    `UPDATE webhook_deliveries SET status = 'delivered', attempt_count = attempt_count + 1, last_http_status = $2, last_error = NULL, delivered_at = now(), updated_at = now() WHERE delivery_id = $1`,
+    [deliveryId, httpStatus]
+  )
+}
+
+export async function markWebhookDeliveryRetry(deliveryId: string, nextAttemptAt: string, httpStatus: number | null, error: string | null): Promise<void> {
+  await sql().query(
+    `UPDATE webhook_deliveries SET status = 'pending', attempt_count = attempt_count + 1, next_attempt_at = $2, last_http_status = $3, last_error = $4, updated_at = now() WHERE delivery_id = $1`,
+    [deliveryId, nextAttemptAt, httpStatus, error]
+  )
+}
+
+export async function markWebhookDeliveryFailed(deliveryId: string, httpStatus: number | null, error: string | null): Promise<void> {
+  await sql().query(
+    `UPDATE webhook_deliveries SET status = 'failed', attempt_count = attempt_count + 1, last_http_status = $2, last_error = $3, updated_at = now() WHERE delivery_id = $1`,
+    [deliveryId, httpStatus, error]
+  )
+}
+
+/** Due for (re)attempt: status='pending' and next_attempt_at has arrived. Bounded -- the caller (the delivery worker) decides the batch size. */
+export async function listDueWebhookDeliveries(limit: number): Promise<WebhookDeliveryRecord[]> {
+  const rows = (await sql().query(
+    `SELECT * FROM webhook_deliveries WHERE status = 'pending' AND next_attempt_at <= now() ORDER BY next_attempt_at ASC LIMIT $1`,
+    [limit]
+  )) as unknown as any[]
+  return rows.map(mapWebhookDeliveryRow)
+}
+
+export async function getWebhookEventById(eventId: string): Promise<WebhookEventRecord | null> {
+  const rows = (await sql().query('SELECT * FROM webhook_events WHERE event_id = $1', [eventId])) as unknown as any[]
+  return rows[0] ? mapWebhookEventRow(rows[0]) : null
+}
+
+/** Ownership-checked (via the webhook_id -> account_id join implied by the caller already having resolved the endpoint) -- bounded recent history for GET /me/webhooks/:id/deliveries. */
+export async function listDeliveriesForWebhook(webhookId: string, limit: number): Promise<Array<WebhookDeliveryRecord & { eventType: string; operationId: string }>> {
+  const rows = (await sql().query(
+    `SELECT d.*, e.type AS event_type, e.operation_id AS operation_id
+     FROM webhook_deliveries d JOIN webhook_events e ON e.event_id = d.event_id
+     WHERE d.webhook_id = $1 ORDER BY d.created_at DESC LIMIT $2`,
+    [webhookId, limit]
+  )) as unknown as any[]
+  return rows.map((row) => ({ ...mapWebhookDeliveryRow(row), eventType: row.event_type, operationId: row.operation_id }))
+}

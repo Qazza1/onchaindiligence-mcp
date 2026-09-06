@@ -35,6 +35,7 @@ import { mountFinalize } from './src/finalizeRoute.js'
 import { mountLifecycle, mountLifecyclePreflightHandler } from './src/lifecycleRoute.js'
 import { mountLifecycleFinalize } from './src/lifecycleFinalizeRoute.js'
 import { mountAccountHistory } from './src/accountHistoryRoute.js'
+import { mountWebhooks } from './src/webhookRoute.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
 import { outcomeForStatus, readMcpEnvelope, recordEvent } from './src/telemetry.js'
 
@@ -172,5 +173,11 @@ mountLifecycleFinalize(app)
 // gated surface layered on top of the same D2.4 tables. Does not affect any
 // route above. See src/accountHistoryRoute.ts.
 mountAccountHistory(app)
+
+// D2.7B: mounts POST/GET /me/webhooks, DELETE /me/webhooks/:id, GET
+// /me/webhooks/:id/deliveries, and the internal POST
+// /internal/webhooks/deliver a Vercel Cron hits to drive retries. See
+// src/webhookRoute.ts.
+mountWebhooks(app)
 
 export default app

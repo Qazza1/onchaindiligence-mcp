@@ -38,6 +38,8 @@ import {
 import { recordObservation, selectExactTransfer } from './commerceObservation.js'
 import { buildPreflightCommitment, type PreflightCommitment } from './commerceLifecycle.js'
 import { buildCommerceReceiptCore } from './commerceReceipt.js'
+import { emitExecutionUpdated, emitSettlementUpdated, emitReceiptProduced } from './webhookEvents.js'
+import { verifyReceipt } from './receiptTools.js'
 import { finalizePayment, parseFinalizationExecutionInput, FinalizationAuthError, FinalizationInputError, FinalizationConflictError, FinalizationPendingError, type FinalizeDependencies } from './finalizeRoute.js'
 import { finalizationTtlHours } from './capability.js'
 import { observeTransaction, getSupportedAsset, getClient, BASE_CAIP2 } from './settlement.js'
@@ -222,6 +224,8 @@ export function createExecutionBindingStateHandler(deps: LifecycleFinalizeDepend
         return c.json({ error: err?.message || 'invalid state transition' }, 409)
       }
       await updateCommerceOperationState(operationId, { executionState: body.state as CommerceOperationRecord['executionState'] })
+      // D2.7B: best-effort, bounded, never throws -- see webhookEvents.ts.
+      await emitExecutionUpdated(operationId, body.state as CommerceOperationRecord['executionState'], executionRequestId, currentBinding.providerReference)
     }
     return c.json({ execution_request_id: executionRequestId, submission_state: hasState ? body.state : currentBinding.submissionState, provider_reference: currentBinding.providerReference })
   }
@@ -330,6 +334,10 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
           })
           evidence = { bundle_digest: result.bundleDigest, binding_strength: result.bindingStrength }
           agentEvidenceBundleDigest = result.bundleDigest
+          if (result.observation) {
+            // D2.7B: best-effort, bounded, never throws -- see webhookEvents.ts.
+            await emitSettlementUpdated(operationId, result.observation)
+          }
         }
       }
     }
@@ -355,6 +363,13 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
     if (envelope.receipt.links.preflight_receipt_id === null) {
       return c.json({ error: 'finalized receipt carries no preflight link -- cannot attach operation-bound evidence' }, 500)
     }
+
+    // D2.7B: emitted for BOTH success paths below (with/without D2.4
+    // evidence) -- a receipt was genuinely produced either way. Reuses the
+    // exact same verification contract as GET /me/operations/:id
+    // (receiptTools.ts's verifyReceipt) rather than inventing a second one.
+    const receiptVerification = await verifyReceipt({ envelope }).catch(() => null)
+    await emitReceiptProduced(operationId, envelope.receipt.receipt_id, receiptVerification?.state ?? 'UNVERIFIABLE')
 
     if (!evidence) {
       // The receipt WAS legitimately finalized (legacy behavior above is

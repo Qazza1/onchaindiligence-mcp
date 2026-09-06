@@ -80,6 +80,7 @@
 import type { Context, Hono, Next } from 'hono'
 import { createOperation, authenticateOperation, isValidOperationIdFormat } from './operation.js'
 import { authenticateAccount } from './accounts.js'
+import { emitPreflightCompleted } from './webhookEvents.js'
 import {
   claimStep,
   getStepState,
@@ -150,6 +151,13 @@ export async function runPreflightStepAndComplete(
     preflightState: 'completed',
     preflightReceiptId: result.receipt.receipt.receipt_id,
   })
+  // D2.7B: best-effort, bounded (see webhookDelivery.ts's DELIVERY_TIMEOUT_MS),
+  // NEVER throws, no-op for operations with no account owner (e.g. every
+  // D2.6 reference-harness operation) -- see webhookEvents.ts's header.
+  // Awaited (not fire-and-forget) because a serverless function's process
+  // may freeze the instant this handler's response is sent, which would
+  // silently kill an un-awaited delivery attempt before it ever runs.
+  await emitPreflightCompleted(operationId, result.receipt.receipt.decision.status)
   return result
 }
 
