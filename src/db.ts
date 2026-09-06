@@ -335,6 +335,8 @@ export interface CommerceOperationRecord {
   observationState: 'none' | 'pending' | 'confirmed' | 'contradicted'
   receiptState: 'none' | 'preflight_only' | 'commerce_issued'
   preflightReceiptId: string | null
+  /** D2.7A: which operator (if any) this operation is privately visible to. Null/undefined for anonymous/pre-D2.7A operations -- see db/schema.sql's ALTER TABLE comment. Optional so existing fixtures/tests built before D2.7A don't need updating just to satisfy this type. */
+  ownerId?: string | null
   createdAt: string
 }
 
@@ -347,14 +349,15 @@ function mapOperationRow(row: any): CommerceOperationRecord {
     observationState: row.observation_state,
     receiptState: row.receipt_state,
     preflightReceiptId: row.preflight_receipt_id ?? null,
+    ownerId: row.owner_id ?? null,
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
   }
 }
 
-export async function createCommerceOperation(params: { operationId: string; recoveryCredentialHash: string }): Promise<void> {
+export async function createCommerceOperation(params: { operationId: string; recoveryCredentialHash: string; ownerId?: string | null }): Promise<void> {
   await sql().query(
-    `INSERT INTO commerce_operations (operation_id, recovery_credential_hash) VALUES ($1, $2)`,
-    [params.operationId, params.recoveryCredentialHash]
+    `INSERT INTO commerce_operations (operation_id, recovery_credential_hash, owner_id) VALUES ($1, $2, $3)`,
+    [params.operationId, params.recoveryCredentialHash, params.ownerId ?? null]
   )
 }
 
@@ -703,4 +706,81 @@ export async function listCommerceObservations(operationId: string): Promise<Com
     operationId,
   ])) as unknown as any[]
   return rows.map(mapObservationRow)
+}
+
+/** All execution bindings ever created for an operation (normally zero or one; more than one only if a caller genuinely attempted more than one distinct client_submission_key). Ordered oldest-first, same convention as listCommerceObservations. */
+export async function getExecutionBindingsForOperation(operationId: string): Promise<ExecutionBindingRecord[]> {
+  const rows = (await sql().query('SELECT * FROM execution_bindings WHERE operation_id = $1 ORDER BY created_at ASC', [
+    operationId,
+  ])) as unknown as any[]
+  return rows.map(mapBindingRow)
+}
+
+// ---------------------------------------------------------------------
+// D2.7A — accounts (private operation history + recovery center). NOT the
+// same "operator" as the operator/ directory (the D2.2B manual payment
+// console UI) -- see db/schema.sql's "D2.7A" section and src/accounts.ts
+// for the identity model this backs. Kept deliberately as small as
+// operation.ts's own create/get pair.
+// ---------------------------------------------------------------------
+
+export interface AccountRecord {
+  accountId: string
+  apiKeyHash: string
+  createdAt: string
+}
+
+function mapAccountRow(row: any): AccountRecord {
+  return {
+    accountId: row.account_id,
+    apiKeyHash: row.api_key_hash,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+  }
+}
+
+export async function createAccount(params: { accountId: string; apiKeyHash: string }): Promise<void> {
+  await sql().query(`INSERT INTO accounts (account_id, api_key_hash) VALUES ($1, $2)`, [params.accountId, params.apiKeyHash])
+}
+
+export async function getAccountByApiKeyHash(apiKeyHash: string): Promise<AccountRecord | null> {
+  const rows = (await sql().query('SELECT * FROM accounts WHERE api_key_hash = $1', [apiKeyHash])) as unknown as any[]
+  return rows[0] ? mapAccountRow(rows[0]) : null
+}
+
+/**
+ * Bounded, cursor-paginated: newest first. `before` (an ISO timestamp from a
+ * previous page's last row) excludes everything at or after it, so passing
+ * the last row's createdAt reliably continues the listing even when several
+ * operations share the same created_at to the second. Deliberately no
+ * filtering beyond ownership (Section 2: "do not build complex filtering yet").
+ */
+export async function listCommerceOperationsForOwner(
+  ownerId: string,
+  options: { limit?: number; before?: string } = {}
+): Promise<CommerceOperationRecord[]> {
+  const limit = Math.min(Math.max(options.limit ?? 20, 1), 50)
+  const rows = options.before
+    ? ((await sql().query(
+        'SELECT * FROM commerce_operations WHERE owner_id = $1 AND created_at < $2 ORDER BY created_at DESC LIMIT $3',
+        [ownerId, options.before, limit]
+      )) as unknown as any[])
+    : ((await sql().query('SELECT * FROM commerce_operations WHERE owner_id = $1 ORDER BY created_at DESC LIMIT $2', [
+        ownerId,
+        limit,
+      ])) as unknown as any[])
+  return rows.map(mapOperationRow)
+}
+
+/**
+ * Finds the Commerce receipt produced for an operation, via the ONE column
+ * that already links them: the operation's own preflight_receipt_id, which
+ * the finalization_capabilities row for that preflight also carries (see
+ * lifecycleFinalizeRoute.ts). No new column on commerce_operations needed.
+ */
+export async function getCommerceReceiptIdForPreflightReceipt(preflightReceiptId: string): Promise<string | null> {
+  const rows = (await sql().query(
+    'SELECT commerce_receipt_id FROM finalization_capabilities WHERE preflight_receipt_id = $1 AND commerce_receipt_id IS NOT NULL LIMIT 1',
+    [preflightReceiptId]
+  )) as unknown as any[]
+  return rows[0]?.commerce_receipt_id ?? null
 }

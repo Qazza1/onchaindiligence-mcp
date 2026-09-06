@@ -174,3 +174,33 @@ CREATE TABLE IF NOT EXISTS commerce_observations (
 
 CREATE INDEX IF NOT EXISTS commerce_observations_operation_idx ON commerce_observations (operation_id);
 CREATE INDEX IF NOT EXISTS execution_bindings_operation_idx ON execution_bindings (operation_id);
+
+-- D2.7A -- authenticated private operation history + recovery center.
+--
+-- `accounts` is a NEW, separate identity concept from everything above --
+-- and from the UNRELATED "operator" in the operator/ directory (the D2.2B
+-- manual payment console UI). An operation's own `recovery_credential`
+-- proves "I hold the secret for THIS one operation" and grants no
+-- visibility into any other operation. An account's `api_key` proves "I am
+-- the same party that created operation(s) tagged with my account_id" and
+-- is what a private history/list view authenticates against. Same
+-- discipline as recovery_credential/finalization capabilities: only the
+-- SHA-256 hash of the raw key is ever persisted.
+CREATE TABLE IF NOT EXISTS accounts (
+  account_id      TEXT PRIMARY KEY,
+  api_key_hash    TEXT NOT NULL UNIQUE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Nullable and additive: existing/anonymous operations (including every
+-- D2.6 reference-harness operation) keep owner_id NULL and simply never
+-- appear in any account's private history -- this is correct, not a gap,
+-- since they were never associated with an account to begin with.
+ALTER TABLE commerce_operations ADD COLUMN IF NOT EXISTS owner_id TEXT REFERENCES accounts (account_id);
+CREATE INDEX IF NOT EXISTS commerce_operations_owner_idx ON commerce_operations (owner_id, created_at DESC) WHERE owner_id IS NOT NULL;
+
+-- Lets operation-detail lookups find the eventual Commerce receipt id from
+-- the operation's own (already-known) preflight_receipt_id, without a new
+-- column on commerce_operations itself -- see src/db.ts's
+-- getCommerceReceiptIdForPreflightReceipt().
+CREATE INDEX IF NOT EXISTS finalization_capabilities_preflight_receipt_idx ON finalization_capabilities (preflight_receipt_id);

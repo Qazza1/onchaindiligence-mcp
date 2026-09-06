@@ -65,3 +65,6 @@ jobs:
       # D2.5 (AGENT INTEGRATION KIT): get_receipt/verify_receipt, reusing the
       # exact converged D2.3 verification contract -- no new verifier logic.
       - run: npx --no-install tsx test/d25ReceiptTools.ts
+      # D2.7A (AUTHENTICATED OPERATION HISTORY + RECOVERY CENTER): the new
+      # account-scoped read surface layered on top of the D2.4 tables above.
+      - run: npx --no-install tsx test/d27aAccountHistory.ts

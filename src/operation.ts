@@ -49,11 +49,21 @@ export interface CreatedOperation {
   recoveryCredential: string
 }
 
-/** Creates a fresh, empty operation. Free — no policy, no evidence, no payment. */
-export async function createOperation(): Promise<CreatedOperation> {
+/**
+ * Creates a fresh, empty operation. Free — no policy, no evidence, no payment.
+ *
+ * `ownerId` (D2.7A) is entirely optional and orthogonal to the recovery
+ * credential above: it exists only to make this operation privately visible
+ * in that operator's own history/recovery-center view later (GET
+ * /me/operations). It grants no additional access to this operation itself —
+ * the recovery credential remains the only thing that can read/resume this
+ * operation's lifecycle. Omitted (or from an unauthenticated caller), the
+ * operation is created exactly as before D2.7A: anonymous, ownerId null.
+ */
+export async function createOperation(ownerId: string | null = null): Promise<CreatedOperation> {
   const operationId = generateOperationId()
   const recoveryCredential = generateRecoveryCredential()
-  await createCommerceOperation({ operationId, recoveryCredentialHash: hashRecoveryCredential(recoveryCredential) })
+  await createCommerceOperation({ operationId, recoveryCredentialHash: hashRecoveryCredential(recoveryCredential), ownerId })
   return { operationId, recoveryCredential }
 }
 
