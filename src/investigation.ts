@@ -18,6 +18,7 @@
 import { getOperationDetailForOwner, type OperationDetail } from './operationHistory.js'
 import { contentId } from './receipts.js'
 import { verifyReceipt } from './receiptTools.js'
+import { deriveFindings, summarizeFindings, type Finding } from './findings.js'
 
 export interface Investigation {
   operation: {
@@ -75,6 +76,8 @@ export interface Investigation {
     summary: string
     safe_next_action: string
   }
+  /** D2.8A: deterministic findings derived from the fields above -- see findings.ts. Computed, never persisted; the export digest below naturally covers it since it's part of this same object. */
+  findings: Finding[]
 }
 
 export type InvestigationResult = { found: true; investigation: Investigation } | { found: false }
@@ -106,7 +109,7 @@ export async function getInvestigationForOwner(operationId: string, accountId: s
   // signature check, no new DB round trip.
   const preflightVerification = detail.preflight_receipt ? await doVerifyReceipt({ envelope: detail.preflight_receipt }) : null
 
-  const investigation: Investigation = {
+  const investigationWithoutFindings: Omit<Investigation, 'findings'> = {
     operation: {
       operation_id: detail.operation_id,
       created_at: detail.created_at,
@@ -163,6 +166,8 @@ export async function getInvestigationForOwner(operationId: string, accountId: s
       safe_next_action: detail.recovery.safeNextAction,
     },
   }
+
+  const investigation: Investigation = { ...investigationWithoutFindings, findings: deriveFindings(investigationWithoutFindings) }
 
   return { found: true, investigation }
 }
@@ -228,5 +233,6 @@ export function summarizeInvestigation(investigation: Investigation): string {
   } else {
     lines.push('Recovery: none required')
   }
+  lines.push(summarizeFindings(investigation.findings))
   return lines.join('\n')
 }

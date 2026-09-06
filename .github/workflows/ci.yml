@@ -74,3 +74,6 @@ jobs:
       # D2.7C (INVESTIGATION PACKAGE + EXPORT): assembled investigation view
       # + manifest-wrapped export, built entirely on D2.7A's detail view.
       - run: npx --no-install tsx test/d27cInvestigation.ts
+      # D2.8A (FINDINGS / CONTRADICTION ENGINE): deterministic findings
+      # derived from the same D2.7C investigation data -- no new evidence.
+      - run: npx --no-install tsx test/d28aFindings.ts
