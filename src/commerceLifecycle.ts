@@ -56,6 +56,43 @@ export interface BindingInputs {
   expectedPayer: string | null
   /** The authorizer decoded independently from the on-chain transaction's own calldata (paymentAuthorization.ts). Null when calldata decoding failed or wasn't attempted. */
   observedAuthorizer: string | null
+  /**
+   * D2.6 correction: true when the execution binding's OWN provider evidence
+   * deterministically links this SPECIFIC provider request to the recovered
+   * transaction (e.g. X402BaseUsdcExecutor's direct signing/settlement flow,
+   * or PayBox header/pay_x402 mode presenting the actual signed
+   * authorization to the merchant itself). False for an evidence class that
+   * only ever recovers a transaction via a conservative exact-field-match
+   * search with NO direct request_id -> transaction_hash (or equivalent
+   * signed provider identity) relationship -- currently PayBox's gateway
+   * (useService) mode, see isConservativeMatchOnlyEvidence() below. When
+   * false, the result is capped at TRANSFER_MATCH_ONLY regardless of
+   * executorCorrelated or any authorizer match: a matching EIP-3009
+   * authorizer proves properties of the on-chain payment, but not that this
+   * specific provider request caused it. Defaults to true for a caller that
+   * doesn't know about this distinction, preserving prior behavior for every
+   * existing executor.
+   */
+  providerRequestLinksToTransaction: boolean
+}
+
+/**
+ * D2.6 correction: identifies PayBox's gateway (useService) execution mode
+ * from the execution binding's OWN durable, already-recorded
+ * executorIdentity/executorVersion -- an explicit signal set once by the SDK
+ * at prepare() time (see onchaindiligence-sdk's payboxExecutor.ts), never
+ * inferred from timing, and never from provider_reference alone (a
+ * provider_reference existing says only that SOME provider request was
+ * correlated to this operation, not which evidence class it belongs to).
+ * PayBox's header/pay_x402 mode uses a different executorVersion and is
+ * unaffected -- it presents the actual signed authorization to the merchant
+ * itself, which IS the direct evidence.
+ */
+const PAYBOX_EXECUTOR_IDENTITY = 'paybox-x402-base-usdc'
+const PAYBOX_CONSERVATIVE_MATCH_EXECUTOR_VERSIONS: ReadonlySet<string> = new Set(['v1-gateway'])
+
+export function isConservativeMatchOnlyEvidence(executorIdentity: string | null, executorVersion: string | null): boolean {
+  return executorIdentity === PAYBOX_EXECUTOR_IDENTITY && executorVersion !== null && PAYBOX_CONSERVATIVE_MATCH_EXECUTOR_VERSIONS.has(executorVersion)
 }
 
 function addressesEqual(a: string | null, b: string | null): boolean {
@@ -65,13 +102,15 @@ function addressesEqual(a: string | null, b: string | null): boolean {
 /**
  * Deterministic, order-independent derivation. An old/unrelated matching
  * transfer (fields match, nothing else) can NEVER reach past
- * TRANSFER_MATCH_ONLY. PAYMENT_IDENTITY_LINKED requires BOTH a durable
- * executor correlation AND an independently-decoded on-chain authorizer
+ * TRANSFER_MATCH_ONLY. PAYMENT_IDENTITY_LINKED requires a provider evidence
+ * class that actually links its own request to the transaction, a durable
+ * executor correlation, AND an independently-decoded on-chain authorizer
  * that matches a commitment made BEFORE observation -- never the reverse
  * (matching after the fact proves nothing about intent).
  */
 export function deriveBindingStrength(inputs: BindingInputs): BindingStrength {
   if (!inputs.transferFieldsMatch) return 'TRANSFER_MATCH_ONLY' // reported for transparency even on a mismatch; callers must still treat this as unattributed
+  if (!inputs.providerRequestLinksToTransaction) return 'TRANSFER_MATCH_ONLY' // conservative field-match evidence only -- see the field's own doc comment
   if (!inputs.executorCorrelated) return 'TRANSFER_MATCH_ONLY'
   if (inputs.expectedPayer !== null && inputs.observedAuthorizer !== null && addressesEqual(inputs.expectedPayer, inputs.observedAuthorizer)) {
     return 'PAYMENT_IDENTITY_LINKED'

@@ -26,7 +26,7 @@
 import { getAddress } from 'viem'
 import type { ObservedTransfer, SettlementObservation } from './settlement.js'
 import { evaluateBaseFinality, BASE_FINALITY_POLICY, type MinimalFinalityClient, type FinalityEvaluation } from './finality.js'
-import { deriveBindingStrength, buildCommerceLifecycleBundle, type BindingStrength, type CommerceLifecycleBundleV1 } from './commerceLifecycle.js'
+import { deriveBindingStrength, isConservativeMatchOnlyEvidence, buildCommerceLifecycleBundle, type BindingStrength, type CommerceLifecycleBundleV1 } from './commerceLifecycle.js'
 import { recordCommerceObservation, type CommerceObservationRecord, type ExecutionBindingRecord } from './db.js'
 
 function addressesEqual(a: string | null, b: string | null): boolean {
@@ -114,11 +114,16 @@ export async function recordObservation(
     params.executionBinding.frozenPreflightReceiptDigest === params.preflightReceiptDigest
 
   const observedAuthorizer = observation.paymentAuthorization?.authorizer ?? null
+  const providerRequestLinksToTransaction = !isConservativeMatchOnlyEvidence(
+    params.executionBinding?.executorIdentity ?? null,
+    params.executionBinding?.executorVersion ?? null
+  )
   const bindingStrength = deriveBindingStrength({
     transferFieldsMatch: params.transferFieldsMatch,
     executorCorrelated,
     expectedPayer: params.expectedPayer,
     observedAuthorizer,
+    providerRequestLinksToTransaction,
   })
 
   const observationIdentity = selectedTransfer

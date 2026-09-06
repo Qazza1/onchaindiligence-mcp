@@ -7,7 +7,7 @@
  */
 import assert from 'node:assert/strict'
 import { encodeFunctionData, keccak256, toHex } from 'viem'
-import { deriveBindingStrength } from '../src/commerceLifecycle.js'
+import { deriveBindingStrength, isConservativeMatchOnlyEvidence } from '../src/commerceLifecycle.js'
 import { decodeErc3009Authorization } from '../src/paymentAuthorization.js'
 import { selectExactTransfer } from '../src/commerceObservation.js'
 import type { ObservedTransfer } from '../src/settlement.js'
@@ -27,6 +27,7 @@ const BLOCK_HASH = '0x' + 'cd'.repeat(32)
     executorCorrelated: false, // ...but there is no durable execution binding at all
     expectedPayer: null,
     observedAuthorizer: null,
+    providerRequestLinksToTransaction: true,
   })
   assert.equal(level, 'TRANSFER_MATCH_ONLY', 'field similarity alone, with no execution binding, can never exceed TRANSFER_MATCH_ONLY')
 }
@@ -39,6 +40,7 @@ const BLOCK_HASH = '0x' + 'cd'.repeat(32)
     executorCorrelated: true,
     expectedPayer: null,
     observedAuthorizer: SENDER, // even if an authorizer WAS independently observed
+    providerRequestLinksToTransaction: true,
   })
   assert.equal(level, 'EXECUTOR_CORRELATED', 'no expected_payer commitment was made -- an observed authorizer alone cannot satisfy it')
 }
@@ -52,6 +54,7 @@ console.log('ok  an old/unrelated matching transfer (or one with no commitment) 
     executorCorrelated: true,
     expectedPayer: SENDER,
     observedAuthorizer: OTHER_SENDER, // decoded on-chain authorizer does NOT match the commitment
+    providerRequestLinksToTransaction: true,
   })
   assert.equal(level, 'EXECUTOR_CORRELATED', 'a mismatched authorizer must cap binding strength below PAYMENT_IDENTITY_LINKED')
 }
@@ -63,6 +66,7 @@ console.log('ok  an old/unrelated matching transfer (or one with no commitment) 
     executorCorrelated: true,
     expectedPayer: SENDER,
     observedAuthorizer: SENDER.toUpperCase(), // case-insensitive address match
+    providerRequestLinksToTransaction: true,
   })
   assert.equal(level, 'PAYMENT_IDENTITY_LINKED')
 }
@@ -78,10 +82,65 @@ console.log('ok  wrong authorization identity fails strong binding; a genuine ma
     executorCorrelated: true,
     expectedPayer: SENDER,
     observedAuthorizer: SENDER,
+    providerRequestLinksToTransaction: true,
   })
   assert.equal(level, 'TRANSFER_MATCH_ONLY', 'a mismatched transfer/event must never be reported above TRANSFER_MATCH_ONLY, no matter what else lines up')
 }
 console.log('ok  a wrong transaction/log event caps binding strength regardless of correlation or authorization')
+
+// --- D2.6 correction: PayBox gateway (conservative-match-only) evidence never exceeds TRANSFER_MATCH_ONLY ---
+
+{
+  // #1: exact matching transfer, otherwise-perfect correlation, but
+  // providerRequestLinksToTransaction is false (gateway evidence class) --
+  // must land at TRANSFER_MATCH_ONLY, not EXECUTOR_CORRELATED.
+  const level = deriveBindingStrength({
+    transferFieldsMatch: true,
+    executorCorrelated: true,
+    expectedPayer: null,
+    observedAuthorizer: null,
+    providerRequestLinksToTransaction: false,
+  })
+  assert.equal(level, 'TRANSFER_MATCH_ONLY', 'conservative-match-only evidence must never exceed TRANSFER_MATCH_ONLY even without an authorizer')
+}
+{
+  // #2: even a MATCHING EIP-3009 authorizer must not promote gateway
+  // evidence -- a matching authorizer proves properties of the on-chain
+  // payment, not that this specific provider request caused it.
+  const level = deriveBindingStrength({
+    transferFieldsMatch: true,
+    executorCorrelated: true,
+    expectedPayer: SENDER,
+    observedAuthorizer: SENDER, // would otherwise reach PAYMENT_IDENTITY_LINKED
+    providerRequestLinksToTransaction: false,
+  })
+  assert.equal(level, 'TRANSFER_MATCH_ONLY', 'a matching authorizer must not promote conservative-match-only (gateway) evidence past TRANSFER_MATCH_ONLY')
+}
+{
+  // #3: providerRequestLinksToTransaction: false caps the result even when
+  // EVERY other input is at its strongest -- request_id/correlation alone
+  // (via executorCorrelated: true) never promotes gateway evidence.
+  const level = deriveBindingStrength({
+    transferFieldsMatch: true,
+    executorCorrelated: true,
+    expectedPayer: SENDER,
+    observedAuthorizer: SENDER.toUpperCase(),
+    providerRequestLinksToTransaction: false,
+  })
+  assert.equal(level, 'TRANSFER_MATCH_ONLY')
+}
+console.log('ok  PayBox gateway (conservative-match-only) evidence never exceeds TRANSFER_MATCH_ONLY, even with a matching authorizer or full correlation')
+
+// --- isConservativeMatchOnlyEvidence(): identified from executorIdentity/executorVersion only, never inferred ---
+
+{
+  assert.equal(isConservativeMatchOnlyEvidence('paybox-x402-base-usdc', 'v1-gateway'), true)
+  assert.equal(isConservativeMatchOnlyEvidence('paybox-x402-base-usdc', 'v1'), false, 'PayBox header mode (v1) is unaffected -- it presents the actual signed authorization to the merchant itself')
+  assert.equal(isConservativeMatchOnlyEvidence('paybox-x402-base-usdc', null), false)
+  assert.equal(isConservativeMatchOnlyEvidence(null, 'v1-gateway'), false)
+  assert.equal(isConservativeMatchOnlyEvidence('x402-base-usdc-exact', 'v1-gateway'), false, 'an unrelated executor id must never be capped merely for sharing a version string')
+}
+console.log('ok  isConservativeMatchOnlyEvidence identifies PayBox gateway mode from executorIdentity+executorVersion only')
 
 // --- ERC-3009 calldata decoding -------------------------------------------
 

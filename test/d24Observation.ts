@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict'
 import { recordObservation } from '../src/commerceObservation.js'
 import { buildPreflightCommitment } from '../src/commerceLifecycle.js'
-import type { CommerceObservationRecord } from '../src/db.js'
+import type { CommerceObservationRecord, ExecutionBindingRecord } from '../src/db.js'
 import type { SettlementObservation, ObservedTransfer } from '../src/settlement.js'
 
 const NETWORK = 'eip155:8453'
@@ -155,5 +155,89 @@ console.log('ok  a corrective re-observation appends a new row and preserves the
   assert.equal(result.bindingStrength, 'TRANSFER_MATCH_ONLY')
 }
 console.log('ok  no qualifying transfer never produces a fabricated observation row')
+
+// --- D2.6 correction: PayBox gateway evidence caps binding strength at TRANSFER_MATCH_ONLY end-to-end ---
+
+function payboxBinding(overrides: Partial<ExecutionBindingRecord> = {}): ExecutionBindingRecord {
+  return {
+    executionRequestId: 'OCD-EXEC-test',
+    operationId: 'OCD-OP-paybox-gw',
+    clientSubmissionKey: 'OCD-OP-paybox-gw:test:key',
+    executorIdentity: 'paybox-x402-base-usdc',
+    executorVersion: 'v1-gateway',
+    recoveryCapabilityClass: 'stable-payment-identity',
+    frozenPreflightReceiptId: 'OCD-RCP-TEST-0000-0000-0000',
+    frozenPreflightReceiptDigest: 'sha256:test-digest',
+    expectedPayer: SENDER,
+    providerReference: 'paybox:7a998655-147e-4cfb-8269-01672dfc515d',
+    submissionState: 'transaction_known',
+    ...overrides,
+  }
+}
+
+{
+  // #1: an exact matching transfer, correctly correlated, via a PayBox
+  // gateway execution binding -> TRANSFER_MATCH_ONLY, never EXECUTOR_CORRELATED.
+  const { deps } = makeFakeStore()
+  const t = transfer({ logIndex: 3 })
+  const result = await recordObservation(
+    { ...baseParams(t, 'OCD-OP-paybox-gw'), expectedPayer: SENDER, executionBinding: payboxBinding() },
+    deps
+  )
+  assert.equal(result.bindingStrength, 'TRANSFER_MATCH_ONLY', 'PayBox gateway + exact matching transfer must cap at TRANSFER_MATCH_ONLY')
+}
+{
+  // #2: same, but the observed on-chain authorizer ALSO matches expectedPayer
+  // -- this is exactly the case that would otherwise reach
+  // PAYMENT_IDENTITY_LINKED for a direct-evidence executor. Must still cap.
+  const { deps } = makeFakeStore()
+  const t = transfer({ logIndex: 4, from: SENDER })
+  const observationWithAuthorizer: SettlementObservation = { ...observationFor(t), paymentAuthorization: { authorizer: SENDER, nonce: '0xnonce', recipient: RECIPIENT, valueAtomic: 1_000_000n } }
+  const result = await recordObservation(
+    { ...baseParams(t, 'OCD-OP-paybox-gw'), observation: observationWithAuthorizer, expectedPayer: SENDER, executionBinding: payboxBinding() },
+    deps
+  )
+  assert.equal(result.bindingStrength, 'TRANSFER_MATCH_ONLY', 'a matching EIP-3009 authorizer must not promote PayBox gateway evidence past TRANSFER_MATCH_ONLY')
+}
+{
+  // #3: the PayBox request_id/provider_reference being present and durably
+  // correlated (executorCorrelated would be true) never promotes the
+  // binding on its own -- only the evidence CLASS (executorVersion) decides.
+  const { deps } = makeFakeStore()
+  const t = transfer({ logIndex: 5 })
+  const result = await recordObservation(
+    { ...baseParams(t, 'OCD-OP-paybox-gw'), expectedPayer: null, executionBinding: payboxBinding({ providerReference: 'paybox:some-other-request-id' }) },
+    deps
+  )
+  assert.equal(result.bindingStrength, 'TRANSFER_MATCH_ONLY', 'a PayBox request_id/provider_reference existing must never itself promote binding strength')
+}
+{
+  // #4: an UNAFFECTED executor (e.g. the existing X402BaseUsdcExecutor, or
+  // PayBox header mode) with the SAME otherwise-strong evidence must still
+  // reach PAYMENT_IDENTITY_LINKED -- the cap is specific to the gateway
+  // evidence class, not a general weakening.
+  const { deps } = makeFakeStore()
+  const t = transfer({ logIndex: 6, from: SENDER })
+  const observationWithAuthorizer: SettlementObservation = { ...observationFor(t), paymentAuthorization: { authorizer: SENDER, nonce: '0xnonce2', recipient: RECIPIENT, valueAtomic: 1_000_000n } }
+  const directEvidenceBinding = payboxBinding({ executorIdentity: 'x402-base-usdc-exact', executorVersion: 'v1', clientSubmissionKey: 'OCD-OP-paybox-gw:test:key2' })
+  const result = await recordObservation(
+    { ...baseParams(t, 'OCD-OP-paybox-gw'), observation: observationWithAuthorizer, expectedPayer: SENDER, executionBinding: directEvidenceBinding },
+    deps
+  )
+  assert.equal(result.bindingStrength, 'PAYMENT_IDENTITY_LINKED', 'an executor with genuine direct evidence must be unaffected by the PayBox gateway cap')
+}
+{
+  // PayBox HEADER mode (v1) must also be unaffected by the gateway cap.
+  const { deps } = makeFakeStore()
+  const t = transfer({ logIndex: 7, from: SENDER })
+  const observationWithAuthorizer: SettlementObservation = { ...observationFor(t), paymentAuthorization: { authorizer: SENDER, nonce: '0xnonce3', recipient: RECIPIENT, valueAtomic: 1_000_000n } }
+  const headerModeBinding = payboxBinding({ executorVersion: 'v1', clientSubmissionKey: 'OCD-OP-paybox-gw:test:key3' })
+  const result = await recordObservation(
+    { ...baseParams(t, 'OCD-OP-paybox-gw'), observation: observationWithAuthorizer, expectedPayer: SENDER, executionBinding: headerModeBinding },
+    deps
+  )
+  assert.equal(result.bindingStrength, 'PAYMENT_IDENTITY_LINKED', 'PayBox header mode (v1) must be unaffected by the gateway-specific cap')
+}
+console.log('ok  PayBox gateway evidence caps end-to-end binding strength at TRANSFER_MATCH_ONLY; unaffected executors (direct-evidence and PayBox header mode) are unchanged')
 
 console.log('\nAll D2.4 append-only observation tests passed.')
