@@ -19,6 +19,7 @@ import { getOperationDetailForOwner, type OperationDetail } from './operationHis
 import { contentId } from './receipts.js'
 import { verifyReceipt } from './receiptTools.js'
 import { getStepState } from './lifecycleSteps.js'
+import { listMerchantEvidenceForOperation } from './db.js'
 import { deriveFindings, summarizeFindings, type Finding } from './findings.js'
 
 export interface Investigation {
@@ -90,6 +91,30 @@ export interface Investigation {
     summary: string
     safe_next_action: string
   }
+  /**
+   * D2.9A: "the payment happened, what did the merchant actually return?"
+   * -- every record here is `source: CALLER_REPORTED` (see
+   * merchantEvidence.ts's header for why this can never be upgraded to an
+   * independent OCD claim). Oldest-first, same convention as
+   * execution_bindings/observations above -- the last element is "current".
+   */
+  merchant_response: {
+    evidence: Array<{
+      evidence_id: string
+      resource_url: string
+      http_status: number
+      content_type: string | null
+      body_digest: string
+      response_bytes: number | null
+      source: 'CALLER_REPORTED'
+      execution_request_id: string | null
+      provider_reference: string | null
+      transaction_hash: string | null
+      /** null when no transaction_hash was submitted with this evidence record -- otherwise whether it matches a transaction hash OCD has independently observed for this operation. */
+      transaction_hash_matches_known_observation: boolean | null
+      recorded_at: string
+    }>
+  }
   /** D2.8A: deterministic findings derived from the fields above -- see findings.ts. Computed, never persisted; the export digest below naturally covers it since it's part of this same object. */
   findings: Finding[]
 }
@@ -101,12 +126,14 @@ export interface GetInvestigationDependencies {
   getOperationDetailForOwner?: typeof getOperationDetailForOwner
   verifyReceipt?: typeof verifyReceipt
   getStepState?: typeof getStepState
+  listMerchantEvidenceForOperation?: typeof listMerchantEvidenceForOperation
 }
 
 export async function getInvestigationForOwner(operationId: string, accountId: string, deps: GetInvestigationDependencies = {}): Promise<InvestigationResult> {
   const doGetDetail = deps.getOperationDetailForOwner ?? getOperationDetailForOwner
   const doVerifyReceipt = deps.verifyReceipt ?? verifyReceipt
   const doGetStepState = deps.getStepState ?? getStepState
+  const doListMerchantEvidence = deps.listMerchantEvidenceForOperation ?? listMerchantEvidenceForOperation
   const result = await doGetDetail(operationId, accountId)
   if (!result.found) return { found: false }
   const detail = result.detail
@@ -118,6 +145,13 @@ export async function getInvestigationForOwner(operationId: string, accountId: s
   // at binding-creation time and not cross-validated against this.
   const preflightStep = await doGetStepState(operationId, 'preflight')
   const frozenExpectedPayer: string | null = (preflightStep?.frozenInput as any)?.input?.policy?.expected_payer ?? null
+
+  // D2.9A: known on-chain transaction hashes for this operation, used only
+  // to compute whether a CALLER_REPORTED transaction_hash matches
+  // something OCD has independently observed -- never to upgrade the
+  // evidence's own source away from CALLER_REPORTED.
+  const merchantEvidenceRows = await doListMerchantEvidence(operationId)
+  const knownTransactionHashes = new Set(detail.observations.map((o) => o.transaction_hash.toLowerCase()))
 
   // "Current" binding/observation: the most recent of each -- D2.4 allows
   // more than one only if a caller genuinely attempted more than one
@@ -189,6 +223,22 @@ export async function getInvestigationForOwner(operationId: string, accountId: s
       may_already_have_paid: detail.recovery.mayAlreadyHavePaid,
       summary: detail.recovery.summary,
       safe_next_action: detail.recovery.safeNextAction,
+    },
+    merchant_response: {
+      evidence: merchantEvidenceRows.map((e) => ({
+        evidence_id: e.evidenceId,
+        resource_url: e.resourceUrl,
+        http_status: e.httpStatus,
+        content_type: e.contentType,
+        body_digest: e.responseBodyDigest,
+        response_bytes: e.responseBytes,
+        source: e.source,
+        execution_request_id: e.executionRequestId,
+        provider_reference: e.providerReference,
+        transaction_hash: e.transactionHash,
+        transaction_hash_matches_known_observation: e.transactionHash ? knownTransactionHashes.has(e.transactionHash.toLowerCase()) : null,
+        recorded_at: e.recordedAt,
+      })),
     },
   }
 
