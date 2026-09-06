@@ -28,8 +28,12 @@ import {
   createExecutionBinding as dbCreateExecutionBinding,
   getExecutionBinding as dbGetExecutionBinding,
   updateExecutionBindingSubmissionState as dbUpdateSubmissionState,
+  updateExecutionBindingProviderReference as dbUpdateProviderReference,
+  ProviderReferenceConflictError,
   type ExecutionBindingRecord,
 } from './db.js'
+
+export { ProviderReferenceConflictError }
 
 export type SubmissionState =
   | 'not_submitted'
@@ -92,6 +96,7 @@ export interface ExecutionBindingDependencies {
   createExecutionBinding?: typeof dbCreateExecutionBinding
   getExecutionBinding?: typeof dbGetExecutionBinding
   updateExecutionBindingSubmissionState?: typeof dbUpdateSubmissionState
+  updateExecutionBindingProviderReference?: typeof dbUpdateProviderReference
 }
 
 /** Idempotent: retrying with the SAME clientSubmissionKey always returns the SAME binding (created: false), never a second one. */
@@ -127,4 +132,24 @@ export async function transitionSubmissionState(
     throw new InvalidSubmissionTransitionError(from, to)
   }
   await (deps.updateExecutionBindingSubmissionState ?? dbUpdateSubmissionState)(binding.executionRequestId, to)
+}
+
+/**
+ * D2.6 correction (Section 4): attaches a provider's own request identity
+ * (e.g. `paybox:<request_id>`) to an ALREADY-EXISTING execution binding --
+ * for an executor (like PayBox gateway mode) whose provider action happens
+ * in submit(), after the binding was necessarily created with
+ * `provider_reference: null`. One-way: null -> a reference, exactly once.
+ * Retrying with the IDENTICAL reference is a safe no-op (idempotent);
+ * attempting a DIFFERENT reference throws ProviderReferenceConflictError.
+ * Never creates a second binding, never silently replaces an existing
+ * reference.
+ */
+export async function attachProviderReference(
+  binding: ExecutionBindingRecord,
+  providerReference: string,
+  deps: ExecutionBindingDependencies = {}
+): Promise<ExecutionBindingRecord> {
+  if (binding.providerReference === providerReference) return binding // idempotent no-op
+  return (deps.updateExecutionBindingProviderReference ?? dbUpdateProviderReference)(binding.executionRequestId, providerReference)
 }

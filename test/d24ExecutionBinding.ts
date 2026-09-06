@@ -17,7 +17,9 @@ import assert from 'node:assert/strict'
 import {
   registerExecutionBinding,
   transitionSubmissionState,
+  attachProviderReference,
   InvalidSubmissionTransitionError,
+  ProviderReferenceConflictError,
   type ExecutionBindingDependencies,
 } from '../src/executionBinding.js'
 import type { ExecutionBindingRecord } from '../src/db.js'
@@ -57,6 +59,19 @@ function makeFakeStore() {
           return
         }
       }
+    },
+    // Mirrors the real db.ts function's atomic CAS: only applies when the
+    // current value is null or already equal to the value being written.
+    updateExecutionBindingProviderReference: async (executionRequestId, providerReference) => {
+      for (const binding of byKey.values()) {
+        if (binding.executionRequestId !== executionRequestId) continue
+        if (binding.providerReference !== null && binding.providerReference !== providerReference) {
+          throw new ProviderReferenceConflictError(executionRequestId, binding.providerReference, providerReference)
+        }
+        binding.providerReference = providerReference
+        return binding
+      }
+      throw new Error(`execution binding ${executionRequestId} not found`)
     },
   }
   return { deps, byKey, bindingCount: () => byKey.size }
@@ -169,5 +184,77 @@ console.log('ok  a terminal binding (transaction_known) can never transition aga
   await assert.rejects(() => transitionSubmissionState(binding, 'submitted', deps), InvalidSubmissionTransitionError)
 }
 console.log('ok  an executor with no safe recovery capability lands on manual_recovery_required, a valid terminal state, and stays there')
+
+// --- D2.6 correction (Section 4): attaching a provider reference AFTER the binding already exists ---
+
+{
+  // The exact PayBox gateway scenario: a binding is created BEFORE the
+  // provider request identity is known (provider_reference: null), then
+  // submit() learns the request_id and attaches it.
+  const { deps } = makeFakeStore()
+  const { binding } = await registerExecutionBinding(baseParams({ clientSubmissionKey: 'gw-1' }), deps)
+  assert.equal(binding.providerReference, null)
+
+  const updated = await attachProviderReference(binding, 'paybox:req-abc-123', deps)
+  assert.equal(updated.providerReference, 'paybox:req-abc-123')
+}
+console.log('ok  provider_reference transitions from null to a value once the provider request id becomes known')
+
+{
+  // Idempotent retry with the IDENTICAL reference must succeed silently --
+  // e.g. a retried HTTP call after a lost response.
+  const { deps } = makeFakeStore()
+  const { binding } = await registerExecutionBinding(baseParams({ clientSubmissionKey: 'gw-2' }), deps)
+  const first = await attachProviderReference(binding, 'paybox:req-xyz', deps)
+  const second = await attachProviderReference(first, 'paybox:req-xyz', deps)
+  assert.equal(second.providerReference, 'paybox:req-xyz')
+}
+console.log('ok  attaching the SAME provider_reference twice is idempotent, never an error')
+
+{
+  // A DIFFERENT reference must be rejected outright -- never silently
+  // replace an existing provider identity with another one.
+  const { deps } = makeFakeStore()
+  const { binding } = await registerExecutionBinding(baseParams({ clientSubmissionKey: 'gw-3' }), deps)
+  const first = await attachProviderReference(binding, 'paybox:req-original', deps)
+  await assert.rejects(() => attachProviderReference(first, 'paybox:req-different', deps), ProviderReferenceConflictError)
+
+  // And the stored value must be UNCHANGED after the rejected attempt.
+  const stillOriginal = await attachProviderReference(first, 'paybox:req-original', deps)
+  assert.equal(stillOriginal.providerReference, 'paybox:req-original')
+}
+console.log('ok  a conflicting different provider_reference is rejected, and the original value is never overwritten')
+
+{
+  // Attaching a provider_reference must never itself imply or require a
+  // state transition -- it is an independent, orthogonal update.
+  const { deps } = makeFakeStore()
+  const { binding } = await registerExecutionBinding(baseParams({ clientSubmissionKey: 'gw-4' }), deps)
+  const updated = await attachProviderReference(binding, 'paybox:req-independent', deps)
+  assert.equal(updated.submissionState, 'not_submitted', 'attaching a provider reference must not change submission_state on its own')
+}
+console.log('ok  attaching a provider_reference is independent of the submission-state machine')
+
+{
+  // D2.6 correction test #13: attaching a real provider_reference to a
+  // PayBox gateway binding must NEVER increase its binding strength -- the
+  // cap is decided entirely by executorIdentity/executorVersion (see
+  // commerceLifecycle.ts's isConservativeMatchOnlyEvidence), which
+  // attachProviderReference never touches.
+  const { isConservativeMatchOnlyEvidence } = await import('../src/commerceLifecycle.js')
+  const { deps } = makeFakeStore()
+  const { binding } = await registerExecutionBinding(
+    baseParams({ clientSubmissionKey: 'gw-cap', executorIdentity: 'paybox-x402-base-usdc', executorVersion: 'v1-gateway' }),
+    deps
+  )
+  assert.equal(isConservativeMatchOnlyEvidence(binding.executorIdentity, binding.executorVersion), true)
+  const updated = await attachProviderReference(binding, 'paybox:7a998655-147e-4cfb-8269-01672dfc515d', deps)
+  assert.equal(
+    isConservativeMatchOnlyEvidence(updated.executorIdentity, updated.executorVersion),
+    true,
+    'a real provider_reference existing must never change the gateway conservative-match-only classification'
+  )
+}
+console.log('ok  attaching a real provider_reference to a PayBox gateway binding never changes its conservative-match-only (TRANSFER_MATCH_ONLY-capped) classification')
 
 console.log('\nAll D2.4 execution-binding tests passed.')

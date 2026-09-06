@@ -31,6 +31,8 @@ import {
   registerExecutionBinding,
   getExecutionBinding,
   transitionSubmissionState,
+  attachProviderReference,
+  ProviderReferenceConflictError,
   type SubmissionState,
 } from './executionBinding.js'
 import { recordObservation, selectExactTransfer } from './commerceObservation.js'
@@ -183,17 +185,45 @@ export function createExecutionBindingStateHandler(deps: LifecycleFinalizeDepend
     } catch {
       return c.json({ error: 'body must be valid JSON' }, 400)
     }
-    if (!isPlainObject(body) || typeof body.state !== 'string' || !SUBMISSION_STATES.has(body.state)) {
+    if (!isPlainObject(body)) return c.json({ error: 'body must be a JSON object' }, 400)
+
+    const hasState = body.state !== undefined
+    const hasProviderReference = body.provider_reference !== undefined
+    if (!hasState && !hasProviderReference) {
+      return c.json({ error: 'body must include at least one of: state, provider_reference' }, 400)
+    }
+    if (hasState && (typeof body.state !== 'string' || !SUBMISSION_STATES.has(body.state))) {
       return c.json({ error: `state must be one of: ${[...SUBMISSION_STATES].join(', ')}` }, 400)
     }
-
-    try {
-      await transitionSubmissionState(binding, body.state as SubmissionState)
-    } catch (err: any) {
-      return c.json({ error: err?.message || 'invalid state transition' }, 409)
+    if (hasProviderReference && (typeof body.provider_reference !== 'string' || body.provider_reference.length === 0)) {
+      return c.json({ error: 'provider_reference must be a non-empty string' }, 400)
     }
-    await updateCommerceOperationState(operationId, { executionState: body.state as CommerceOperationRecord['executionState'] })
-    return c.json({ execution_request_id: executionRequestId, submission_state: body.state })
+
+    // D2.6 correction (Section 4): attach the provider's request identity to
+    // this ALREADY-EXISTING binding BEFORE applying any state transition --
+    // an executor whose provider action happens in submit() (e.g. PayBox
+    // gateway mode) learns its request_id only after the binding was
+    // created with provider_reference: null. One-way (null -> a value),
+    // idempotent on retry with the identical value, rejected on conflict.
+    let currentBinding = binding
+    if (hasProviderReference) {
+      try {
+        currentBinding = await attachProviderReference(binding, body.provider_reference as string)
+      } catch (err: any) {
+        if (err instanceof ProviderReferenceConflictError) return c.json({ error: err.message }, 409)
+        throw err
+      }
+    }
+
+    if (hasState) {
+      try {
+        await transitionSubmissionState(currentBinding, body.state as SubmissionState)
+      } catch (err: any) {
+        return c.json({ error: err?.message || 'invalid state transition' }, 409)
+      }
+      await updateCommerceOperationState(operationId, { executionState: body.state as CommerceOperationRecord['executionState'] })
+    }
+    return c.json({ execution_request_id: executionRequestId, submission_state: hasState ? body.state : currentBinding.submissionState, provider_reference: currentBinding.providerReference })
   }
 }
 

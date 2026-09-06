@@ -560,6 +560,41 @@ export async function updateExecutionBindingSubmissionState(executionRequestId: 
   ])
 }
 
+/**
+ * D2.6 correction (Section 4): a durable, one-way `provider_reference`
+ * attach for a binding created BEFORE the provider request identity was
+ * known (e.g. PayBox gateway mode, whose useService() call now happens in
+ * submit() -- AFTER the execution binding already exists -- not prepare()).
+ *
+ * Atomic at the SQL level: the row is updated only when its
+ * `provider_reference` is currently NULL or already equals the exact same
+ * value being written (idempotent retry) -- a single conditional UPDATE,
+ * no separate read-then-write, so two concurrent callers can never race
+ * each other into silently overwriting one reference with another.
+ */
+export class ProviderReferenceConflictError extends Error {
+  constructor(executionRequestId: string, existing: string, attempted: string) {
+    super(`execution binding ${executionRequestId} already has provider_reference "${existing}" -- refusing to overwrite it with "${attempted}"`)
+    this.name = 'ProviderReferenceConflictError'
+  }
+}
+
+export async function updateExecutionBindingProviderReference(executionRequestId: string, providerReference: string): Promise<ExecutionBindingRecord> {
+  const updated = (await sql().query(
+    `UPDATE execution_bindings
+       SET provider_reference = $2, updated_at = now()
+     WHERE execution_request_id = $1
+       AND (provider_reference IS NULL OR provider_reference = $2)
+     RETURNING *`,
+    [executionRequestId, providerReference]
+  )) as unknown as any[]
+  if (updated[0]) return mapBindingRow(updated[0])
+
+  const existing = (await sql().query('SELECT * FROM execution_bindings WHERE execution_request_id = $1', [executionRequestId])) as unknown as any[]
+  if (!existing[0]) throw new Error(`execution binding ${executionRequestId} not found`)
+  throw new ProviderReferenceConflictError(executionRequestId, existing[0].provider_reference, providerReference)
+}
+
 export async function getExecutionBinding(executionRequestId: string): Promise<ExecutionBindingRecord | null> {
   const rows = (await sql().query('SELECT * FROM execution_bindings WHERE execution_request_id = $1', [
     executionRequestId,
