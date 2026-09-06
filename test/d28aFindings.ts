@@ -29,6 +29,10 @@ function baseInvestigation(overrides: Partial<Bare> = {}): Bare {
       decision: 'ALLOW',
       action: { kind: 'PAYMENT', amount: '0.001', asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', network: 'eip155:8453', recipient: '0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea', sender: '0x4D4cd7e2Ff500483c1ea4B2cFA68e1cf41F93846' },
       verification: { state: 'VALID', code: 'ok', message: 'verified' },
+      // No frozen D2.4 policy.expected_payer commitment by default -- most
+      // operations never set one (it's optional). Tests that need it set
+      // override this explicitly.
+      expected_payer: null,
     },
     execution: {
       execution_request_id: 'OCD-EXEC-1',
@@ -90,22 +94,55 @@ function withCommerceChecks(inv: Bare, checks: Array<{ id: string; result: strin
 }
 console.log('ok  a healthy, fully-confirmed completed operation produces zero false critical findings (only the expected informational TRANSFER_MATCH_ONLY note)')
 
-// --- 2. expected/observed payer mismatch produces the expected critical finding ---
+// --- 2a. action.sender mismatch produces SENDER_MISMATCH (D2.8A correction) ---
 
 {
   const inv = withCommerceChecks(baseInvestigation(), [
     { id: 'sender-matches-preflight', result: 'FAIL', summary: 'The observed sender does not match the sender required by the preflight.' },
   ])
   const findings = deriveFindings(inv)
-  const finding = findings.find((f) => f.code === 'EXPECTED_PAYER_MISMATCH')
-  assert.ok(finding, 'a sender-matches-preflight FAIL must produce an EXPECTED_PAYER_MISMATCH finding')
+  const finding = findings.find((f) => f.code === 'SENDER_MISMATCH')
+  assert.ok(finding, 'a sender-matches-preflight FAIL must produce a SENDER_MISMATCH finding')
   assert.equal(finding.severity, 'critical')
   assert.equal(finding.category, 'settlement')
   assert.ok(finding.evidence_refs.includes('OCD-RCP-COM1'))
   // Claim discipline: state the contradiction, never an intent claim.
   assert.doesNotMatch(finding.summary + finding.title, /fraud|stolen|malicious/i)
+  // This must NOT be conflated with EXPECTED_PAYER_MISMATCH -- no frozen
+  // policy.expected_payer commitment was set in this fixture.
+  assert.ok(!findings.some((f) => f.code === 'EXPECTED_PAYER_MISMATCH'), 'a bare action.sender mismatch must never also produce EXPECTED_PAYER_MISMATCH -- that is a distinct commitment')
 }
-console.log('ok  an expected/observed payer mismatch (via the receipt\'s own sender-matches-preflight check) produces the EXPECTED_PAYER_MISMATCH critical finding, with honest wording')
+console.log('ok  an action.sender mismatch (via the receipt\'s own sender-matches-preflight check) produces SENDER_MISMATCH, never EXPECTED_PAYER_MISMATCH')
+
+// --- 2b. frozen policy.expected_payer mismatch produces EXPECTED_PAYER_MISMATCH (D2.8A correction) ---
+
+{
+  const inv = baseInvestigation({
+    preflight: { ...baseInvestigation().preflight, expected_payer: '0x4D4cd7e2Ff500483c1ea4B2cFA68e1cf41F93846' },
+    settlement: { ...baseInvestigation().settlement, payer: '0x000000000000000000000000000000000000bAD' },
+  })
+  const findings = deriveFindings(inv)
+  const finding = findings.find((f) => f.code === 'EXPECTED_PAYER_MISMATCH')
+  assert.ok(finding, 'a frozen policy.expected_payer differing from the observed payer must produce EXPECTED_PAYER_MISMATCH')
+  assert.equal(finding.severity, 'critical')
+  assert.equal(finding.category, 'settlement')
+  assert.doesNotMatch(finding.summary + finding.title, /fraud|stolen|malicious/i)
+  assert.ok(!findings.some((f) => f.code === 'SENDER_MISMATCH'), 'this fixture\'s receipt checks are empty -- no SENDER_MISMATCH should be fabricated alongside it')
+
+  // Null frozen expected_payer -> no finding, even with a clearly different observed payer.
+  const noCommitment = deriveFindings(baseInvestigation({ settlement: { ...baseInvestigation().settlement, payer: '0x000000000000000000000000000000000000bAD' } }))
+  assert.ok(!noCommitment.some((f) => f.code === 'EXPECTED_PAYER_MISMATCH'), 'with no frozen expected_payer commitment, no EXPECTED_PAYER_MISMATCH finding may be produced')
+
+  // Observed payer unavailable -> no finding, even with a commitment set.
+  const noObservedPayer = deriveFindings(
+    baseInvestigation({
+      preflight: { ...baseInvestigation().preflight, expected_payer: '0x4D4cd7e2Ff500483c1ea4B2cFA68e1cf41F93846' },
+      settlement: { ...baseInvestigation().settlement, payer: null },
+    })
+  )
+  assert.ok(!noObservedPayer.some((f) => f.code === 'EXPECTED_PAYER_MISMATCH'), 'with no observed payer, no EXPECTED_PAYER_MISMATCH finding may be produced')
+}
+console.log('ok  a frozen policy.expected_payer differing from the independently observed payer produces EXPECTED_PAYER_MISMATCH; a null commitment or missing observed payer never does')
 
 // --- 3. ambiguous execution produces an uncertainty/recovery finding ------
 

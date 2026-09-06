@@ -18,6 +18,7 @@
 import { getOperationDetailForOwner, type OperationDetail } from './operationHistory.js'
 import { contentId } from './receipts.js'
 import { verifyReceipt } from './receiptTools.js'
+import { getStepState } from './lifecycleSteps.js'
 import { deriveFindings, summarizeFindings, type Finding } from './findings.js'
 
 export interface Investigation {
@@ -34,6 +35,19 @@ export interface Investigation {
     decision: string | null
     action: unknown | null
     verification: { state: string; code: string; message: string } | null
+    /**
+     * D2.8A correction: the ACTUAL frozen D2.4 `policy.expected_payer`
+     * commitment (from the 'preflight' lifecycle step's frozen input) --
+     * NOT the same thing as `action.sender` (checked by the receipt's own
+     * sender-matches-preflight) or execution.expected_payer below (the
+     * execution binding's own, caller-supplied field, never cross-
+     * validated against this frozen policy commitment). Null means no
+     * commitment was ever made -- per the D2.4 claim model, that can never
+     * be treated as satisfied by field similarity alone. See findings.ts's
+     * EXPECTED_PAYER_MISMATCH vs SENDER_MISMATCH for why these two are
+     * deliberately kept separate.
+     */
+    expected_payer: string | null
   }
   execution: {
     execution_request_id: string | null
@@ -86,14 +100,24 @@ export type InvestigationResult = { found: true; investigation: Investigation } 
 export interface GetInvestigationDependencies {
   getOperationDetailForOwner?: typeof getOperationDetailForOwner
   verifyReceipt?: typeof verifyReceipt
+  getStepState?: typeof getStepState
 }
 
 export async function getInvestigationForOwner(operationId: string, accountId: string, deps: GetInvestigationDependencies = {}): Promise<InvestigationResult> {
   const doGetDetail = deps.getOperationDetailForOwner ?? getOperationDetailForOwner
   const doVerifyReceipt = deps.verifyReceipt ?? verifyReceipt
+  const doGetStepState = deps.getStepState ?? getStepState
   const result = await doGetDetail(operationId, accountId)
   if (!result.found) return { found: false }
   const detail = result.detail
+
+  // D2.8A correction: the frozen D2.4 policy commitment, read from the
+  // SAME 'preflight' lifecycle_steps row lifecycleFinalizeRoute.ts itself
+  // reads at finalize time (reconstructPreflightCommitment) -- never the
+  // execution binding's own expected_payer field, which is caller-supplied
+  // at binding-creation time and not cross-validated against this.
+  const preflightStep = await doGetStepState(operationId, 'preflight')
+  const frozenExpectedPayer: string | null = (preflightStep?.frozenInput as any)?.input?.policy?.expected_payer ?? null
 
   // "Current" binding/observation: the most recent of each -- D2.4 allows
   // more than one only if a caller genuinely attempted more than one
@@ -123,6 +147,7 @@ export async function getInvestigationForOwner(operationId: string, accountId: s
       decision: preflightDecision,
       action: preflightAction,
       verification: preflightVerification,
+      expected_payer: frozenExpectedPayer,
     },
     execution: {
       execution_request_id: binding?.execution_request_id ?? null,

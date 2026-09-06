@@ -49,6 +49,11 @@ function receiptCheck(envelope: Investigation['receipts']['commerce'], checkId: 
   return checks?.find((c) => c.id === checkId) ?? null
 }
 
+/** Same convention as commerceObservation.ts/commerceReceipt.ts's own private addressesEqual() helpers -- not exported anywhere in this codebase, so each file keeps its own small copy rather than inventing a shared util for a 2-line comparison. */
+function addressesEqual(a: string | null, b: string | null): boolean {
+  return a !== null && b !== null && a.toLowerCase() === b.toLowerCase()
+}
+
 /**
  * Pure and deterministic: same Investigation in, same Finding[] out, every
  * time. Bounded by construction -- one rule contributes at most one
@@ -132,7 +137,7 @@ export function deriveFindings(investigation: Omit<Investigation, 'findings'>): 
     })
   }
 
-  // --- EXPECTED_PAYER_MISMATCH / RECIPIENT_MISMATCH / AMOUNT_MISMATCH -----
+  // --- SENDER_MISMATCH / RECIPIENT_MISMATCH / AMOUNT_MISMATCH -------------
   // Reused directly from the Commerce receipt's own *-matches-preflight
   // checks (commerceReceipt.ts) rather than re-comparing raw fields here --
   // those checks already handle unit conversion (preflight amounts are
@@ -140,12 +145,25 @@ export function deriveFindings(investigation: Omit<Investigation, 'findings'>): 
   // comparison in this module would risk a unit-mismatch bug and would
   // duplicate existing lifecycle logic, which Section 1 explicitly says not
   // to do.
+  //
+  // D2.8A correction: `sender-matches-preflight` compares the preflight
+  // ACTION's `sender` (a plain field on the frozen action, only checked
+  // when the caller actually set it) against the observed transfer's
+  // sender -- this is NOT the same commitment as D2.4's
+  // `policy.expected_payer` (a separate, optional binding-strength
+  // commitment). Conflating the two would misrepresent which commitment
+  // was actually violated. This rule is named SENDER_MISMATCH accordingly;
+  // EXPECTED_PAYER_MISMATCH (below) is a completely separate comparison
+  // against the true frozen policy commitment.
   const mismatchChecks: Array<{ code: string; checkId: string; title: string; fieldLabel: string }> = [
-    { code: 'EXPECTED_PAYER_MISMATCH', checkId: 'sender-matches-preflight', title: 'Observed payer does not match the payer required by preflight', fieldLabel: 'payer' },
+    { code: 'SENDER_MISMATCH', checkId: 'sender-matches-preflight', title: 'Observed sender does not match the sender specified in the preflight action', fieldLabel: 'sender' },
     { code: 'RECIPIENT_MISMATCH', checkId: 'recipient-matches-preflight', title: 'Observed recipient does not match the recipient proposed in preflight', fieldLabel: 'recipient' },
     { code: 'AMOUNT_MISMATCH', checkId: 'amount-matches-preflight', title: 'Observed amount does not match the amount proposed in preflight', fieldLabel: 'amount' },
   ]
   for (const { code, checkId, title, fieldLabel } of mismatchChecks) {
+    // sender-matches-preflight is NOT_CHECKED (not FAIL) when action.sender
+    // was never specified -- see commerceReceipt.ts's matchCheck() -- so
+    // this naturally only fires when action.sender was actually set.
     const check = receiptCheck(receipts.commerce, checkId)
     if (check && check.result === 'FAIL') {
       findings.push({
@@ -158,6 +176,28 @@ export function deriveFindings(investigation: Omit<Investigation, 'findings'>): 
         recommended_action: 'Review the transaction before treating this operation as reconciled. Do not assume intent -- this records a factual mismatch between the preflighted and observed transfer.',
       })
     }
+  }
+
+  // --- EXPECTED_PAYER_MISMATCH (settlement category) ----------------------
+  // Compares the TRUE frozen D2.4 `policy.expected_payer` commitment
+  // (investigation.ts surfaces it from the 'preflight' lifecycle step's
+  // frozen input -- the same source deriveBindingStrength() itself uses)
+  // against the independently observed payer. Deliberately independent of
+  // whether a Commerce receipt exists yet (an observation alone is
+  // enough), and deliberately does NOT fall back to
+  // execution.expected_payer (the execution binding's own, caller-supplied
+  // field, never cross-validated against this frozen commitment) -- see
+  // this file's header and investigation.ts's Investigation.preflight.expected_payer doc comment.
+  if (preflight.expected_payer && settlement.payer && !addressesEqual(preflight.expected_payer, settlement.payer)) {
+    findings.push({
+      code: 'EXPECTED_PAYER_MISMATCH',
+      severity: 'critical',
+      category: 'settlement',
+      title: 'Observed payer does not match the frozen expected_payer commitment',
+      summary: `The independently observed payer (${settlement.payer}) differs from the expected_payer frozen in the preflight policy commitment (${preflight.expected_payer}). This is a distinct commitment from the preflight action's sender field.`,
+      evidence_refs: refs(preflight.receipt_id, receiptId(receipts.commerce), settlement.transaction_hash),
+      recommended_action: 'Review the transaction before treating this operation as reconciled. Do not assume intent -- this records a factual mismatch against the frozen expected_payer commitment.',
+    })
   }
 
   // --- SETTLEMENT_NOT_CONFIRMED (settlement category) ---------------------
