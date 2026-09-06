@@ -179,13 +179,19 @@ export interface OperationDetail extends OperationSummary {
     recovery_capability_class: ExecutionBindingRecord['recoveryCapabilityClass']
     provider_reference: string | null
     submission_state: string
+    expected_payer: string | null
   }>
   observations: Array<{
     observation_id: string
     network: string
+    block_hash: string
     block_number: string
     transaction_hash: string
     log_index: number
+    observed_payer: string | null
+    observed_recipient: string | null
+    observed_amount_atomic: string | null
+    token_contract: string
     finality_state: string
     binding_strength: CommerceObservationRecord['bindingStrength']
     bundle_digest: string | null
@@ -242,13 +248,19 @@ export async function getOperationDetailForOwner(operationId: string, ownerId: s
         recovery_capability_class: b.recoveryCapabilityClass,
         provider_reference: b.providerReference,
         submission_state: b.submissionState,
+        expected_payer: b.expectedPayer,
       })),
       observations: observations.map((o) => ({
         observation_id: o.observationId,
         network: o.network,
+        block_hash: o.blockHash,
         block_number: o.blockNumber,
         transaction_hash: o.transactionHash,
         log_index: o.logIndex,
+        observed_payer: o.observedPayer,
+        observed_recipient: o.observedRecipient,
+        observed_amount_atomic: o.observedAmountAtomic,
+        token_contract: o.tokenContract,
         finality_state: o.finalityState,
         binding_strength: o.bindingStrength,
         bundle_digest: o.bundleDigest,

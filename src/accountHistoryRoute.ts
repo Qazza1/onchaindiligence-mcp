@@ -1,10 +1,13 @@
 /**
  * accountHistoryRoute.ts — D2.7A private operation history + recovery
- * center HTTP surface.
+ * center HTTP surface, plus D2.7C's investigation/export routes layered
+ * on the exact same account-scoped shape.
  *
- *   POST /accounts                         free -- create an account identity
- *   GET  /me/operations                    account-api-key-gated -- bounded recent history
- *   GET  /me/operations/:operationId       account-api-key-gated -- full lifecycle detail + recovery status
+ *   POST /accounts                                       free -- create an account identity
+ *   GET  /me/operations                                  account-api-key-gated -- bounded recent history
+ *   GET  /me/operations/:operationId                     account-api-key-gated -- full lifecycle detail + recovery status
+ *   GET  /me/operations/:operationId/investigation        account-api-key-gated -- assembled investigation (D2.7C)
+ *   GET  /me/operations/:operationId/investigation/export account-api-key-gated -- manifest-wrapped export (D2.7C)
  *
  * Entirely additive and separate from the D2.4 recovery-credential-gated
  * routes in lifecycleRoute.ts/lifecycleFinalizeRoute.ts, which are
@@ -15,11 +18,14 @@
 import type { Context, Hono } from 'hono'
 import { authenticateAccount, createAccount } from './accounts.js'
 import { listOperationsForOwner, getOperationDetailForOwner } from './operationHistory.js'
+import { getInvestigationForOwner, buildInvestigationExport } from './investigation.js'
 
 export interface AccountHistoryDependencies {
   authenticateAccount?: typeof authenticateAccount
   listOperationsForOwner?: typeof listOperationsForOwner
   getOperationDetailForOwner?: typeof getOperationDetailForOwner
+  /** Route-level tests inject this wholesale rather than threading investigation.ts's own nested deps (getOperationDetailForOwner/verifyReceipt) through -- see test/d27cInvestigation.ts. */
+  getInvestigationForOwner?: typeof getInvestigationForOwner
 }
 
 type RequireAccountResult = { account: NonNullable<Awaited<ReturnType<typeof authenticateAccount>>>; response: null } | { account: null; response: Response }
@@ -71,8 +77,36 @@ export function createMeOperationDetailHandler(deps: AccountHistoryDependencies 
   }
 }
 
+/** D2.7C: same ownership discipline as the detail route above -- 404, indistinguishable from unknown, for anything not owned by the authenticated account. */
+export function createMeOperationInvestigationHandler(deps: AccountHistoryDependencies = {}) {
+  return async function (c: Context) {
+    const { account, response } = await requireAccount(c, deps)
+    if (!account) return response
+
+    const operationId = c.req.param('operationId') ?? ''
+    const result = await (deps.getInvestigationForOwner ?? getInvestigationForOwner)(operationId, account.accountId)
+    if (!result.found) return c.json({ error: 'unknown operation' }, 404)
+    return c.json(result.investigation)
+  }
+}
+
+/** D2.7C: the same investigation, wrapped in the onchaindiligence.investigation.v1 manifest (see investigation.ts's buildInvestigationExport()). */
+export function createMeOperationInvestigationExportHandler(deps: AccountHistoryDependencies = {}) {
+  return async function (c: Context) {
+    const { account, response } = await requireAccount(c, deps)
+    if (!account) return response
+
+    const operationId = c.req.param('operationId') ?? ''
+    const result = await (deps.getInvestigationForOwner ?? getInvestigationForOwner)(operationId, account.accountId)
+    if (!result.found) return c.json({ error: 'unknown operation' }, 404)
+    return c.json(buildInvestigationExport({ accountId: account.accountId, investigation: result.investigation }))
+  }
+}
+
 export function mountAccountHistory(app: Hono, deps: AccountHistoryDependencies = {}): void {
   app.post('/accounts', accountsCreateHandler)
   app.get('/me/operations', createMeOperationsListHandler(deps))
   app.get('/me/operations/:operationId', createMeOperationDetailHandler(deps))
+  app.get('/me/operations/:operationId/investigation', createMeOperationInvestigationHandler(deps))
+  app.get('/me/operations/:operationId/investigation/export', createMeOperationInvestigationExportHandler(deps))
 }
