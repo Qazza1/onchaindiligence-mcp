@@ -304,4 +304,39 @@ console.log('ok  a successful delivery (HTTP 2xx) is marked delivered, and its s
 }
 console.log('ok  a persistently failing delivery retries with backoff and is marked failed after bounded attempts, never retried forever')
 
+// --- production-readiness correction: /internal/webhooks/deliver accepts CRON_SECRET (Vercel's real mechanism) or WEBHOOK_WORKER_SECRET ---
+
+{
+  const { createInternalWebhookDeliverHandler } = await import('../src/webhookRoute.js')
+  const savedCron = process.env.CRON_SECRET
+  const savedWorker = process.env.WEBHOOK_WORKER_SECRET
+  try {
+    const a = new Hono()
+    a.post('/internal/webhooks/deliver', createInternalWebhookDeliverHandler({ processDueDeliveries: async () => ({ attempted: 0 }) }))
+
+    delete process.env.CRON_SECRET
+    delete process.env.WEBHOOK_WORKER_SECRET
+    const noneConfigured = await a.request('/internal/webhooks/deliver', { method: 'POST', headers: { authorization: 'Bearer anything' } })
+    assert.equal(noneConfigured.status, 500, 'with neither secret configured, the route must fail closed, not silently allow')
+
+    process.env.CRON_SECRET = 'vercel-cron-secret-value'
+    const viaCronSecret = await a.request('/internal/webhooks/deliver', { method: 'POST', headers: { authorization: 'Bearer vercel-cron-secret-value' } })
+    assert.equal(viaCronSecret.status, 200, 'CRON_SECRET is the header Vercel Cron itself sends automatically -- it must authorize')
+
+    const wrongSecret = await a.request('/internal/webhooks/deliver', { method: 'POST', headers: { authorization: 'Bearer not-the-right-value' } })
+    assert.equal(wrongSecret.status, 401)
+
+    delete process.env.CRON_SECRET
+    process.env.WEBHOOK_WORKER_SECRET = 'manual-ops-secret-value'
+    const viaWorkerSecret = await a.request('/internal/webhooks/deliver', { method: 'POST', headers: { authorization: 'Bearer manual-ops-secret-value' } })
+    assert.equal(viaWorkerSecret.status, 200, 'WEBHOOK_WORKER_SECRET must still work for manual/non-Vercel invocation')
+  } finally {
+    if (savedCron === undefined) delete process.env.CRON_SECRET
+    else process.env.CRON_SECRET = savedCron
+    if (savedWorker === undefined) delete process.env.WEBHOOK_WORKER_SECRET
+    else process.env.WEBHOOK_WORKER_SECRET = savedWorker
+  }
+}
+console.log('ok  /internal/webhooks/deliver authorizes via CRON_SECRET (Vercel\'s real auto-injected header) or WEBHOOK_WORKER_SECRET, rejects a wrong value, and fails closed if neither is configured')
+
 console.log('\nAll D2.7B webhook tests passed.')

@@ -10,6 +10,9 @@
     "typecheck": "tsc --noEmit",
     "test:client": "tsx test/client.ts",
     "db:migrate": "tsx scripts/migrate.ts",
+    "db:check-d27": "tsx scripts/check-d27-schema.mjs",
+    "check:d27-readiness": "tsx scripts/check-d27-readiness.mjs",
+    "smoke:d27": "tsx scripts/smoke-d27.mjs",
     "operator:build": "esbuild operator/src/main.ts --bundle --format=esm --platform=browser --target=es2020 --outfile=operator/dist/app.js",
     "operator:build:d25a": "esbuild operator/src/d25aMain.ts --bundle --format=esm --platform=browser --target=es2020 --outfile=operator/dist/d25a.js",
     "operator:commerce": "npm run operator:build && npm run operator:build:d25a && tsx operator/server.ts"

@@ -34,6 +34,7 @@ export interface WebhookRouteDependencies {
   getWebhookEndpoint?: typeof getWebhookEndpoint
   deleteWebhookEndpointForAccount?: typeof deleteWebhookEndpointForAccount
   listDeliveriesForWebhook?: typeof listDeliveriesForWebhook
+  processDueDeliveries?: typeof processDueDeliveries
 }
 
 const MAX_ACTIVE_ENDPOINTS_PER_ACCOUNT = 5
@@ -154,19 +155,41 @@ export function createWebhookDeliveriesListHandler(deps: WebhookRouteDependencie
   }
 }
 
-/** Vercel Cron auth: a shared secret, same discipline as onchaindilige's internalAuth.ts (constant-time compare of a Bearer token's hash). Not the account API key -- this route is not account-scoped, it drives retries for ALL accounts. */
-export function createInternalWebhookDeliverHandler() {
+/**
+ * Cron auth: a shared secret, same discipline as onchaindilige's
+ * internalAuth.ts (constant-time compare of a Bearer token's hash). Not the
+ * account API key -- this route is not account-scoped, it drives retries
+ * for ALL accounts.
+ *
+ * D2.7 production-readiness correction: Vercel Cron Jobs do NOT let a
+ * project send an arbitrary custom header -- the ONLY automatic
+ * authentication Vercel provides is that when a `CRON_SECRET` environment
+ * variable exists on the project, Vercel itself sends
+ * `Authorization: Bearer <CRON_SECRET>` on every cron invocation. A
+ * differently-named env var (the original `WEBHOOK_WORKER_SECRET`) is never
+ * populated into that header by Vercel automatically -- relying on it alone
+ * would leave the real Vercel Cron invocation unauthenticated in
+ * production. This handler now accepts a match against EITHER configured
+ * secret: `CRON_SECRET` (Vercel's own mechanism) or `WEBHOOK_WORKER_SECRET`
+ * (kept for manual/non-Vercel invocation -- e.g. an ops runbook curl, or a
+ * different scheduler later). At least one must be configured, or this
+ * fails closed.
+ */
+export function createInternalWebhookDeliverHandler(deps: WebhookRouteDependencies = {}) {
   return async function (c: Context) {
-    const expected = process.env.WEBHOOK_WORKER_SECRET
-    if (!expected) return c.json({ error: 'WEBHOOK_WORKER_SECRET is not configured' }, 500)
+    const candidates = [process.env.CRON_SECRET, process.env.WEBHOOK_WORKER_SECRET].filter((v): v is string => typeof v === 'string' && v.length > 0)
+    if (candidates.length === 0) return c.json({ error: 'neither CRON_SECRET nor WEBHOOK_WORKER_SECRET is configured' }, 500)
+
     const header = c.req.header('authorization') || ''
     const presented = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : ''
     const presentedHash = createHash('sha256').update(presented, 'utf8').digest()
-    const expectedHash = createHash('sha256').update(expected, 'utf8').digest()
-    if (presentedHash.length !== expectedHash.length || !timingSafeEqual(presentedHash, expectedHash)) {
-      return c.json({ error: 'unauthorized' }, 401)
-    }
-    const result = await processDueDeliveries(50)
+    const authorized = candidates.some((expected) => {
+      const expectedHash = createHash('sha256').update(expected, 'utf8').digest()
+      return presentedHash.length === expectedHash.length && timingSafeEqual(presentedHash, expectedHash)
+    })
+    if (!authorized) return c.json({ error: 'unauthorized' }, 401)
+
+    const result = await (deps.processDueDeliveries ?? processDueDeliveries)(50)
     return c.json(result)
   }
 }
@@ -178,6 +201,6 @@ export function mountWebhooks(app: Hono, deps: WebhookRouteDependencies = {}): v
   app.get('/me/webhooks/:id/deliveries', createWebhookDeliveriesListHandler(deps))
   // Both verbs: Vercel Cron Jobs issue a GET by default; some setups POST.
   // Auth (the shared secret) is identical either way -- see the handler.
-  app.post('/internal/webhooks/deliver', createInternalWebhookDeliverHandler())
-  app.get('/internal/webhooks/deliver', createInternalWebhookDeliverHandler())
+  app.post('/internal/webhooks/deliver', createInternalWebhookDeliverHandler(deps))
+  app.get('/internal/webhooks/deliver', createInternalWebhookDeliverHandler(deps))
 }
