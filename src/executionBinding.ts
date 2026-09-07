@@ -27,6 +27,7 @@ import { randomBytes } from 'node:crypto'
 import {
   createExecutionBinding as dbCreateExecutionBinding,
   getExecutionBinding as dbGetExecutionBinding,
+  listExecutionBindingsForOperation as dbListExecutionBindingsForOperation,
   updateExecutionBindingSubmissionState as dbUpdateSubmissionState,
   updateExecutionBindingProviderReference as dbUpdateProviderReference,
   ProviderReferenceConflictError,
@@ -95,6 +96,7 @@ export interface CreateExecutionBindingParams {
 export interface ExecutionBindingDependencies {
   createExecutionBinding?: typeof dbCreateExecutionBinding
   getExecutionBinding?: typeof dbGetExecutionBinding
+  listExecutionBindingsForOperation?: typeof dbListExecutionBindingsForOperation
   updateExecutionBindingSubmissionState?: typeof dbUpdateSubmissionState
   updateExecutionBindingProviderReference?: typeof dbUpdateProviderReference
 }
@@ -112,6 +114,19 @@ export async function getExecutionBinding(
   deps: ExecutionBindingDependencies = {}
 ): Promise<ExecutionBindingRecord | null> {
   return (deps.getExecutionBinding ?? dbGetExecutionBinding)(executionRequestId)
+}
+
+/**
+ * D2.6 correction (Astra final-review, remaining bypass): every durable
+ * execution binding for an operation, read-only -- lets a caller determine
+ * whether a PayBox v1-gateway binding already exists from DURABLE STATE,
+ * never from whether the finalize request happens to mention one.
+ */
+export async function listExecutionBindingsForOperation(
+  operationId: string,
+  deps: ExecutionBindingDependencies = {}
+): Promise<ExecutionBindingRecord[]> {
+  return (deps.listExecutionBindingsForOperation ?? dbListExecutionBindingsForOperation)(operationId)
 }
 
 /**

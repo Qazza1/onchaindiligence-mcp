@@ -602,6 +602,20 @@ export async function getExecutionBinding(executionRequestId: string): Promise<E
   return rows[0] ? mapBindingRow(rows[0]) : null
 }
 
+/**
+ * D2.6 correction (Astra final-review, remaining bypass): read-only lookup
+ * of EVERY durable execution binding for an operation, so the server can
+ * determine from DURABLE STATE -- never from a caller-supplied
+ * execution_request_id being present/absent, or from caller-supplied
+ * execution_provider -- whether a PayBox v1-gateway binding already exists
+ * for this operation before finalization is allowed to proceed. Read-only,
+ * no ordering guarantee needed beyond "all rows for this operation_id".
+ */
+export async function listExecutionBindingsForOperation(operationId: string): Promise<ExecutionBindingRecord[]> {
+  const rows = (await sql().query('SELECT * FROM execution_bindings WHERE operation_id = $1', [operationId])) as unknown as any[]
+  return rows.map(mapBindingRow)
+}
+
 // --- commerce_observations -------------------------------------------------
 
 export interface CommerceObservationRecord {

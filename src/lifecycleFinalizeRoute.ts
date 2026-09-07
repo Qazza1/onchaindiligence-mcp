@@ -30,6 +30,7 @@ import { updateCommerceOperationState, getCommerceOperation, getReceiptForFinali
 import {
   registerExecutionBinding,
   getExecutionBinding,
+  listExecutionBindingsForOperation,
   transitionSubmissionState,
   attachProviderReference,
   ProviderReferenceConflictError,
@@ -94,6 +95,7 @@ export interface LifecycleFinalizeDependencies {
   // identical to the previous hardwired behavior.
   getCommerceOperation?: typeof getCommerceOperation
   getExecutionBinding?: typeof getExecutionBinding
+  listExecutionBindingsForOperation?: typeof listExecutionBindingsForOperation
   getReceiptForFinalization?: typeof getReceiptForFinalization
   observeTransaction?: typeof observeTransaction
   recordObservation?: typeof recordObservation
@@ -261,6 +263,20 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
 
     const op = await (deps.getCommerceOperation ?? getCommerceOperation)(operationId)
 
+    // Astra D2.6 gate correction (remaining bypass on blocker 1): whether
+    // the PayBox v1-gateway safety gate below applies is decided from
+    // DURABLE OPERATION STATE -- every execution binding this operation
+    // actually has -- never from whether the caller happened to supply
+    // execution_request_id, or from caller-supplied execution_provider.
+    // The previous fix only checked the gate when a binding was already
+    // loaded via a caller-supplied execution_request_id; omitting that
+    // field entirely (or pointing it at a DIFFERENT, non-gateway binding
+    // under the same operation) skipped the gate outright even though the
+    // operation's real PayBox v1-gateway binding still had
+    // provider_reference: null. Read-only, before any mutation below.
+    const operationBindings = await (deps.listExecutionBindingsForOperation ?? listExecutionBindingsForOperation)(operationId)
+    const gatewayBindings = operationBindings.filter((b) => isConservativeMatchOnlyEvidence(b.executorIdentity, b.executorVersion))
+
     // Validated strictly up front, before ANY evidence computation or state
     // mutation (including finalizePayment() itself): an execution_request_id
     // that doesn't belong to this operation must never be silently treated
@@ -276,18 +292,39 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
       }
     }
 
-    // Astra D2.6 gate correction (blocker 1): the PayBox conservative
-    // gateway evidence class (executor_identity "paybox-x402-base-usdc",
-    // executor_version "v1-gateway" -- the SAME class isConservativeMatch-
-    // OnlyEvidence() already identifies for binding-strength capping) learns
-    // its provider request_id only inside submit(), strictly AFTER the
-    // durable execution binding is created with provider_reference: null.
-    // The D2.6 gateway contract requires PayBox request_id ->
-    // provider_reference = paybox:<request_id> -> durable attach to this
-    // SAME binding -> only THEN transaction completion/finalization. The
-    // SDK already guards this client-side, but a direct caller bypassing
-    // the SDK must be blocked server-side too, before any mutation below.
-    if (binding && isConservativeMatchOnlyEvidence(binding.executorIdentity, binding.executorVersion)) {
+    // Astra D2.6 gate correction (blocker 1, now closed for real): the
+    // PayBox conservative gateway evidence class (executor_identity
+    // "paybox-x402-base-usdc", executor_version "v1-gateway" -- the SAME
+    // class isConservativeMatchOnlyEvidence() already identifies for
+    // binding-strength capping) learns its provider request_id only inside
+    // submit(), strictly AFTER the durable execution binding is created
+    // with provider_reference: null. The D2.6 gateway contract requires
+    // PayBox request_id -> provider_reference = paybox:<request_id> ->
+    // durable attach to this SAME binding -> only THEN transaction
+    // completion/finalization. The SDK already guards this client-side,
+    // but a direct caller bypassing the SDK must be blocked server-side
+    // too, before any mutation below -- and that block must hold whether
+    // the caller omits execution_request_id, or points it at some other
+    // binding on the same operation, while a gateway binding exists.
+    if (gatewayBindings.length > 0) {
+      if (!binding) {
+        return c.json(
+          {
+            error:
+              'this operation has a PayBox v1-gateway execution binding -- finalization must explicitly select it via execution_request_id',
+          },
+          409
+        )
+      }
+      if (!isConservativeMatchOnlyEvidence(binding.executorIdentity, binding.executorVersion)) {
+        return c.json(
+          {
+            error:
+              'this operation has a PayBox v1-gateway execution binding that must be selected for finalization -- the supplied execution_request_id refers to a different binding',
+          },
+          409
+        )
+      }
       if (binding.providerReference === null) {
         return c.json(
           {

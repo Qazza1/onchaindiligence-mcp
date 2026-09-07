@@ -158,6 +158,11 @@ function successDeps(overrides: LifecycleFinalizeDependencies = {}): LifecycleFi
   return {
     getCommerceOperation: async () => operationRecord(),
     getExecutionBinding: async () => null,
+    // No PayBox v1-gateway binding on this operation by default -- tests
+    // that need one override this to also return it here, so the gateway
+    // safety gate is discovered from DURABLE STATE, not merely from
+    // whatever getExecutionBinding() happens to return for a supplied id.
+    listExecutionBindingsForOperation: async () => [],
     // No completed preflight step on record -> the D2.4 evidence layer
     // gracefully degrades to "no evidence" (exactly like the existing,
     // unaffected legacy fallback) -- keeps these tests focused on the
@@ -192,6 +197,12 @@ async function post(app: Hono, body: Record<string, unknown>, authorization = 'B
 
 const VALID_BODY = { execution_request_id: 'OCD-EXEC-test', transaction_hash: TX_HASH, execution_provider: 'paybox' as const, provider_reference: null as string | null, result_digest: null }
 
+/** Wires a PayBox v1-gateway binding into BOTH getExecutionBinding (id lookup) and listExecutionBindingsForOperation (durable-state discovery) consistently, matching what a real DB would return. */
+function gatewayBindingDeps(overrides: Partial<ExecutionBindingRecord> = {}): LifecycleFinalizeDependencies {
+  const binding = bindingRecord(overrides)
+  return { getExecutionBinding: async () => binding, listExecutionBindingsForOperation: async () => [binding] }
+}
+
 // ===========================================================================
 // 1. PAYBOX PROVIDER REFERENCE GATE
 // ===========================================================================
@@ -202,7 +213,7 @@ const VALID_BODY = { execution_request_id: 'OCD-EXEC-test', transaction_hash: TX
   let recordObservationCalled = false
   let consumeCalled = false
   const deps = successDeps({
-    getExecutionBinding: async () => bindingRecord({ providerReference: null }),
+    ...gatewayBindingDeps({ providerReference: null }),
     recordObservation: async () => {
       recordObservationCalled = true
       throw new Error('recordObservation must not be reached when provider_reference is null')
@@ -226,7 +237,7 @@ console.log('ok  PayBox gateway binding with provider_reference: null -> 409, no
   // Body provider_reference conflicts with the already-attached durable value -> reject.
   let consumeCalled = false
   const deps = successDeps({
-    getExecutionBinding: async () => bindingRecord({ providerReference: 'paybox:req-original' }),
+    ...gatewayBindingDeps({ providerReference: 'paybox:req-original' }),
     finalize: {
       ...successDeps().finalize,
       consumeCapabilityAndPublish: async () => {
@@ -243,16 +254,61 @@ console.log('ok  conflicting body provider_reference against an already-attached
 
 {
   // Body provider_reference matches (or omits) the durable value -> proceeds normally.
-  const matching = await post(appFor(successDeps({ getExecutionBinding: async () => bindingRecord({ providerReference: 'paybox:req-original' }) })), {
+  const matching = await post(appFor(successDeps(gatewayBindingDeps({ providerReference: 'paybox:req-original' }))), {
     ...VALID_BODY,
     provider_reference: 'paybox:req-original',
   })
   assert.equal(matching.status, 200, 'a matching body provider_reference must be allowed through the gate')
 
-  const omitted = await post(appFor(successDeps({ getExecutionBinding: async () => bindingRecord({ providerReference: 'paybox:req-original' }) })), VALID_BODY)
+  const omitted = await post(appFor(successDeps(gatewayBindingDeps({ providerReference: 'paybox:req-original' }))), VALID_BODY)
   assert.equal(omitted.status, 200, 'omitting provider_reference in the body (letting the durable value stand alone) must be allowed through the gate')
 }
 console.log('ok  a matching or omitted body provider_reference against an attached PayBox binding proceeds normally')
+
+{
+  // Astra remaining-bypass regression: the operation already has a durable
+  // PayBox v1-gateway binding (provider_reference: null), but the finalize
+  // request omits execution_request_id ENTIRELY -- the gate must still
+  // fire, because it is discovered from durable operation state
+  // (listExecutionBindingsForOperation), never from whether the caller
+  // happened to mention a binding.
+  let recordObservationCalled = false
+  let consumeCalled = false
+  let updateStateCalled = false
+  let listBindingsCalled = false
+  const { execution_request_id: _omit, ...bodyWithoutExecutionRequestId } = VALID_BODY
+  const deps = successDeps({
+    listExecutionBindingsForOperation: async (opId: string) => {
+      listBindingsCalled = true
+      assert.equal(opId, OPERATION_A)
+      return [bindingRecord({ providerReference: null })]
+    },
+    getExecutionBinding: async () => {
+      throw new Error('getExecutionBinding must not be reached -- no execution_request_id was supplied')
+    },
+    recordObservation: async () => {
+      recordObservationCalled = true
+      throw new Error('recordObservation must not be reached when the gateway binding is not selected')
+    },
+    finalize: {
+      ...successDeps().finalize,
+      consumeCapabilityAndPublish: async () => {
+        consumeCalled = true
+        return { kind: 'consumed' as const }
+      },
+    },
+    updateCommerceOperationState: async () => {
+      updateStateCalled = true
+    },
+  })
+  const res = await post(appFor(deps), bodyWithoutExecutionRequestId)
+  assert.equal(res.status, 409, 'a PayBox gateway binding existing on the operation must gate finalization even with no execution_request_id supplied')
+  assert.equal(listBindingsCalled, true, 'gateway binding discovery must occur from durable operation state')
+  assert.equal(recordObservationCalled, false, 'zero observation writes')
+  assert.equal(consumeCalled, false, 'zero capability consumption')
+  assert.equal(updateStateCalled, false, 'zero terminal operation updates')
+}
+console.log('ok  a durable PayBox gateway binding with provider_reference: null gates finalization even when execution_request_id is omitted entirely')
 
 // ===========================================================================
 // 2. CROSS-OPERATION CAPABILITY
