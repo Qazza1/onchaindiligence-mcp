@@ -10,10 +10,22 @@ import { getReceiptById, verifyReceipt, VerifyReceiptInputError } from './receip
 export const PUBLIC_MCP_PATH = '/public/mcp'
 export const PUBLIC_TOOL_ANNOTATIONS = {
   inspect_payment: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
-  // The shared public resolver can write a corruption diagnostic to the server log.
-  // OpenAI's review definition counts explicit log writes as state changes.
-  get_receipt: { readOnlyHint: false, openWorldHint: false, destructiveHint: false },
-  verify_receipt: { readOnlyHint: false, openWorldHint: false, destructiveHint: false },
+  // The shared public resolver (resolvePublicReceipt, receiptsRoute.ts) can
+  // write a corruption diagnostic via console.error when a stored row fails
+  // its structural-integrity check. That's operational telemetry to this
+  // server's own log stream, not a mutation of MCP "environment" state under
+  // the MCP annotation spec's own meaning of readOnlyHint (does the tool
+  // change state the caller, another tool, or another user can observe?):
+  // it never touches the receipt store, is never returned in any tool
+  // result, and no other call can read it back. Nothing about a receipt,
+  // account, or business record changes. (OpenAI's Apps SDK review defines
+  // "state change" more broadly to include any log write, which is why an
+  // earlier pass here matched that stricter definition -- but that was
+  // OpenAI-specific caution, not something MCP/Anthropic's own annotation
+  // semantics require, and applying it here made both tools misleadingly
+  // classified as write/delete when Claude discovers them.)
+  get_receipt: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
+  verify_receipt: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
 } as const
 
 export interface PublicMcpDependencies {

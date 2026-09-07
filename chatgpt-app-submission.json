@@ -22,24 +22,24 @@
     },
     "get_receipt": {
       "annotations": {
-        "readOnlyHint": false,
+        "readOnlyHint": true,
         "openWorldHint": false,
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Reads or verifies receipts without payment or business-record changes, but public lookup can write a stored-corruption diagnostic to the server log.",
+        "read_only_justification": "Exact-ID lookup of an unchanged, already-stored receipt; no payment or business-record changes. A corrupt stored row can trigger a console.error diagnostic to the server's own operational log, but that log is never returned to any caller, never read back by any tool, and does not alter the receipt store, an account, or any other business record -- it is not a state change a caller or another tool can observe.",
         "open_world_justification": "Does not publish content, execute transactions or change external systems.",
         "destructive_justification": "Does not delete, overwrite, revoke access or perform irreversible actions."
       }
     },
     "verify_receipt": {
       "annotations": {
-        "readOnlyHint": false,
+        "readOnlyHint": true,
         "openWorldHint": false,
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Reads or verifies receipts without payment or business-record changes, but public lookup can write a stored-corruption diagnostic to the server log.",
+        "read_only_justification": "Verifies an existing receipt's signature/consistency (by ID or caller-supplied envelope); no payment or business-record changes. Same incidental diagnostic-log note as get_receipt applies to ID lookups and is not a caller/tool-observable state change.",
         "open_world_justification": "Does not publish content, execute transactions or change external systems.",
         "destructive_justification": "Does not delete, overwrite, revoke access or perform irreversible actions."
       }
