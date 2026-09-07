@@ -1,8 +1,1 @@
-{
-  "crons": [
-    {
-      "path": "/internal/webhooks/deliver",
-      "schedule": "*/1 * * * *"
-    }
-  ]
-}
+{}
