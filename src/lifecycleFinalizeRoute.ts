@@ -26,7 +26,7 @@
 import type { Context, Hono } from 'hono'
 import { authenticateOperation } from './operation.js'
 import { getStepState, type LifecycleStepDependencies } from './lifecycleSteps.js'
-import { updateCommerceOperationState, getCommerceOperation, getReceiptForFinalization, type CommerceOperationRecord } from './db.js'
+import { updateCommerceOperationState, getCommerceOperation, getReceiptForFinalization, peekCapability, hashCapabilityToken, type CommerceOperationRecord } from './db.js'
 import {
   registerExecutionBinding,
   getExecutionBinding,
@@ -36,10 +36,10 @@ import {
   type SubmissionState,
 } from './executionBinding.js'
 import { recordObservation, selectExactTransfer } from './commerceObservation.js'
-import { buildPreflightCommitment, type PreflightCommitment } from './commerceLifecycle.js'
+import { buildPreflightCommitment, isConservativeMatchOnlyEvidence, type PreflightCommitment } from './commerceLifecycle.js'
 import { buildCommerceReceiptCore } from './commerceReceipt.js'
 import { finalizePayment, parseFinalizationExecutionInput, FinalizationAuthError, FinalizationInputError, FinalizationConflictError, FinalizationPendingError, type FinalizeDependencies } from './finalizeRoute.js'
-import { finalizationTtlHours } from './capability.js'
+import { finalizationTtlHours, extractBearerCapability } from './capability.js'
 import { observeTransaction, getSupportedAsset, getClient, BASE_CAIP2 } from './settlement.js'
 import { decimalAmountToAtomicUnits } from './money.js'
 import type { PreflightInput } from './preflight.js'
@@ -84,6 +84,20 @@ export interface LifecycleFinalizeDependencies {
   authenticateOperation?: typeof authenticateOperation
   step?: LifecycleStepDependencies
   finalize?: FinalizeDependencies
+  // Astra D2.6 gate corrections: these were previously called as bare
+  // module-level imports inside createOperationFinalizeHandler() with no
+  // seam to inject a fake for offline testing -- every other handler in
+  // this file already accepts its real dependencies this way (see
+  // ExecutionBindingDependencies, FinalizeDependencies,
+  // CommerceObservationDependencies). Purely additive: omitting all of them
+  // (the real mountLifecycleFinalize(app) call site does) is byte-for-byte
+  // identical to the previous hardwired behavior.
+  getCommerceOperation?: typeof getCommerceOperation
+  getExecutionBinding?: typeof getExecutionBinding
+  getReceiptForFinalization?: typeof getReceiptForFinalization
+  observeTransaction?: typeof observeTransaction
+  recordObservation?: typeof recordObservation
+  updateCommerceOperationState?: typeof updateCommerceOperationState
 }
 
 export function createExecutionBindingsHandler(deps: LifecycleFinalizeDependencies = {}) {
@@ -245,6 +259,8 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
     const body = isPlainObject(rawBody) ? rawBody : {}
     const executionRequestId = typeof body.execution_request_id === 'string' ? body.execution_request_id : null
 
+    const op = await (deps.getCommerceOperation ?? getCommerceOperation)(operationId)
+
     // Validated strictly up front, before ANY evidence computation or state
     // mutation (including finalizePayment() itself): an execution_request_id
     // that doesn't belong to this operation must never be silently treated
@@ -254,10 +270,63 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
     // assumption for a request that should have been rejected outright.
     let binding = null
     if (executionRequestId) {
-      binding = await getExecutionBinding(executionRequestId)
+      binding = await (deps.getExecutionBinding ?? getExecutionBinding)(executionRequestId)
       if (!binding || binding.operationId !== operationId) {
         return c.json({ error: 'execution_request_id does not belong to this operation' }, 400)
       }
+    }
+
+    // Astra D2.6 gate correction (blocker 1): the PayBox conservative
+    // gateway evidence class (executor_identity "paybox-x402-base-usdc",
+    // executor_version "v1-gateway" -- the SAME class isConservativeMatch-
+    // OnlyEvidence() already identifies for binding-strength capping) learns
+    // its provider request_id only inside submit(), strictly AFTER the
+    // durable execution binding is created with provider_reference: null.
+    // The D2.6 gateway contract requires PayBox request_id ->
+    // provider_reference = paybox:<request_id> -> durable attach to this
+    // SAME binding -> only THEN transaction completion/finalization. The
+    // SDK already guards this client-side, but a direct caller bypassing
+    // the SDK must be blocked server-side too, before any mutation below.
+    if (binding && isConservativeMatchOnlyEvidence(binding.executorIdentity, binding.executorVersion)) {
+      if (binding.providerReference === null) {
+        return c.json(
+          {
+            error:
+              'this PayBox gateway execution binding has no attached provider_reference yet -- attach it via POST /operations/:operationId/execution-bindings/:executionRequestId/state before finalizing',
+          },
+          409
+        )
+      }
+      const bodyProviderReference = typeof body.provider_reference === 'string' ? body.provider_reference : null
+      if (bodyProviderReference !== null && bodyProviderReference !== binding.providerReference) {
+        return c.json({ error: 'provider_reference in the finalize body does not match this execution binding\'s durable provider_reference' }, 409)
+      }
+    }
+
+    // Astra D2.6 gate correction (blocker 2): READ-ONLY precheck, before any
+    // append-only evidence mutation or capability consumption -- a presented
+    // finalization capability is bound to exactly ONE preflight receipt
+    // (finalizePayment()'s own model), but this operation-bound route never
+    // proved that receipt is THIS operation's own preflight receipt before
+    // computing/recording evidence under this operation's id. Without this,
+    // a caller could combine operation A + A's execution binding + a valid
+    // capability belonging to preflight B, and have B's capability/evidence
+    // incorrectly recorded against operation A. Reuses the existing
+    // capability hash/lookup (peekCapability) rather than a second
+    // capability format; finalizePayment() below remains the sole authority
+    // for capability validity/expiry/consumption/idempotency -- this only
+    // rejects a cross-operation mismatch before that authority is reached.
+    if (op && op.preflightReceiptId) {
+      const presentedToken = extractBearerCapability(authHeader)
+      if (presentedToken) {
+        const presentedCapability = await (deps.finalize?.peekCapability ?? peekCapability)(hashCapabilityToken(presentedToken))
+        if (presentedCapability && presentedCapability.preflightReceiptId !== op.preflightReceiptId) {
+          return c.json({ error: 'presented finalization capability is not bound to this operation\'s preflight receipt' }, 409)
+        }
+      }
+      // else: missing/malformed bearer token -- let finalizePayment() below
+      // produce its own standard 401 FinalizationAuthError; nothing to
+      // precheck here.
     }
 
     // D2.5A fix: compute the D2.4 lifecycle evidence bundle BEFORE calling
@@ -274,15 +343,18 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
     let noEvidenceNote: string | null = null
     let evidence: { bundle_digest: string; binding_strength: string } | null = null
     let agentEvidenceBundleDigest: string | null = null
+    // Captured only on the branch where `op` is proven non-null, so the
+    // blocker-3 fix below never has to re-assert nullability of `op`.
+    let previousObservationState: CommerceOperationRecord['observationState'] | null = null
 
-    const op = await getCommerceOperation(operationId)
     const frozenStep = op ? await getStepState(operationId, 'preflight', deps.step) : null
     if (!op || !op.preflightReceiptId || !frozenStep || frozenStep.status !== 'completed') {
       noEvidenceNote = 'operation has no completed preflight step on record; D2.4 evidence not attached'
     } else {
+      previousObservationState = op.observationState
       const frozen = frozenStep.frozenInput as FrozenPreflightInput
       const preflightReceiptId = op.preflightReceiptId
-      const preflightStored = await getReceiptForFinalization(preflightReceiptId)
+      const preflightStored = await (deps.getReceiptForFinalization ?? getReceiptForFinalization)(preflightReceiptId)
       let parsedExecution: ReturnType<typeof parseFinalizationExecutionInput> | null = null
       try {
         parsedExecution = parseFinalizationExecutionInput(rawBody)
@@ -299,7 +371,7 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
 
         let observation
         try {
-          observation = await observeTransaction(parsedExecution.transaction_hash, frozen.input.action.network ?? BASE_CAIP2, frozen.input.action.asset ?? '')
+          observation = await (deps.observeTransaction ?? observeTransaction)(parsedExecution.transaction_hash, frozen.input.action.network ?? BASE_CAIP2, frozen.input.action.asset ?? '')
         } catch {
           observation = null
         }
@@ -313,7 +385,7 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
           const transferFieldsMatch = built.checks.find((chk) => chk.id === 'execution-matches-preflight')?.result === 'PASS'
           const selectedTransfer = observation.state === 'success' ? selectExactTransfer(observation.transfers, frozen.input.action.recipient) : null
 
-          const result = await recordObservation({
+          const result = await (deps.recordObservation ?? recordObservation)({
             operationId,
             network: frozen.input.action.network,
             observation,
@@ -355,6 +427,16 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
     if (envelope.receipt.links.preflight_receipt_id === null) {
       return c.json({ error: 'finalized receipt carries no preflight link -- cannot attach operation-bound evidence' }, 500)
     }
+    // Astra D2.6 gate correction (blocker 2, final defensive assertion): not
+    // merely "is non-null" -- the finalized receipt's own preflight link
+    // must equal THIS operation's expected preflight receipt id. The
+    // capability-to-operation precheck above already rejects a mismatch
+    // before evidence is computed; this is a second, post-finalization
+    // check against the signed receipt itself, in case anything upstream
+    // ever changes.
+    if (op?.preflightReceiptId && envelope.receipt.links.preflight_receipt_id !== op.preflightReceiptId) {
+      return c.json({ error: 'finalized receipt preflight link does not match this operation\'s expected preflight receipt -- refusing to attach operation-bound evidence' }, 500)
+    }
 
     if (!evidence) {
       // The receipt WAS legitimately finalized (legacy behavior above is
@@ -371,7 +453,23 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
     // mirror update (execution-bindings/:id/state) is best-effort and can
     // silently fail; this is the point where the server itself definitively
     // knows the outcome, so it sets the authoritative state directly.
-    await updateCommerceOperationState(operationId, { observationState: 'confirmed', receiptState: 'commerce_issued', executionState: 'transaction_known' })
+    //
+    // Astra D2.6 gate correction (blocker 3): observationState must be
+    // derived from the ACTUAL definitive settlement result, never set to
+    // 'confirmed' unconditionally just because evidence was computed. The
+    // just-finalized, signed Commerce receipt's own settlement.status is
+    // authoritative for CONFIRMED / NOT_CONFIRMED / UNVERIFIED (see
+    // commerceReceipt.ts) -- a reverted transaction, or a successful
+    // transaction without the expected asset settlement, reports
+    // NOT_CONFIRMED there and must not make the durable operation claim
+    // observation_state: 'confirmed'. When settlement did not confirm, the
+    // durable operation's observationState is left exactly as it already
+    // was (never downgraded to a fabricated 'contradicted' -- that label is
+    // reserved for a genuine contradiction against a PRIOR observation,
+    // which a first, definitive revert is not).
+    const observationState: CommerceOperationRecord['observationState'] =
+      envelope.receipt.settlement.status === 'CONFIRMED' ? 'confirmed' : (previousObservationState ?? 'none')
+    await (deps.updateCommerceOperationState ?? updateCommerceOperationState)(operationId, { observationState, receiptState: 'commerce_issued', executionState: 'transaction_known' })
 
     return c.json({ ...envelope, ocd_lifecycle_evidence: evidence })
   }

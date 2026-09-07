@@ -65,3 +65,7 @@ jobs:
       # D2.5 (AGENT INTEGRATION KIT): get_receipt/verify_receipt, reusing the
       # exact converged D2.3 verification contract -- no new verifier logic.
       - run: npx --no-install tsx test/d25ReceiptTools.ts
+      # D2.6 (Astra final-review gate corrections): PayBox provider_reference
+      # gate, cross-operation capability precheck, reverted-transaction
+      # observation state -- see the operation-bound finalize route.
+      - run: npx --no-install tsx test/d26AstraGateCorrections.ts
