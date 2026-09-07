@@ -1,6 +1,6 @@
 # D2.10C — OpenAI Plugin submission package
 
-Status: implementation and local checks complete; production verification recorded below after deployment. NOT SUBMITTED.
+Status: **SUBMISSION READY — technical package deployed and verified; operator portal/legal identity checks remain. NOT SUBMITTED.**
 
 ## Scope and official sources (checked 7 September 2026)
 
@@ -82,5 +82,15 @@ Release notes: Initial free, MCP-only submission for deterministic payment inspe
 ## Validation
 
 Local typecheck passed. `node --import tsx --test test/publicMcp.ts`: six focused checks covering discovery, deterministic results, public-only retrieval, invalid-envelope/errors, paid-tool exclusion/body limit, challenge and submission shape. No broad regression matrix or production resource creation.
+
+Production verification (7 September 2026):
+
+- MCP implementation commit `57bcb27271825016e51b646a2937d31d56adc692`, Vercel production deployment `dpl_BJkUMdAWJ8xpBXyPZfU6KmYpwWdi`, READY and aliased to mcp.onchaindiligence.com.
+- Website commit `b211d29c0eeb71a69022ec8bcee991aa19330404`, deployment `dpl_2VPgMHQG1DZn5iparHEcRKgCn9AC`, READY and aliased to onchaindiligence.com. Static deployment built successfully; repository has no local build script.
+- Public MCP initialization and discovery passed; precisely three free tools and all three annotations advertised. No output schemas advertised (warning retained).
+- All five positive review cases exercised directly against production: ALLOW, BLOCK, public envelope retrieval, VALID existing reference, INVALID malformed envelope. No payments or production resources created.
+- Paid `/mcp` tools/list SHA-256 before and after: `b1402f0296e7bd3f9959e2fa3fe53ecb1c9101f1a3efc9527455aa7696d85f42`; all six paid tools retain paymentHint. No paid tool call made. src/server.ts, prices and x402 middleware are unchanged.
+- Privacy, Terms and Support return HTTP 200 without draft placeholders. Challenge route returns 404 as intended because no portal token has been provided.
+- ChatGPT/Codex host-loop testing and portal account/identity/availability checks remain operator actions, not claims made by these direct MCP checks.
 
 D3: **NO COMMITMENT UNTIL REAL PILOT DEMAND**.
