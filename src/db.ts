@@ -335,6 +335,8 @@ export interface CommerceOperationRecord {
   observationState: 'none' | 'pending' | 'confirmed' | 'contradicted'
   receiptState: 'none' | 'preflight_only' | 'commerce_issued'
   preflightReceiptId: string | null
+  /** D2.7A: which operator (if any) this operation is privately visible to. Null/undefined for anonymous/pre-D2.7A operations -- see db/schema.sql's ALTER TABLE comment. Optional so existing fixtures/tests built before D2.7A don't need updating just to satisfy this type. */
+  ownerId?: string | null
   createdAt: string
 }
 
@@ -347,14 +349,15 @@ function mapOperationRow(row: any): CommerceOperationRecord {
     observationState: row.observation_state,
     receiptState: row.receipt_state,
     preflightReceiptId: row.preflight_receipt_id ?? null,
+    ownerId: row.owner_id ?? null,
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
   }
 }
 
-export async function createCommerceOperation(params: { operationId: string; recoveryCredentialHash: string }): Promise<void> {
+export async function createCommerceOperation(params: { operationId: string; recoveryCredentialHash: string; ownerId?: string | null }): Promise<void> {
   await sql().query(
-    `INSERT INTO commerce_operations (operation_id, recovery_credential_hash) VALUES ($1, $2)`,
-    [params.operationId, params.recoveryCredentialHash]
+    `INSERT INTO commerce_operations (operation_id, recovery_credential_hash, owner_id) VALUES ($1, $2, $3)`,
+    [params.operationId, params.recoveryCredentialHash, params.ownerId ?? null]
   )
 }
 
@@ -717,4 +720,292 @@ export async function listCommerceObservations(operationId: string): Promise<Com
     operationId,
   ])) as unknown as any[]
   return rows.map(mapObservationRow)
+}
+
+/** All execution bindings ever created for an operation (normally zero or one; more than one only if a caller genuinely attempted more than one distinct client_submission_key). Ordered oldest-first, same convention as listCommerceObservations. */
+export async function getExecutionBindingsForOperation(operationId: string): Promise<ExecutionBindingRecord[]> {
+  const rows = (await sql().query('SELECT * FROM execution_bindings WHERE operation_id = $1 ORDER BY created_at ASC', [
+    operationId,
+  ])) as unknown as any[]
+  return rows.map(mapBindingRow)
+}
+
+// ---------------------------------------------------------------------
+// D2.7A — accounts (private operation history + recovery center). NOT the
+// same "operator" as the operator/ directory (the D2.2B manual payment
+// console UI) -- see db/schema.sql's "D2.7A" section and src/accounts.ts
+// for the identity model this backs. Kept deliberately as small as
+// operation.ts's own create/get pair.
+// ---------------------------------------------------------------------
+
+export interface AccountRecord {
+  accountId: string
+  apiKeyHash: string
+  createdAt: string
+}
+
+function mapAccountRow(row: any): AccountRecord {
+  return {
+    accountId: row.account_id,
+    apiKeyHash: row.api_key_hash,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+  }
+}
+
+export async function createAccount(params: { accountId: string; apiKeyHash: string }): Promise<void> {
+  await sql().query(`INSERT INTO accounts (account_id, api_key_hash) VALUES ($1, $2)`, [params.accountId, params.apiKeyHash])
+}
+
+export async function getAccountByApiKeyHash(apiKeyHash: string): Promise<AccountRecord | null> {
+  const rows = (await sql().query('SELECT * FROM accounts WHERE api_key_hash = $1', [apiKeyHash])) as unknown as any[]
+  return rows[0] ? mapAccountRow(rows[0]) : null
+}
+
+/**
+ * Bounded, cursor-paginated: newest first. `before` (an ISO timestamp from a
+ * previous page's last row) excludes everything at or after it, so passing
+ * the last row's createdAt reliably continues the listing even when several
+ * operations share the same created_at to the second. Deliberately no
+ * filtering beyond ownership (Section 2: "do not build complex filtering yet").
+ */
+export async function listCommerceOperationsForOwner(
+  ownerId: string,
+  options: { limit?: number; before?: string } = {}
+): Promise<CommerceOperationRecord[]> {
+  const limit = Math.min(Math.max(options.limit ?? 20, 1), 50)
+  const rows = options.before
+    ? ((await sql().query(
+        'SELECT * FROM commerce_operations WHERE owner_id = $1 AND created_at < $2 ORDER BY created_at DESC LIMIT $3',
+        [ownerId, options.before, limit]
+      )) as unknown as any[])
+    : ((await sql().query('SELECT * FROM commerce_operations WHERE owner_id = $1 ORDER BY created_at DESC LIMIT $2', [
+        ownerId,
+        limit,
+      ])) as unknown as any[])
+  return rows.map(mapOperationRow)
+}
+
+/**
+ * Finds the Commerce receipt produced for an operation, via the ONE column
+ * that already links them: the operation's own preflight_receipt_id, which
+ * the finalization_capabilities row for that preflight also carries (see
+ * lifecycleFinalizeRoute.ts). No new column on commerce_operations needed.
+ */
+export async function getCommerceReceiptIdForPreflightReceipt(preflightReceiptId: string): Promise<string | null> {
+  const rows = (await sql().query(
+    'SELECT commerce_receipt_id FROM finalization_capabilities WHERE preflight_receipt_id = $1 AND commerce_receipt_id IS NOT NULL LIMIT 1',
+    [preflightReceiptId]
+  )) as unknown as any[]
+  return rows[0]?.commerce_receipt_id ?? null
+}
+
+// ---------------------------------------------------------------------
+// D2.7B — account-scoped outbound webhooks. See db/schema.sql's "D2.7B"
+// section for the table shapes and idempotency/retry discipline.
+// ---------------------------------------------------------------------
+
+export interface WebhookEndpointRecord {
+  webhookId: string
+  accountId: string
+  url: string
+  signingSecret: string
+  status: 'active' | 'disabled'
+  createdAt: string
+}
+
+function mapWebhookEndpointRow(row: any): WebhookEndpointRecord {
+  return {
+    webhookId: row.webhook_id,
+    accountId: row.account_id,
+    url: row.url,
+    signingSecret: row.signing_secret,
+    status: row.status,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+  }
+}
+
+export async function createWebhookEndpoint(params: { webhookId: string; accountId: string; url: string; signingSecret: string }): Promise<WebhookEndpointRecord> {
+  const rows = (await sql().query(
+    `INSERT INTO webhook_endpoints (webhook_id, account_id, url, signing_secret) VALUES ($1, $2, $3, $4) RETURNING *`,
+    [params.webhookId, params.accountId, params.url, params.signingSecret]
+  )) as unknown as any[]
+  return mapWebhookEndpointRow(rows[0])
+}
+
+export async function countActiveWebhookEndpointsForAccount(accountId: string): Promise<number> {
+  const rows = (await sql().query(`SELECT count(*)::int AS n FROM webhook_endpoints WHERE account_id = $1 AND status = 'active'`, [
+    accountId,
+  ])) as unknown as Array<{ n: number }>
+  return rows[0]?.n ?? 0
+}
+
+export async function listWebhookEndpointsForAccount(accountId: string): Promise<WebhookEndpointRecord[]> {
+  const rows = (await sql().query('SELECT * FROM webhook_endpoints WHERE account_id = $1 ORDER BY created_at DESC', [
+    accountId,
+  ])) as unknown as any[]
+  return rows.map(mapWebhookEndpointRow)
+}
+
+/** Active endpoints only -- what an event fan-out actually delivers to. */
+export async function listActiveWebhookEndpointsForAccount(accountId: string): Promise<WebhookEndpointRecord[]> {
+  const rows = (await sql().query(`SELECT * FROM webhook_endpoints WHERE account_id = $1 AND status = 'active'`, [
+    accountId,
+  ])) as unknown as any[]
+  return rows.map(mapWebhookEndpointRow)
+}
+
+export async function getWebhookEndpoint(webhookId: string): Promise<WebhookEndpointRecord | null> {
+  const rows = (await sql().query('SELECT * FROM webhook_endpoints WHERE webhook_id = $1', [webhookId])) as unknown as any[]
+  return rows[0] ? mapWebhookEndpointRow(rows[0]) : null
+}
+
+/** Ownership-checked: deletes only if the endpoint belongs to accountId. Returns whether a row was actually deleted. Cascades to webhook_deliveries (schema ON DELETE CASCADE). */
+export async function deleteWebhookEndpointForAccount(webhookId: string, accountId: string): Promise<boolean> {
+  const rows = (await sql().query('DELETE FROM webhook_endpoints WHERE webhook_id = $1 AND account_id = $2 RETURNING webhook_id', [
+    webhookId,
+    accountId,
+  ])) as unknown as any[]
+  return rows.length > 0
+}
+
+export interface WebhookEventRecord {
+  eventId: string
+  accountId: string
+  operationId: string
+  type: string
+  dedupeKey: string
+  data: unknown
+  createdAt: string
+}
+
+function mapWebhookEventRow(row: any): WebhookEventRecord {
+  return {
+    eventId: row.event_id,
+    accountId: row.account_id,
+    operationId: row.operation_id,
+    type: row.type,
+    dedupeKey: row.dedupe_key,
+    data: row.data_json,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+  }
+}
+
+/**
+ * Idempotent by (operation_id, type, dedupe_key): a retried lifecycle
+ * transition that re-runs the same enqueue call never creates a second
+ * event. Returns `created: false` (with the EXISTING event) on a dedupe
+ * hit -- the caller uses this to skip creating deliveries a second time.
+ */
+export async function createWebhookEvent(params: {
+  eventId: string
+  accountId: string
+  operationId: string
+  type: string
+  dedupeKey: string
+  data: unknown
+}): Promise<{ created: boolean; event: WebhookEventRecord }> {
+  const inserted = (await sql().query(
+    `INSERT INTO webhook_events (event_id, account_id, operation_id, type, dedupe_key, data_json)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+     ON CONFLICT (operation_id, type, dedupe_key) DO NOTHING
+     RETURNING *`,
+    [params.eventId, params.accountId, params.operationId, params.type, params.dedupeKey, JSON.stringify(params.data)]
+  )) as unknown as any[]
+  if (inserted[0]) return { created: true, event: mapWebhookEventRow(inserted[0]) }
+
+  const existing = (await sql().query('SELECT * FROM webhook_events WHERE operation_id = $1 AND type = $2 AND dedupe_key = $3', [
+    params.operationId,
+    params.type,
+    params.dedupeKey,
+  ])) as unknown as any[]
+  if (!existing[0]) throw new Error('webhook event disappeared between insert and read -- this should never happen')
+  return { created: false, event: mapWebhookEventRow(existing[0]) }
+}
+
+export interface WebhookDeliveryRecord {
+  deliveryId: string
+  eventId: string
+  webhookId: string
+  status: 'pending' | 'delivered' | 'failed'
+  attemptCount: number
+  nextAttemptAt: string
+  lastHttpStatus: number | null
+  lastError: string | null
+  createdAt: string
+  deliveredAt: string | null
+}
+
+function mapWebhookDeliveryRow(row: any): WebhookDeliveryRecord {
+  return {
+    deliveryId: row.delivery_id,
+    eventId: row.event_id,
+    webhookId: row.webhook_id,
+    status: row.status,
+    attemptCount: row.attempt_count,
+    nextAttemptAt: row.next_attempt_at instanceof Date ? row.next_attempt_at.toISOString() : row.next_attempt_at,
+    lastHttpStatus: row.last_http_status ?? null,
+    lastError: row.last_error ?? null,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    deliveredAt: row.delivered_at ? (row.delivered_at instanceof Date ? row.delivered_at.toISOString() : row.delivered_at) : null,
+  }
+}
+
+/** Idempotent by (event_id, webhook_id) -- re-enqueueing for an event/endpoint pair that already has a delivery row is a no-op, never a duplicate. */
+export async function createWebhookDelivery(params: { deliveryId: string; eventId: string; webhookId: string }): Promise<{ created: boolean; delivery: WebhookDeliveryRecord }> {
+  const inserted = (await sql().query(
+    `INSERT INTO webhook_deliveries (delivery_id, event_id, webhook_id) VALUES ($1, $2, $3) ON CONFLICT (event_id, webhook_id) DO NOTHING RETURNING *`,
+    [params.deliveryId, params.eventId, params.webhookId]
+  )) as unknown as any[]
+  if (inserted[0]) return { created: true, delivery: mapWebhookDeliveryRow(inserted[0]) }
+  const existing = (await sql().query('SELECT * FROM webhook_deliveries WHERE event_id = $1 AND webhook_id = $2', [
+    params.eventId,
+    params.webhookId,
+  ])) as unknown as any[]
+  return { created: false, delivery: mapWebhookDeliveryRow(existing[0]) }
+}
+
+export async function markWebhookDeliveryDelivered(deliveryId: string, httpStatus: number): Promise<void> {
+  await sql().query(
+    `UPDATE webhook_deliveries SET status = 'delivered', attempt_count = attempt_count + 1, last_http_status = $2, last_error = NULL, delivered_at = now(), updated_at = now() WHERE delivery_id = $1`,
+    [deliveryId, httpStatus]
+  )
+}
+
+export async function markWebhookDeliveryRetry(deliveryId: string, nextAttemptAt: string, httpStatus: number | null, error: string | null): Promise<void> {
+  await sql().query(
+    `UPDATE webhook_deliveries SET status = 'pending', attempt_count = attempt_count + 1, next_attempt_at = $2, last_http_status = $3, last_error = $4, updated_at = now() WHERE delivery_id = $1`,
+    [deliveryId, nextAttemptAt, httpStatus, error]
+  )
+}
+
+export async function markWebhookDeliveryFailed(deliveryId: string, httpStatus: number | null, error: string | null): Promise<void> {
+  await sql().query(
+    `UPDATE webhook_deliveries SET status = 'failed', attempt_count = attempt_count + 1, last_http_status = $2, last_error = $3, updated_at = now() WHERE delivery_id = $1`,
+    [deliveryId, httpStatus, error]
+  )
+}
+
+/** Due for (re)attempt: status='pending' and next_attempt_at has arrived. Bounded -- the caller (the delivery worker) decides the batch size. */
+export async function listDueWebhookDeliveries(limit: number): Promise<WebhookDeliveryRecord[]> {
+  const rows = (await sql().query(
+    `SELECT * FROM webhook_deliveries WHERE status = 'pending' AND next_attempt_at <= now() ORDER BY next_attempt_at ASC LIMIT $1`,
+    [limit]
+  )) as unknown as any[]
+  return rows.map(mapWebhookDeliveryRow)
+}
+
+export async function getWebhookEventById(eventId: string): Promise<WebhookEventRecord | null> {
+  const rows = (await sql().query('SELECT * FROM webhook_events WHERE event_id = $1', [eventId])) as unknown as any[]
+  return rows[0] ? mapWebhookEventRow(rows[0]) : null
+}
+
+/** Ownership-checked (via the webhook_id -> account_id join implied by the caller already having resolved the endpoint) -- bounded recent history for GET /me/webhooks/:id/deliveries. */
+export async function listDeliveriesForWebhook(webhookId: string, limit: number): Promise<Array<WebhookDeliveryRecord & { eventType: string; operationId: string }>> {
+  const rows = (await sql().query(
+    `SELECT d.*, e.type AS event_type, e.operation_id AS operation_id
+     FROM webhook_deliveries d JOIN webhook_events e ON e.event_id = d.event_id
+     WHERE d.webhook_id = $1 ORDER BY d.created_at DESC LIMIT $2`,
+    [webhookId, limit]
+  )) as unknown as any[]
+  return rows.map((row) => ({ ...mapWebhookDeliveryRow(row), eventType: row.event_type, operationId: row.operation_id }))
 }

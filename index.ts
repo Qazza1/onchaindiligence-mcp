@@ -34,6 +34,8 @@ import { mountVerifyReceipt } from './src/receiptToolsRoute.js'
 import { mountFinalize } from './src/finalizeRoute.js'
 import { mountLifecycle, mountLifecyclePreflightHandler } from './src/lifecycleRoute.js'
 import { mountLifecycleFinalize } from './src/lifecycleFinalizeRoute.js'
+import { mountAccountHistory } from './src/accountHistoryRoute.js'
+import { mountWebhooks } from './src/webhookRoute.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
 import { outcomeForStatus, readMcpEnvelope, recordEvent } from './src/telemetry.js'
 
@@ -165,5 +167,17 @@ mountFinalize(app)
 // and POST /operations/:operationId/finalize. All additive, layered on top
 // of finalizePayment() above -- see src/lifecycleFinalizeRoute.ts.
 mountLifecycleFinalize(app)
+
+// D2.7A: mounts POST /accounts, GET /me/operations, GET
+// /me/operations/:operationId -- a separate, read-only, account-api-key-
+// gated surface layered on top of the same D2.4 tables. Does not affect any
+// route above. See src/accountHistoryRoute.ts.
+mountAccountHistory(app)
+
+// D2.7B: mounts POST/GET /me/webhooks, DELETE /me/webhooks/:id, GET
+// /me/webhooks/:id/deliveries, and the internal POST
+// /internal/webhooks/deliver a Vercel Cron hits to drive retries. See
+// src/webhookRoute.ts.
+mountWebhooks(app)
 
 export default app

@@ -69,3 +69,12 @@ jobs:
       # gate, cross-operation capability precheck, reverted-transaction
       # observation state -- see the operation-bound finalize route.
       - run: npx --no-install tsx test/d26AstraGateCorrections.ts
+      # D2.7A (AUTHENTICATED OPERATION HISTORY + RECOVERY CENTER): the new
+      # account-scoped read surface layered on top of the D2.4 tables above.
+      - run: npx --no-install tsx test/d27aAccountHistory.ts
+      # D2.7B (ACCOUNT WEBHOOKS): outbound lifecycle-event webhooks layered
+      # on top of the D2.7A account identity.
+      - run: npx --no-install tsx test/d27bWebhooks.ts
+      # D2.7C (INVESTIGATION PACKAGE + EXPORT): assembled investigation view
+      # + manifest-wrapped export, built entirely on D2.7A's detail view.
+      - run: npx --no-install tsx test/d27cInvestigation.ts

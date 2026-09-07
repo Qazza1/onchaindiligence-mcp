@@ -79,6 +79,8 @@
  */
 import type { Context, Hono, Next } from 'hono'
 import { createOperation, authenticateOperation, isValidOperationIdFormat } from './operation.js'
+import { authenticateAccount } from './accounts.js'
+import { emitPreflightCompleted } from './webhookEvents.js'
 import {
   claimStep,
   getStepState,
@@ -149,6 +151,12 @@ export async function runPreflightStepAndComplete(
     preflightState: 'completed',
     preflightReceiptId: result.receipt.receipt.receipt_id,
   })
+  // D2.7B (corrected): DB-only enqueue, no outbound HTTP call on this path
+  // -- the Vercel Cron delivers it within ~1 minute. NEVER throws, no-op
+  // for operations with no account owner (e.g. every D2.6 reference-harness
+  // operation) -- see webhookEvents.ts's header. Still awaited (cheap, DB-
+  // only) so the enqueue durably completes before this handler returns.
+  await emitPreflightCompleted(operationId, result.receipt.receipt.decision.status)
   return result
 }
 
@@ -272,8 +280,19 @@ export function createLifecyclePreflightHandler(deps: LifecycleRouteDependencies
 // Operation lifecycle (create / read status)
 // ---------------------------------------------------------------------
 
+/**
+ * D2.7A: an `Authorization: Bearer <account api_key>` header is entirely
+ * optional here -- this route stays free and unauthenticated for callers
+ * who never heard of accounts (including the D2.6 reference harness, which
+ * sends no such header). When present and valid, the new operation is
+ * additionally tagged with that account's id so it shows up in their
+ * private history later; an invalid/unrecognized key is silently treated as
+ * "no account" rather than rejecting operation creation -- this route's job
+ * is "create an operation", not "authenticate an account".
+ */
 export async function operationsCreateHandler(c: Context) {
-  const created = await createOperation()
+  const account = await authenticateAccount(c.req.header('authorization'))
+  const created = await createOperation(account?.accountId ?? null)
   return c.json({ operation_id: created.operationId, recovery_credential: created.recoveryCredential }, 201)
 }
 
