@@ -117,6 +117,11 @@ async function main() {
     investigation.status === 200 && investigation.body?.operation?.operation_id === operationId && investigation.body?.preflight && investigation.body?.execution && investigation.body?.settlement && investigation.body?.evidence && investigation.body?.receipts && investigation.body?.recovery,
     `status ${investigation.status}`
   )
+  // D2.8A: findings is always an array (deriveFindings() is unconditional --
+  // src/investigation.ts), even for a bare, incomplete operation like this
+  // smoke fixture (which never pays/finalizes) -- confirms the findings
+  // engine is wired into production, not just present in the type.
+  ok('GET /me/operations/:id/investigation includes a findings array (D2.8A)', Array.isArray(investigation.body?.findings), `findings: ${JSON.stringify(investigation.body?.findings)}`)
 
   // --- 8: investigation export ---------------------------------------------
   const exported = await req(`/me/operations/${operationId}/investigation/export`, { headers: authHeader(apiKeyA) })
