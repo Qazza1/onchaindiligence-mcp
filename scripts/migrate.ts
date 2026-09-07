@@ -21,7 +21,14 @@ async function main() {
   if (!databaseUrl) {
     throw new Error('DATABASE_URL is not set. Run `vercel env pull .env.local` or set it in your shell.')
   }
-  const schema = readFileSync(join(__dirname, '..', 'db', 'schema.sql'), 'utf8')
+  // Normalize CRLF -> LF before anything else: on a Windows/CRLF checkout,
+  // each line carries a trailing \r that JS regex `$` (without the `m`/`s`
+  // gymnastics) cannot match past `.`'s line-terminator exclusion -- so
+  // `/--.*$/` silently fails to match ANY line, comment-stripping becomes a
+  // no-op, and every semicolon inside a prose comment gets mistaken for a
+  // statement boundary (confirmed live: this corrupted 4 of 28 statements
+  // when actually run against a CRLF checkout of this file).
+  const schema = readFileSync(join(__dirname, '..', 'db', 'schema.sql'), 'utf8').replace(/\r\n/g, '\n')
   const sql = neon(databaseUrl)
   // The HTTP driver's prepared-statement protocol rejects multiple commands
   // in one call ("cannot insert multiple commands into a prepared

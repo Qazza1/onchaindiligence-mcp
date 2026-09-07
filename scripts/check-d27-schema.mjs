@@ -78,7 +78,7 @@ async function main() {
        JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
        WHERE tc.table_schema = 'public' AND tc.table_name = $1 AND tc.constraint_type = 'UNIQUE'
        GROUP BY tc.constraint_name
-       HAVING array_agg(kcu.column_name ORDER BY kcu.ordinal_position) = $2::text[]`,
+       HAVING array_agg(kcu.column_name::text ORDER BY kcu.ordinal_position) = $2::text[]`,
       [table, columns]
     )
     const ok = rows.length > 0
