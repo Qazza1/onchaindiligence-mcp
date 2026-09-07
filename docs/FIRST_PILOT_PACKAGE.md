@@ -8,6 +8,11 @@ product. Technical integration steps live in `docs/PILOT_QUICKSTART.md`;
 this document is everything around that — who to target, how to run the
 pilot, what "success" means, and what to say to them.
 
+Commercial/trust companion docs (all discussion drafts, not formal legal
+documents): `docs/PILOT_TERMS.md` (pilot terms), `docs/PILOT_SUPPORT.md`
+(support expectations), `docs/DATA_HANDLING.md` (what's actually stored
+and for how long).
+
 Positioning to hold everywhere below: **OnChainDiligence is the
 independent evidence and reconciliation layer around autonomous agent
 payments** — "know why your agent paid, and verify what happened
@@ -241,34 +246,65 @@ features) before seeing an actual, specific customer need emerge from
 real pilot usage — and even then, that's a separate decision, not an
 automatic pilot deliverable.
 
-## 9. Genuinely missing before onboarding a real customer
+## 9. Pricing
 
-Honest gaps, not exhaustive — things worth having an answer for before
-the first real conversation, not blockers to starting outreach:
+Optimizing for an easy first sale and low procurement friction, not for
+enterprise pricing architecture — using what the product actually is
+today (pay-per-call x402 routes, no subscription mechanism exists).
 
-- **No pilot agreement / terms.** No lightweight written terms exist
-  covering what a "pilot" commits either side to, data handling, or
-  liability. Worth having one page ready before a customer asks, not
-  necessarily before the first call.
-- **No published support SLA.** Only `support@onchaindiligence.com`
-  exists today — fine for a pilot-scale relationship, but the customer
-  should be told plainly what response time to expect rather than left
-  to assume one.
-- **No post-pilot pricing conversation prepared.** Per-call x402 pricing
-  exists, but there's no answer yet for "what does this cost if we scale
-  up after the pilot" — worth having a rough answer before it's asked.
-  Do not invent a formal pricing tier for this task; just don't get
-  caught flat-footed.
+**Recommended pilot price:** no separate platform/subscription fee. The
+customer simply pays OCD's existing live per-call x402 prices as they use
+it — $0.01–$0.05 per call depending on the route (see
+`docs/BAZAAR_ACTIVATION.md`'s price table) — with nothing added on top.
+This is deliberately the same mechanism a production customer would use;
+a pilot customer paying per call IS the product working, not a discount
+approximation of it. No invoice, no PO, no contract to countersign before
+the first API call.
+
+**Recommended post-pilot starting price/model:** the same usage-based
+per-call pricing, continued indefinitely as the default — not a new
+commercial construct. Do not introduce a flat "Pro" tier until a specific
+customer asks for volume predictability.
+
+**What's included:** the entire current product surface at the same
+per-call prices — preflight, settlement observation/receipts,
+investigation/findings, caller-reported merchant evidence, and webhooks.
+Nothing is feature-gated behind a higher tier today.
+
+**What's NOT included:** any dedicated uptime/SLA commitment beyond
+`docs/PILOT_SUPPORT.md`'s best-effort terms, custom feature work, custom
+chain/asset support, or white-glove integration engineering — those are
+separate conversations, not part of the per-call price.
+
+**How to answer a custom-volume request:** don't quote a flat number
+without data. Offer to have a conversation about a simple flat monthly
+allowance once there's real observed usage from the pilot to base it on
+— never commit to a number in advance of evidence.
+
+**When to revisit pricing:** once there are multiple real pilot customers
+with actual usage data, or the moment a specific customer asks for volume
+pricing — not on a fixed calendar schedule, and not before either of
+those happens.
+
+## 10. Genuinely missing before onboarding a real customer
+
+Updated after closing the four gaps identified in the prior pilot-
+readiness pass — remaining items are now genuinely small:
+
+- **Pilot terms, support policy, and data handling are now documented**
+  (`docs/PILOT_TERMS.md`, `docs/PILOT_SUPPORT.md`,
+  `docs/DATA_HANDLING.md`) — all three explicitly labeled as discussion
+  drafts / best-effort, not formal legal or SLA commitments.
+- **No automatic data-retention or deletion mechanism exists** (see
+  `docs/DATA_HANDLING.md`'s own flagged gap) — fine to disclose openly to
+  a small technical pilot, would need addressing before a larger or more
+  compliance-sensitive customer. Not treated as an engineering task here.
 - **Webhook delivery scheduler.** Enqueueing and the delivery route are
   production-active; the external cron-job.org trigger still needs the
   operator's own account/job setup (tracked separately, see the master
   roadmap) before webhook delivery is fully hands-off. Fine for a pilot
   that mainly polls the API, worth flagging if the customer specifically
   wants webhooks on day one.
-- **No documented data-retention/privacy statement** for investigation
-  exports or merchant-evidence records (resource URLs, HTTP statuses) —
-  likely fine for a technical pilot customer, but worth having a one-line
-  answer ready if asked.
 - **Base/USDC-only is a real scope narrowing**, not just a pitch caveat —
   confirm it fits the specific customer's stack on the discovery call,
   not after they've started integrating.
