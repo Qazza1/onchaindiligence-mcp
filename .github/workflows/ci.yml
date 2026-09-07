@@ -84,3 +84,5 @@ jobs:
       # D2.9A (MERCHANT / RESPONSE EVIDENCE): caller-reported merchant
       # response evidence, surfaced into the investigation + findings.
       - run: npx --no-install tsx test/d29aMerchantEvidence.ts
+      # D2.10C: free Plugin-only transport and submission contract.
+      - run: node --import tsx --test test/publicMcp.ts

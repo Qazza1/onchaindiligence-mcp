@@ -26,6 +26,7 @@
  */
 import { Hono } from 'hono'
 import { handler } from './src/server.js'
+import { mountPublicMcp } from './src/publicMcp.js'
 import { mountDiscovery } from './src/discovery.js'
 import { mountPublicMetadata } from './src/publicMetadata.js'
 import { mountReceipts } from './src/receiptsRoute.js'
@@ -42,6 +43,9 @@ import { outcomeForStatus, readMcpEnvelope, recordEvent } from './src/telemetry.
 
 const app = new Hono()
 app.get('/', (c) => c.text('OnchainDiligence MCP server — POST /mcp'))
+
+// D2.10C: separate free surface, outside paid/readiness/telemetry middleware.
+mountPublicMcp(app)
 
 // Free, unauthenticated discovery documents: GET /openapi.json and
 // GET /.well-known/x402. Mounted before the paid middleware; neither path

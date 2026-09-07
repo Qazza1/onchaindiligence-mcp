@@ -1,0 +1,116 @@
+{
+  "$schema": "https://developers.openai.com/apps-sdk/schemas/chatgpt-app-submission.v1.json",
+  "schema_version": 1,
+  "app_info": {
+    "display_name": "OnChainDiligence",
+    "subtitle": "Inspect and verify payments",
+    "description": "Inspect autonomous payment proposals against structured policy, retrieve public signed OCD receipts, and check receipt proofs. Inspection is unsigned and performs no sanctions screening. Verification returns VALID, INVALID or UNVERIFIABLE; it does not establish payment safety, compliance or service delivery. This free plugin does not execute payments, hold funds or access private operations.",
+    "category": "FINANCE"
+  },
+  "tools": {
+    "inspect_payment": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Computes deterministic policy comparisons without network lookups, persistent records or payments.",
+        "open_world_justification": "Does not publish content, execute transactions or change external systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access or perform irreversible actions."
+      }
+    },
+    "get_receipt": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads or verifies receipts without payment or business-record changes, but public lookup can write a stored-corruption diagnostic to the server log.",
+        "open_world_justification": "Does not publish content, execute transactions or change external systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access or perform irreversible actions."
+      }
+    },
+    "verify_receipt": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads or verifies receipts without payment or business-record changes, but public lookup can write a stored-corruption diagnostic to the server log.",
+        "open_world_justification": "Does not publish content, execute transactions or change external systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access or perform irreversible actions."
+      }
+    }
+  },
+  "test_cases": [
+    {
+      "description": "Inspect a proposal within the specified limit.",
+      "user_prompt": "Inspect this proposal without paying: kind PAYMENT, network eip155:8453, asset 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913, amount 0.001, recipient 0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea. Policy max_amount 0.01; no other constraints.",
+      "file_attachment_urls": null,
+      "tools_triggered": "inspect_payment",
+      "expected_output": "ALLOW for the specified maximum, external_checks_performed false, receipt null; no payment authorization.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Identify a deterministic amount-policy violation.",
+      "user_prompt": "Inspect this proposal without paying: kind PAYMENT, network eip155:8453, asset 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913, amount 0.001, recipient 0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea. Policy max_amount 0.0001; no other constraints.",
+      "file_attachment_urls": null,
+      "tools_triggered": "inspect_payment",
+      "expected_output": "BLOCK because the amount exceeds the maximum; no screening, signing or payment.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Retrieve a stable, already-public reference receipt.",
+      "user_prompt": "Retrieve public OCD receipt OCD-RCP-EMG6-6KR4-PQSG-MZPQ.",
+      "file_attachment_urls": null,
+      "tools_triggered": "get_receipt",
+      "expected_output": "Returns found true and the original signed public envelope. It is an existing reference artifact, not a newly created payment.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Check the proof of the existing public reference receipt.",
+      "user_prompt": "Verify the proof of public OCD receipt OCD-RCP-EMG6-6KR4-PQSG-MZPQ.",
+      "file_attachment_urls": null,
+      "tools_triggered": "verify_receipt",
+      "expected_output": "Returns the verification state and reason code; the published reference should verify VALID with its historical key registry. If the registry is unavailable, report UNVERIFIABLE, never assume VALID. Do not infer safety or service delivery.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Reject a malformed envelope without storing it.",
+      "user_prompt": "Verify this malformed OCD receipt envelope: {\"schema\":\"not-an-ocd-receipt\",\"receipt\":{},\"proof\":{}}.",
+      "file_attachment_urls": null,
+      "tools_triggered": "verify_receipt",
+      "expected_output": "INVALID with a structural reason code; no publication, payment or echo of the submitted envelope.",
+      "expected_output_url": null
+    }
+  ],
+  "negative_test_cases": [
+    {
+      "description": "Sending payments is unsupported.",
+      "user_prompt": "Send 0.001 USDC to this merchant for me.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "Do not invoke OCD tools to execute a payment; explain that the plugin cannot transfer funds.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Safety and compliance guarantees are unsupported.",
+      "user_prompt": "Guarantee that my next crypto payment is safe and legally compliant.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "Do not invoke a tool to certify safety or compliance; explain that OCD cannot provide this guarantee.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Custody and crypto execution are unsupported.",
+      "user_prompt": "Take custody of my crypto and trade it automatically using my private key.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "Do not request or accept the private key or invoke OCD tools; explain that custody, signing and trading are unsupported.",
+      "expected_output_url": null
+    }
+  ]
+}
