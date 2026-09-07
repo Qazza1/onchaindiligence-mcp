@@ -92,6 +92,7 @@ async function main() {
   const createOp = await req('/operations', { method: 'POST', headers: authHeader(apiKeyA) })
   ok('create an owned operation via POST /operations with account A auth', createOp.status === 201 && typeof createOp.body?.operation_id === 'string', `status ${createOp.status}`)
   const operationId = createOp.body?.operation_id
+  const recoveryCredential = createOp.body?.recovery_credential
   if (!operationId) {
     console.log('\nCannot continue without a created operation -- stopping.')
     process.exitCode = 1
@@ -126,6 +127,69 @@ async function main() {
   // --- 8: investigation export ---------------------------------------------
   const exported = await req(`/me/operations/${operationId}/investigation/export`, { headers: authHeader(apiKeyA) })
   ok('GET /me/operations/:id/investigation/export returns the manifest-wrapped package', exported.status === 200 && exported.body?.schema === 'onchaindiligence.investigation.v1' && typeof exported.body?.digest === 'string', `status ${exported.status}`)
+
+  // --- 8b: D2.9A merchant evidence (recovery-credential-gated, not account-gated) ---
+  // A synthetic digest standing in for "the caller already hashed the raw
+  // response body locally" -- this script never sends and the route never
+  // accepts a raw body field, so there is nothing for the server to store
+  // even if it wanted to. response_headers deliberately includes both an
+  // allowlisted header (etag) and a disallowed one (x-smoke-test-secret)
+  // to prove sanitization actually happens against a live server, not just
+  // in the unit tests.
+  const submitEvidence = await req(`/operations/${operationId}/merchant-evidence`, {
+    method: 'POST',
+    headers: { 'x-ocd-recovery-credential': recoveryCredential, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      resource_url: 'https://example.com/ocd-smoke-test-resource',
+      http_status: 200,
+      content_type: 'application/json',
+      response_body_digest: 'sha256:' + '11'.repeat(32),
+      response_bytes: 42,
+      response_headers: { etag: 'W/"smoke-test-etag"', 'x-smoke-test-secret': 'must-never-be-stored' },
+    }),
+  })
+  ok(
+    'POST /operations/:id/merchant-evidence attaches evidence (recovery-credential-gated)',
+    submitEvidence.status === 201 && submitEvidence.body?.source === 'CALLER_REPORTED' && typeof submitEvidence.body?.evidence_id === 'string',
+    `status ${submitEvidence.status} body ${JSON.stringify(submitEvidence.body)}`
+  )
+  ok('merchant evidence response reports the digest/byte-count as submitted, never a raw body field', submitEvidence.body?.response_body_digest === 'sha256:' + '11'.repeat(32) && submitEvidence.body?.response_bytes === 42 && submitEvidence.body?.response_body === undefined && submitEvidence.body?.body === undefined)
+
+  const investigationAfterEvidence = await req(`/me/operations/${operationId}/investigation`, { headers: authHeader(apiKeyA) })
+  const latestEvidence = investigationAfterEvidence.body?.merchant_response?.evidence?.at(-1)
+  ok('investigation.merchant_response.evidence[] contains the newly attached record', Boolean(latestEvidence) && latestEvidence.evidence_id === submitEvidence.body?.evidence_id, `merchant_response: ${JSON.stringify(investigationAfterEvidence.body?.merchant_response)}`)
+  ok('investigation surfaces source: CALLER_REPORTED (never upgraded)', latestEvidence?.source === 'CALLER_REPORTED')
+  // Neither the submit response nor the investigation view echoes headers
+  // back at all (by design -- see Investigation.merchant_response.evidence's
+  // own field list, which has no headers field) -- confirm the disallowed
+  // header genuinely never appears in ANY HTTP response this script saw.
+  // Allowlist-preservation on the actual persisted row is a separate,
+  // read-only production DB check (see deliverable) since there is no HTTP
+  // surface that echoes sanitized headers back to verify it against.
+  const allResponsesBlob = JSON.stringify({ submitEvidence: submitEvidence.body, investigation: investigationAfterEvidence.body })
+  ok('the disallowed header never appears in any HTTP response', !allResponsesBlob.includes('smoke-test-secret') && !allResponsesBlob.includes('must-never-be-stored'))
+
+  const exportedAfterEvidence = await req(`/me/operations/${operationId}/investigation/export`, { headers: authHeader(apiKeyA) })
+  ok('investigation export also contains the merchant evidence record', JSON.stringify(exportedAfterEvidence.body).includes(submitEvidence.body?.evidence_id ?? '\0'))
+
+  // --- 8c: idempotent replay -- identical evidence must not duplicate ------
+  const submitEvidenceAgain = await req(`/operations/${operationId}/merchant-evidence`, {
+    method: 'POST',
+    headers: { 'x-ocd-recovery-credential': recoveryCredential, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      resource_url: 'https://example.com/ocd-smoke-test-resource',
+      http_status: 200,
+      content_type: 'application/json',
+      response_body_digest: 'sha256:' + '11'.repeat(32),
+      response_bytes: 42,
+      response_headers: { etag: 'W/"smoke-test-etag"', 'x-smoke-test-secret': 'must-never-be-stored' },
+    }),
+  })
+  ok(
+    'an identical resubmission is idempotent -- same evidence_id, no duplicate row',
+    submitEvidenceAgain.status === 200 && submitEvidenceAgain.body?.idempotent_replay === true && submitEvidenceAgain.body?.evidence_id === submitEvidence.body?.evidence_id,
+    `status ${submitEvidenceAgain.status} body ${JSON.stringify(submitEvidenceAgain.body)}`
+  )
 
   // --- 9: webhook registration/list/delete (no real receiver, no delivery triggered by this script) ---
   const createWebhook = await req('/me/webhooks', { method: 'POST', headers: { ...authHeader(apiKeyA), 'content-type': 'application/json' }, body: JSON.stringify({ url: 'https://example.com/ocd-smoke-test-placeholder' }) })
