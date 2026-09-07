@@ -262,3 +262,37 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 );
 CREATE INDEX IF NOT EXISTS webhook_deliveries_webhook_idx ON webhook_deliveries (webhook_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS webhook_deliveries_due_idx ON webhook_deliveries (status, next_attempt_at) WHERE status = 'pending';
+
+-- D2.9A -- merchant/response evidence. Answers "the payment happened, what
+-- did the merchant actually return?" WITHOUT pretending OCD independently
+-- observed it: `source` is a fixed enum currently containing only
+-- CALLER_REPORTED, and there is no code path that lets a caller choose or
+-- upgrade it (see src/merchantEvidence.ts) -- OCD would only ever write a
+-- different source value itself, if it someday genuinely observes a
+-- merchant response independently, which this version does not attempt.
+--
+-- The raw response body is deliberately NEVER stored -- only a SHA-256
+-- digest, byte length, content type, and HTTP status. `evidence_id` is
+-- content-derived (contentId() over the submitted fields, same convention
+-- as commerce_observations.observation_id) so a retried, byte-identical
+-- submission is idempotent by construction; a genuinely different
+-- response produces a genuinely different id and a NEW row -- this table
+-- is append-only, exactly like commerce_observations.
+CREATE TABLE IF NOT EXISTS merchant_evidence (
+  evidence_id             TEXT PRIMARY KEY,
+  operation_id            TEXT NOT NULL REFERENCES commerce_operations (operation_id),
+  source                  TEXT NOT NULL DEFAULT 'CALLER_REPORTED' CHECK (source IN ('CALLER_REPORTED')),
+  resource_url            TEXT NOT NULL,
+  http_status             INTEGER NOT NULL,
+  content_type            TEXT,
+  response_body_digest    TEXT NOT NULL,
+  response_bytes          INTEGER,
+  execution_request_id    TEXT REFERENCES execution_bindings (execution_request_id),
+  provider_reference      TEXT,
+  transaction_hash        TEXT,
+  -- Small allowlist only (etag/content-length/x-request-id) -- see
+  -- src/merchantEvidence.ts's ALLOWED_RESPONSE_HEADERS. Never raw headers.
+  response_headers_json   JSONB,
+  recorded_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS merchant_evidence_operation_idx ON merchant_evidence (operation_id, recorded_at ASC);

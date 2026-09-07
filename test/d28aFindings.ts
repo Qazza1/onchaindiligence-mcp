@@ -70,6 +70,7 @@ function baseInvestigation(overrides: Partial<Bare> = {}): Bare {
       verification: { state: 'VALID', code: 'ok', message: 'verified' },
     },
     recovery: { needs_attention: false, may_already_have_paid: true, summary: 'A Commerce receipt has been issued for this operation.', safe_next_action: 'None -- this operation is complete.' },
+    merchant_response: { evidence: [] },
     ...overrides,
   }
 }

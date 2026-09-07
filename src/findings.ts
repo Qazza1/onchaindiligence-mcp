@@ -65,7 +65,7 @@ function addressesEqual(a: string | null, b: string | null): boolean {
  */
 export function deriveFindings(investigation: Omit<Investigation, 'findings'>): Finding[] {
   const findings: Finding[] = []
-  const { operation, preflight, execution, settlement, evidence, receipts, recovery } = investigation
+  const { operation, preflight, execution, settlement, evidence, receipts, recovery, merchant_response } = investigation
 
   // --- RECEIPT_INVALID / RECEIPT_UNVERIFIABLE (receipt category) ----------
   for (const [label, verification, id] of [
@@ -230,6 +230,56 @@ export function deriveFindings(investigation: Omit<Investigation, 'findings'>): 
       evidence_refs: refs(settlement.transaction_hash, evidence.bundle_digest, execution.executor_identity ? `${execution.executor_identity}/${execution.executor_version}` : null),
       recommended_action: null,
     })
+  }
+
+  // --- MERCHANT_RESPONSE_ERROR (settlement category) ----------------------
+  // Claim discipline (D2.9A Section 7): the payment settlement may be
+  // independently observed by OCD; the merchant response, in this first
+  // slice, is CALLER_REPORTED evidence -- never claimed as independently
+  // verified. Wording below always says "caller-reported".
+  const latestMerchantEvidence = merchant_response.evidence.length > 0 ? merchant_response.evidence[merchant_response.evidence.length - 1] : null
+  const settlementConfirmedForMerchantChecks = operation.observation_state === 'confirmed' || settlement.settlement_state === 'CONFIRMED'
+  if (settlementConfirmedForMerchantChecks && latestMerchantEvidence && latestMerchantEvidence.http_status >= 400) {
+    findings.push({
+      code: 'MERCHANT_RESPONSE_ERROR',
+      severity: 'warning',
+      category: 'settlement',
+      title: 'Settlement confirmed, but the caller-reported merchant response was an error',
+      summary: `Settlement was independently confirmed, but the caller-reported merchant response was HTTP ${latestMerchantEvidence.http_status} for ${latestMerchantEvidence.resource_url}. This merchant response is CALLER_REPORTED evidence, not independently verified by OCD.`,
+      evidence_refs: refs(latestMerchantEvidence.evidence_id, settlement.transaction_hash, latestMerchantEvidence.execution_request_id, latestMerchantEvidence.provider_reference),
+      recommended_action: 'Investigate the merchant-side error directly. The payment settled independently of whether the merchant subsequently returned an error.',
+    })
+  }
+
+  // --- MERCHANT_RESPONSE_CONTRADICTION (settlement category) --------------
+  // Groups evidence records that claim to describe the SAME execution
+  // (matching execution_request_id, or failing that, provider_reference)
+  // and flags a materially different reported outcome (HTTP status or
+  // response digest) -- a contradiction between two caller-reported
+  // records, never an accusation of fraud.
+  const groups = new Map<string, typeof merchant_response.evidence>()
+  for (const e of merchant_response.evidence) {
+    const key = e.execution_request_id ?? e.provider_reference
+    if (!key) continue // nothing to correlate this record against -- not grouped, never flagged
+    const group = groups.get(key) ?? []
+    group.push(e)
+    groups.set(key, group)
+  }
+  for (const [key, group] of groups) {
+    if (group.length < 2) continue
+    const distinctStatuses = new Set(group.map((e) => e.http_status))
+    const distinctDigests = new Set(group.map((e) => e.body_digest))
+    if (distinctStatuses.size > 1 || distinctDigests.size > 1) {
+      findings.push({
+        code: 'MERCHANT_RESPONSE_CONTRADICTION',
+        severity: 'warning',
+        category: 'settlement',
+        title: 'Multiple caller-reported merchant responses for the same execution disagree',
+        summary: `${group.length} caller-reported merchant response records share the same correlation (${key}) but report ${distinctStatuses.size > 1 ? `different HTTP statuses (${[...distinctStatuses].join(', ')})` : 'different response digests'}. Both records are preserved -- neither was overwritten.`,
+        evidence_refs: refs(...group.map((e) => e.evidence_id)),
+        recommended_action: 'Review both caller-reported records directly. This is a contradiction in reported evidence, not a determination of which (if any) is accurate.',
+      })
+    }
   }
 
   return findings

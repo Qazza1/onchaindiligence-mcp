@@ -1009,3 +1009,91 @@ export async function listDeliveriesForWebhook(webhookId: string, limit: number)
   )) as unknown as any[]
   return rows.map((row) => ({ ...mapWebhookDeliveryRow(row), eventType: row.event_type, operationId: row.operation_id }))
 }
+
+// ---------------------------------------------------------------------
+// D2.9A — merchant/response evidence. See db/schema.sql's "D2.9A" section.
+// ---------------------------------------------------------------------
+
+export interface MerchantEvidenceRecord {
+  evidenceId: string
+  operationId: string
+  source: 'CALLER_REPORTED'
+  resourceUrl: string
+  httpStatus: number
+  contentType: string | null
+  responseBodyDigest: string
+  responseBytes: number | null
+  executionRequestId: string | null
+  providerReference: string | null
+  transactionHash: string | null
+  responseHeaders: Record<string, string> | null
+  recordedAt: string
+}
+
+function mapMerchantEvidenceRow(row: any): MerchantEvidenceRecord {
+  return {
+    evidenceId: row.evidence_id,
+    operationId: row.operation_id,
+    source: row.source,
+    resourceUrl: row.resource_url,
+    httpStatus: row.http_status,
+    contentType: row.content_type ?? null,
+    responseBodyDigest: row.response_body_digest,
+    responseBytes: row.response_bytes ?? null,
+    executionRequestId: row.execution_request_id ?? null,
+    providerReference: row.provider_reference ?? null,
+    transactionHash: row.transaction_hash ?? null,
+    responseHeaders: row.response_headers_json ?? null,
+    recordedAt: row.recorded_at instanceof Date ? row.recorded_at.toISOString() : row.recorded_at,
+  }
+}
+
+/** Idempotent by evidence_id (itself a content digest -- see merchantEvidence.ts): a retried, byte-identical submission is a safe no-op; a genuinely different response always inserts a new append-only row. */
+export async function createMerchantEvidence(params: {
+  evidenceId: string
+  operationId: string
+  resourceUrl: string
+  httpStatus: number
+  contentType: string | null
+  responseBodyDigest: string
+  responseBytes: number | null
+  executionRequestId: string | null
+  providerReference: string | null
+  transactionHash: string | null
+  responseHeaders: Record<string, string> | null
+}): Promise<{ created: boolean; evidence: MerchantEvidenceRecord }> {
+  const inserted = (await sql().query(
+    `INSERT INTO merchant_evidence
+       (evidence_id, operation_id, resource_url, http_status, content_type, response_body_digest, response_bytes,
+        execution_request_id, provider_reference, transaction_hash, response_headers_json)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+     ON CONFLICT (evidence_id) DO NOTHING
+     RETURNING *`,
+    [
+      params.evidenceId,
+      params.operationId,
+      params.resourceUrl,
+      params.httpStatus,
+      params.contentType,
+      params.responseBodyDigest,
+      params.responseBytes,
+      params.executionRequestId,
+      params.providerReference,
+      params.transactionHash,
+      params.responseHeaders === null ? null : JSON.stringify(params.responseHeaders),
+    ]
+  )) as unknown as any[]
+  if (inserted[0]) return { created: true, evidence: mapMerchantEvidenceRow(inserted[0]) }
+
+  const existing = (await sql().query('SELECT * FROM merchant_evidence WHERE evidence_id = $1', [params.evidenceId])) as unknown as any[]
+  if (!existing[0]) throw new Error('merchant evidence disappeared between insert and read -- this should never happen')
+  return { created: false, evidence: mapMerchantEvidenceRow(existing[0]) }
+}
+
+/** Oldest-first, same convention as listCommerceObservations/getExecutionBindingsForOperation -- callers take the last element as "current". */
+export async function listMerchantEvidenceForOperation(operationId: string): Promise<MerchantEvidenceRecord[]> {
+  const rows = (await sql().query('SELECT * FROM merchant_evidence WHERE operation_id = $1 ORDER BY recorded_at ASC', [
+    operationId,
+  ])) as unknown as any[]
+  return rows.map(mapMerchantEvidenceRow)
+}

@@ -36,6 +36,7 @@ import { mountLifecycle, mountLifecyclePreflightHandler } from './src/lifecycleR
 import { mountLifecycleFinalize } from './src/lifecycleFinalizeRoute.js'
 import { mountAccountHistory } from './src/accountHistoryRoute.js'
 import { mountWebhooks } from './src/webhookRoute.js'
+import { mountMerchantEvidence } from './src/merchantEvidenceRoute.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
 import { outcomeForStatus, readMcpEnvelope, recordEvent } from './src/telemetry.js'
 
@@ -179,5 +180,10 @@ mountAccountHistory(app)
 // /internal/webhooks/deliver a Vercel Cron hits to drive retries. See
 // src/webhookRoute.ts.
 mountWebhooks(app)
+
+// D2.9A: mounts POST /operations/:operationId/merchant-evidence
+// (recovery-credential-gated, same auth as the D2.4 execution-binding
+// routes above). See src/merchantEvidenceRoute.ts.
+mountMerchantEvidence(app)
 
 export default app
