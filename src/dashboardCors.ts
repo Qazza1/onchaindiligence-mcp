@@ -8,7 +8,7 @@
 import type { Context, Hono, MiddlewareHandler } from 'hono'
 
 export const DASHBOARD_ORIGIN = 'https://app.onchaindiligence.com'
-export const DASHBOARD_CORS_METHODS = 'GET, POST, DELETE, OPTIONS'
+export const DASHBOARD_CORS_METHODS = 'GET, POST, PATCH, DELETE, OPTIONS'
 export const DASHBOARD_CORS_HEADERS = 'Authorization, Content-Type'
 
 const dashboardCors: MiddlewareHandler = async (c: Context, next) => {

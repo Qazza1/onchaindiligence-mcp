@@ -15,7 +15,8 @@
  * ever persisted; the raw key is returned to the caller exactly once.
  */
 import { randomBytes, createHash } from 'node:crypto'
-import { createAccount as insertAccount, getAccountByApiKeyHash, type AccountRecord } from './db.js'
+import { verifyToken } from '@clerk/backend'
+import { createAccount as insertAccount, getAccountByApiKeyHash, getAccountByWorkspaceApiKeyHash, getAccountForWorkspace, getWorkspaceForClerkUser, createWorkspaceForClerkUser, type AccountRecord, type WorkspaceRecord } from './db.js'
 
 const ACCOUNT_ID_PREFIX = 'OCD-ACC-'
 
@@ -23,12 +24,27 @@ function generateAccountId(): string {
   return ACCOUNT_ID_PREFIX + randomBytes(16).toString('base64url')
 }
 
-function generateApiKey(): string {
-  return randomBytes(32).toString('base64url') // 256 bits, same as recovery_credential/finalization capabilities
-}
-
 export function hashApiKey(rawKey: string): string {
   return createHash('sha256').update(rawKey, 'utf8').digest('hex')
+}
+
+export function generateApiKey(): string { return `ocd_${randomBytes(32).toString('base64url')}` }
+export function generateId(prefix: string): string { return prefix + randomBytes(16).toString('base64url') }
+
+/** Resolves a Clerk session to one durable, V1 single-user workspace. */
+export async function authenticateDashboardSession(rawToken: string): Promise<{ account: AccountRecord; workspace: WorkspaceRecord; clerkUserId: string } | null> {
+  if (!rawToken.includes('.')) return null
+  const secretKey = process.env.CLERK_SECRET_KEY
+  if (!secretKey) return null
+  try {
+    const claims = await verifyToken(rawToken, { secretKey, authorizedParties: ['https://app.onchaindiligence.com'] })
+    if (!claims?.sub) return null
+    const clerkUserId = claims.sub
+    let workspace = await getWorkspaceForClerkUser(clerkUserId)
+    if (!workspace) workspace = await createWorkspaceForClerkUser({ userId: generateId('OCD-USR-'), clerkUserId, workspaceId: generateId('OCD-WS-'), accountId: generateId(ACCOUNT_ID_PREFIX), internalApiKeyHash: hashApiKey(randomBytes(32).toString('base64url')) })
+    const account = await getAccountForWorkspace(workspace.workspaceId)
+    return account ? { account, workspace, clerkUserId } : null
+  } catch { return null }
 }
 
 export interface CreatedAccount {
@@ -65,5 +81,8 @@ export async function authenticateAccount(
   if (!authorizationHeader || !authorizationHeader.startsWith(BEARER_PREFIX)) return null
   const rawKey = authorizationHeader.slice(BEARER_PREFIX.length).trim()
   if (!rawKey) return null
-  return (deps.getAccountByApiKeyHash ?? getAccountByApiKeyHash)(hashApiKey(rawKey))
+  const session = await authenticateDashboardSession(rawKey)
+  if (session) return session.account
+  const hash = hashApiKey(rawKey)
+  return (await getAccountByWorkspaceApiKeyHash(hash)) ?? (deps.getAccountByApiKeyHash ?? getAccountByApiKeyHash)(hash)
 }

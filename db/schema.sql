@@ -208,6 +208,36 @@ CREATE TABLE IF NOT EXISTS saved_receipts (
   saved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (account_id, receipt_id)
 );
+
+-- D3.1B -- human users and their single V1 workspace. `accounts` remains the
+-- stable ownership identifier already referenced by operations, bookmarks and
+-- webhooks; a workspace points to one such identifier, and many API keys can
+-- resolve to it. This keeps legacy production relationships intact.
+CREATE TABLE IF NOT EXISTS users (
+  user_id TEXT PRIMARY KEY,
+  clerk_user_id TEXT NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS workspaces (
+  workspace_id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL UNIQUE REFERENCES users (user_id) ON DELETE CASCADE,
+  account_id TEXT NOT NULL UNIQUE REFERENCES accounts (account_id),
+  name TEXT NOT NULL DEFAULT 'My Workspace',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+  key_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  api_key_hash TEXT NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at TIMESTAMPTZ,
+  last_used_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS api_keys_workspace_idx ON api_keys (workspace_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS saved_receipts_account_idx ON saved_receipts (account_id, saved_at DESC);
 
 -- Lets operation-detail lookups find the eventual Commerce receipt id from

@@ -39,6 +39,7 @@ import { mountAccountHistory } from './src/accountHistoryRoute.js'
 import { mountSavedReceipts } from './src/savedReceiptsRoute.js'
 import { mountWebhooks } from './src/webhookRoute.js'
 import { mountMerchantEvidence } from './src/merchantEvidenceRoute.js'
+import { mountWorkspace } from './src/workspaceRoute.js'
 import { mountDashboardCors } from './src/dashboardCors.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
 import { outcomeForStatus, readMcpEnvelope, recordEvent } from './src/telemetry.js'
@@ -187,6 +188,7 @@ mountLifecycleFinalize(app)
 // route above. See src/accountHistoryRoute.ts.
 mountAccountHistory(app)
 mountSavedReceipts(app)
+mountWorkspace(app)
 
 // D2.7B: mounts POST/GET /me/webhooks, DELETE /me/webhooks/:id, GET
 // /me/webhooks/:id/deliveries, and the internal POST

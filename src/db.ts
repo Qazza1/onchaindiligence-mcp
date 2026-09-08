@@ -761,6 +761,36 @@ export async function getAccountByApiKeyHash(apiKeyHash: string): Promise<Accoun
   return rows[0] ? mapAccountRow(rows[0]) : null
 }
 
+export interface WorkspaceRecord { workspaceId: string; userId: string; clerkUserId: string; accountId: string; name: string }
+export interface ApiKeyRecord { keyId: string; workspaceId: string; name: string; createdAt: string; revokedAt: string | null; lastUsedAt: string | null }
+const iso = (value: any) => value instanceof Date ? value.toISOString() : value
+function mapWorkspaceRow(row: any): WorkspaceRecord { return { workspaceId: row.workspace_id, userId: row.user_id, clerkUserId: row.clerk_user_id, accountId: row.account_id, name: row.name } }
+function mapApiKeyRow(row: any): ApiKeyRecord { return { keyId: row.key_id, workspaceId: row.workspace_id, name: row.name, createdAt: iso(row.created_at), revokedAt: row.revoked_at ? iso(row.revoked_at) : null, lastUsedAt: row.last_used_at ? iso(row.last_used_at) : null } }
+
+export async function getWorkspaceForClerkUser(clerkUserId: string): Promise<WorkspaceRecord | null> {
+  const rows = (await sql().query(`SELECT w.*, u.user_id, u.clerk_user_id FROM workspaces w JOIN users u ON u.user_id = w.owner_user_id WHERE u.clerk_user_id = $1`, [clerkUserId])) as unknown as any[]
+  return rows[0] ? mapWorkspaceRow(rows[0]) : null
+}
+export async function createWorkspaceForClerkUser(params: { userId: string; clerkUserId: string; workspaceId: string; accountId: string; internalApiKeyHash: string }): Promise<WorkspaceRecord> {
+  await sql().query('INSERT INTO users (user_id, clerk_user_id) VALUES ($1, $2) ON CONFLICT (clerk_user_id) DO NOTHING', [params.userId, params.clerkUserId])
+  const userRows = (await sql().query('SELECT user_id FROM users WHERE clerk_user_id = $1', [params.clerkUserId])) as unknown as any[]
+  const userId = userRows[0].user_id as string
+  await sql().query('INSERT INTO accounts (account_id, api_key_hash) VALUES ($1, $2) ON CONFLICT (account_id) DO NOTHING', [params.accountId, params.internalApiKeyHash])
+  await sql().query(`INSERT INTO workspaces (workspace_id, owner_user_id, account_id) VALUES ($1, $2, $3) ON CONFLICT (owner_user_id) DO NOTHING`, [params.workspaceId, userId, params.accountId])
+  const workspace = await getWorkspaceForClerkUser(params.clerkUserId)
+  if (!workspace) throw new Error('workspace creation failed')
+  return workspace
+}
+export async function getAccountForWorkspace(workspaceId: string): Promise<AccountRecord | null> {
+  const rows = (await sql().query('SELECT a.* FROM accounts a JOIN workspaces w ON w.account_id = a.account_id WHERE w.workspace_id = $1', [workspaceId])) as unknown as any[]
+  return rows[0] ? mapAccountRow(rows[0]) : null
+}
+export async function listApiKeysForWorkspace(workspaceId: string): Promise<ApiKeyRecord[]> { return ((await sql().query('SELECT * FROM api_keys WHERE workspace_id = $1 ORDER BY created_at DESC', [workspaceId])) as unknown as any[]).map(mapApiKeyRow) }
+export async function createApiKeyRecord(params: { keyId: string; workspaceId: string; name: string; apiKeyHash: string }): Promise<ApiKeyRecord> { const rows = (await sql().query('INSERT INTO api_keys (key_id, workspace_id, name, api_key_hash) VALUES ($1, $2, $3, $4) RETURNING *', [params.keyId, params.workspaceId, params.name, params.apiKeyHash])) as unknown as any[]; return mapApiKeyRow(rows[0]) }
+export async function getAccountByWorkspaceApiKeyHash(apiKeyHash: string): Promise<AccountRecord | null> { const rows = (await sql().query('SELECT a.* FROM api_keys k JOIN workspaces w ON w.workspace_id = k.workspace_id JOIN accounts a ON a.account_id = w.account_id WHERE k.api_key_hash = $1 AND k.revoked_at IS NULL', [apiKeyHash])) as unknown as any[]; return rows[0] ? mapAccountRow(rows[0]) : null }
+export async function revokeApiKeyForWorkspace(keyId: string, workspaceId: string): Promise<boolean> { const rows = (await sql().query('UPDATE api_keys SET revoked_at = now() WHERE key_id = $1 AND workspace_id = $2 AND revoked_at IS NULL RETURNING key_id', [keyId, workspaceId])) as unknown as any[]; return rows.length > 0 }
+export async function renameWorkspaceForClerkUser(clerkUserId: string, name: string): Promise<WorkspaceRecord | null> { const rows = (await sql().query(`UPDATE workspaces w SET name = $2, updated_at = now() FROM users u WHERE w.owner_user_id = u.user_id AND u.clerk_user_id = $1 RETURNING w.*, u.user_id, u.clerk_user_id`, [clerkUserId, name])) as unknown as any[]; return rows[0] ? mapWorkspaceRow(rows[0]) : null }
+
 export interface SavedReceiptRecord { accountId: string; receiptId: string; savedAt: string }
 function mapSavedReceiptRow(row: any): SavedReceiptRecord { return { accountId: row.account_id, receiptId: row.receipt_id, savedAt: row.saved_at instanceof Date ? row.saved_at.toISOString() : row.saved_at } }
 export async function listSavedReceiptsForAccount(accountId: string): Promise<SavedReceiptRecord[]> {
