@@ -1,6 +1,6 @@
 import type { Context, Hono } from 'hono'
 import { authenticateDashboardSession, generateApiKey, generateId, hashApiKey } from './accounts.js'
-import { createApiKeyRecord, listApiKeysForWorkspace, renameWorkspaceForClerkUser, revokeApiKeyForWorkspace } from './db.js'
+import { claimLegacyAccountForWorkspace, createApiKeyRecord, getAccountByApiKeyHash, listApiKeysForWorkspace, renameWorkspaceForClerkUser, revokeApiKeyForWorkspace } from './db.js'
 
 async function session(c: Context) {
   const value = c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? ''
@@ -24,4 +24,5 @@ export function mountWorkspace(app: Hono): void {
     return c.json({ api_key: { ...apiKey, value: rawKey } }, 201)
   })
   app.delete('/me/api-keys/:keyId', async c => { const s = await session(c); if (!s) return invalid(c); const revoked = await revokeApiKeyForWorkspace(c.req.param('keyId') ?? '', s.workspace.workspaceId); return revoked ? c.json({ revoked: true }) : c.json({ error: 'unknown active API key' }, 404) })
+  app.post('/me/claim-legacy-account', async c => { const s = await session(c); if (!s) return invalid(c); const key = (await c.req.json().catch(() => null) as any)?.api_key; if (typeof key !== 'string' || !key) return c.json({ error: 'legacy API key required' }, 400); const legacy = await getAccountByApiKeyHash(hashApiKey(key)); if (!legacy) return c.json({ error: 'unknown legacy API key' }, 404); const claimed = await claimLegacyAccountForWorkspace(legacy.accountId, s.workspace.workspaceId); return claimed ? c.json({ claimed: true }) : c.json({ error: 'legacy account is already claimed' }, 409) })
 }
