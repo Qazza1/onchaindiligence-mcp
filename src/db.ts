@@ -761,6 +761,20 @@ export async function getAccountByApiKeyHash(apiKeyHash: string): Promise<Accoun
   return rows[0] ? mapAccountRow(rows[0]) : null
 }
 
+export interface SavedReceiptRecord { accountId: string; receiptId: string; savedAt: string }
+function mapSavedReceiptRow(row: any): SavedReceiptRecord { return { accountId: row.account_id, receiptId: row.receipt_id, savedAt: row.saved_at instanceof Date ? row.saved_at.toISOString() : row.saved_at } }
+export async function listSavedReceiptsForAccount(accountId: string): Promise<SavedReceiptRecord[]> {
+  return ((await sql().query('SELECT * FROM saved_receipts WHERE account_id = $1 ORDER BY saved_at DESC', [accountId])) as unknown as any[]).map(mapSavedReceiptRow)
+}
+export async function saveReceiptForAccount(accountId: string, receiptId: string): Promise<SavedReceiptRecord> {
+  const rows = (await sql().query('INSERT INTO saved_receipts (account_id, receipt_id) VALUES ($1, $2) ON CONFLICT (account_id, receipt_id) DO UPDATE SET receipt_id = EXCLUDED.receipt_id RETURNING *', [accountId, receiptId])) as unknown as any[]
+  return mapSavedReceiptRow(rows[0])
+}
+export async function removeSavedReceiptForAccount(accountId: string, receiptId: string): Promise<boolean> {
+  const rows = (await sql().query('DELETE FROM saved_receipts WHERE account_id = $1 AND receipt_id = $2 RETURNING receipt_id', [accountId, receiptId])) as unknown as any[]
+  return rows.length > 0
+}
+
 /**
  * Bounded, cursor-paginated: newest first. `before` (an ISO timestamp from a
  * previous page's last row) excludes everything at or after it, so passing

@@ -36,6 +36,7 @@ import { mountFinalize } from './src/finalizeRoute.js'
 import { mountLifecycle, mountLifecyclePreflightHandler } from './src/lifecycleRoute.js'
 import { mountLifecycleFinalize } from './src/lifecycleFinalizeRoute.js'
 import { mountAccountHistory } from './src/accountHistoryRoute.js'
+import { mountSavedReceipts } from './src/savedReceiptsRoute.js'
 import { mountWebhooks } from './src/webhookRoute.js'
 import { mountMerchantEvidence } from './src/merchantEvidenceRoute.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
@@ -178,6 +179,7 @@ mountLifecycleFinalize(app)
 // gated surface layered on top of the same D2.4 tables. Does not affect any
 // route above. See src/accountHistoryRoute.ts.
 mountAccountHistory(app)
+mountSavedReceipts(app)
 
 // D2.7B: mounts POST/GET /me/webhooks, DELETE /me/webhooks/:id, GET
 // /me/webhooks/:id/deliveries, and the internal POST

@@ -199,6 +199,17 @@ CREATE TABLE IF NOT EXISTS accounts (
 ALTER TABLE commerce_operations ADD COLUMN IF NOT EXISTS owner_id TEXT REFERENCES accounts (account_id);
 CREATE INDEX IF NOT EXISTS commerce_operations_owner_idx ON commerce_operations (owner_id, created_at DESC) WHERE owner_id IS NOT NULL;
 
+-- D3.1A — an account's bookmark relationship to an existing public receipt.
+-- The signed envelope remains in the public receipt store; this table stores
+-- no receipt body and makes no claim about verification or outcome.
+CREATE TABLE IF NOT EXISTS saved_receipts (
+  account_id TEXT NOT NULL REFERENCES accounts (account_id) ON DELETE CASCADE,
+  receipt_id TEXT NOT NULL,
+  saved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, receipt_id)
+);
+CREATE INDEX IF NOT EXISTS saved_receipts_account_idx ON saved_receipts (account_id, saved_at DESC);
+
 -- Lets operation-detail lookups find the eventual Commerce receipt id from
 -- the operation's own (already-known) preflight_receipt_id, without a new
 -- column on commerce_operations itself -- see src/db.ts's
