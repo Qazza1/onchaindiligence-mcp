@@ -39,11 +39,18 @@ import { mountAccountHistory } from './src/accountHistoryRoute.js'
 import { mountSavedReceipts } from './src/savedReceiptsRoute.js'
 import { mountWebhooks } from './src/webhookRoute.js'
 import { mountMerchantEvidence } from './src/merchantEvidenceRoute.js'
+import { mountDashboardCors } from './src/dashboardCors.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
 import { outcomeForStatus, readMcpEnvelope, recordEvent } from './src/telemetry.js'
 
 const app = new Hono()
 app.get('/', (c) => c.text('OnchainDiligence MCP server — POST /mcp'))
+
+// Browser-only CORS for the authenticated Dashboard account surface. This is
+// deliberately mounted before those routes and nowhere else: it answers
+// preflight before API-key auth without changing public, MCP, x402, or payment
+// route behavior. See src/dashboardCors.ts.
+mountDashboardCors(app)
 
 // D2.10C: separate free surface, outside paid/readiness/telemetry middleware.
 mountPublicMcp(app)
