@@ -1,7 +1,7 @@
 {
   "name": "onchaindiligence-mcp",
   "version": "1.0.0",
-  "description": "x402-paid MCP server for OnchainDiligence — sanctions screening and UK company verification as paid agent tools.",
+  "description": "OnChainDiligence MCP server — agent payment preflight, receipts, and independent settlement verification, plus paid Evidence Provider checks (sanctions, UK/US company) via x402 on Base. Also serves a free, no-auth /public/mcp inspection/verification surface.",
   "type": "module",
   "private": true,
   "scripts": {
