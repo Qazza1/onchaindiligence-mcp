@@ -242,7 +242,13 @@ export async function getInvestigationForOwner(operationId: string, accountId: s
     },
   }
 
-  const investigation: Investigation = { ...investigationWithoutFindings, findings: deriveFindings(investigationWithoutFindings) }
+  // D3.3B consumes the durable preflight journal only in-process. The
+  // journal itself remains private and is not added to the Investigation
+  // response; the existing public Finding shape is retained unchanged.
+  const investigation: Investigation = {
+    ...investigationWithoutFindings,
+    findings: deriveFindings(investigationWithoutFindings, { frozenPreflightInput: preflightStep?.frozenInput ?? null }),
+  }
 
   return { found: true, investigation }
 }

@@ -21,6 +21,7 @@
  * each rule's summary text.
  */
 import type { Investigation } from './investigation.js'
+import { detectContradictions, mapTaxonomyFindings, type D33DetectionContext } from './contradictionDetection.js'
 
 export type FindingSeverity = 'info' | 'warning' | 'critical'
 export type FindingCategory = 'policy' | 'execution' | 'settlement' | 'evidence' | 'receipt' | 'recovery'
@@ -63,7 +64,7 @@ function addressesEqual(a: string | null, b: string | null): boolean {
  * computes that field, so it necessarily runs before `findings` exists on
  * the object being assembled (see investigation.ts's getInvestigationForOwner()).
  */
-export function deriveFindings(investigation: Omit<Investigation, 'findings'>): Finding[] {
+function deriveLegacyFindings(investigation: Omit<Investigation, 'findings'>): Finding[] {
   const findings: Finding[] = []
   const { operation, preflight, execution, settlement, evidence, receipts, recovery, merchant_response } = investigation
 
@@ -283,6 +284,20 @@ export function deriveFindings(investigation: Omit<Investigation, 'findings'>): 
   }
 
   return findings
+}
+
+/**
+ * D3.3B composition point. Existing D2.8 findings remain intact. Exact
+ * amount/recipient duplicates are suppressed only when the D3.3 finding
+ * expresses the same established condition; all distinct legacy findings
+ * remain visible. Historical callers without a durable preflight context
+ * retain their previous D2.8-only behaviour.
+ */
+export function deriveFindings(investigation: Omit<Investigation, 'findings'>, d33Context?: D33DetectionContext): Finding[] {
+  const d33 = d33Context ? mapTaxonomyFindings(detectContradictions(investigation, d33Context)) : []
+  const d33Codes = new Set(d33.map((finding) => finding.code))
+  const legacy = deriveLegacyFindings(investigation).filter((finding) => !d33Codes.has(finding.code))
+  return [...d33, ...legacy]
 }
 
 export function summarizeFindings(findings: Finding[]): string {
