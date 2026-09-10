@@ -257,8 +257,8 @@ curl -s -X POST https://mcp.onchaindiligence.com/me/webhooks \
 
 `signing_secret` is shown **once**. You'll receive
 `operation.preflight_completed`, `.execution_updated`,
-`.recovery_required`, `.settlement_updated`, and `.receipt_produced`
-events. Delivery is not instant — a background worker picks up new
+`.recovery_required`, `.settlement_updated`, `.receipt_produced`, and
+`.findings_updated` events. Delivery is not instant — a background worker picks up new
 events (currently roughly every minute) and retries a failed delivery at
 1/5/30-minute intervals before giving up.
 
@@ -276,6 +276,20 @@ const expected = 'v1=' + hmacSha256Hex(secret, `${timestamp}.${rawBody}`)
 Always verify over the **raw, unparsed** body, before `JSON.parse()`.
 Deduplicate retried deliveries using the envelope's `id` (reused across
 retries of the same delivery, never a new one).
+
+### `operation.findings_updated`
+
+This small event is enqueued only after a durable settlement observation lets
+OCD evaluate the D3.3 reconciliation finding set. Its `data` object contains
+only `revision`, `contradiction_count`, and `evidence_gap_count`; the signed
+webhook envelope supplies `id`, `type`, `operation_id`, and `created_at`.
+`revision` is a SHA-256 digest of the sorted canonical
+`finding_class:code` set. The same set always has the same revision; a changed
+set gets a new logical event. Delivery is at-least-once and event ordering is
+not globally guaranteed. On receipt, fetch
+`GET /me/operations/:operation_id/investigation` for the current evidence and
+full findings; the webhook intentionally contains no findings detail, payment
+data, addresses, or evidence references.
 
 ## In the app
 

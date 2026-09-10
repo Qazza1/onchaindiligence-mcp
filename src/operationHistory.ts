@@ -31,12 +31,19 @@ import {
 import { verifyReceipt } from './receiptTools.js'
 import type { PublicActionReceiptEnvelope } from './receipts.js'
 import { detectContradictions } from './contradictionDetection.js'
+import type { TaxonomyFinding } from './contradictionTaxonomy.js'
+import type { Investigation } from './investigation.js'
 
 export interface FindingsSummary {
   contradiction_count: number
   evidence_gap_count: number
   /** False means the durable operation has not reached a state D3.3 can reconcile. It is not a claim that no findings exist. */
   evaluated: boolean
+}
+
+export interface ReconciliationFindingSet {
+  evaluated: boolean
+  findings: TaxonomyFinding[]
 }
 
 export interface OperationSummary {
@@ -75,23 +82,23 @@ function hasFrozenReconciliationInput(value: unknown): boolean {
 }
 
 /**
- * Computes only the D3.3 taxonomy counts from batch-loaded durable state.
+ * Computes only the D3.3 taxonomy findings from batch-loaded durable state.
  * This intentionally does not assemble an Investigation, verify receipts,
  * resolve signing keys, or read merchant evidence for every history row.
  */
-export function deriveFindingsSummary(
+export function deriveD33ReconciliationFindings(
   op: CommerceOperationRecord,
   preflight: { frozenInput: unknown } | null | undefined,
   bindings: ExecutionBindingRecord[],
   observations: CommerceObservationRecord[]
-): FindingsSummary | null {
+): ReconciliationFindingSet | null {
   if (!preflight) return null
   const latestBinding = bindings.length > 0 ? bindings[bindings.length - 1] : null
   const latestObservation = observations.length > 0 ? observations[observations.length - 1] : null
   const evaluated = op.preflightState === 'completed' && latestObservation !== null && hasFrozenReconciliationInput(preflight.frozenInput)
-  if (!evaluated) return { contradiction_count: 0, evidence_gap_count: 0, evaluated: false }
+  if (!evaluated) return { evaluated: false, findings: [] }
 
-  const taxonomy = detectContradictions({
+  const investigation: Omit<Investigation, 'findings'> = {
     operation: { operation_id: op.operationId, created_at: op.createdAt, preflight_state: op.preflightState, execution_state: op.executionState, observation_state: op.observationState, receipt_state: op.receiptState },
     preflight: { receipt_id: op.preflightReceiptId, decision: null, action: null, verification: null, expected_payer: null },
     execution: {
@@ -121,11 +128,22 @@ export function deriveFindingsSummary(
     receipts: { preflight: null, commerce: null, verification: null },
     recovery: { needs_attention: false, may_already_have_paid: false, summary: '', safe_next_action: '' },
     merchant_response: { evidence: [] },
-  } as any, { frozenPreflightInput: preflight.frozenInput })
+  }
+  return { evaluated: true, findings: detectContradictions(investigation, { frozenPreflightInput: preflight.frozenInput }) }
+}
+
+export function deriveFindingsSummary(
+  op: CommerceOperationRecord,
+  preflight: { frozenInput: unknown } | null | undefined,
+  bindings: ExecutionBindingRecord[],
+  observations: CommerceObservationRecord[]
+): FindingsSummary | null {
+  const set = deriveD33ReconciliationFindings(op, preflight, bindings, observations)
+  if (!set) return null
   return {
-    contradiction_count: taxonomy.filter((finding) => finding.finding_class === 'CONTRADICTION').length,
-    evidence_gap_count: taxonomy.filter((finding) => finding.finding_class === 'INSUFFICIENT_EVIDENCE').length,
-    evaluated: true,
+    contradiction_count: set.findings.filter((finding) => finding.finding_class === 'CONTRADICTION').length,
+    evidence_gap_count: set.findings.filter((finding) => finding.finding_class === 'INSUFFICIENT_EVIDENCE').length,
+    evaluated: set.evaluated,
   }
 }
 

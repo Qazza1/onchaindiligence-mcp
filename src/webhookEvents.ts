@@ -1,13 +1,14 @@
 /**
  * webhookEvents.ts — D2.7B event emission (Sections 3/4/7).
  *
- * Five meaningful lifecycle events, each derived from EXISTING D2.4 state
+ * Six meaningful lifecycle events, each derived from EXISTING D2.4/D3.3 state
  * (never a parallel/invented lifecycle model):
  *   operation.preflight_completed  <- preflight_state -> 'completed'
  *   operation.execution_updated    <- execution_state transitions
  *   operation.recovery_required    <- deriveRecoveryStatus().needsAttention (D2.7A, reused as-is)
  *   operation.settlement_updated   <- a new commerce_observations row
  *   operation.receipt_produced     <- a Commerce receipt is issued
+ *   operation.findings_updated     <- durable D3.3 reconciliation set
  *
  * D2.7B CORRECTION: this module used to attempt outbound HTTP delivery
  * inline, awaited from the same request that changed operation state --
@@ -36,7 +37,7 @@
  *     the SAME event_id for any deliveries that don't already exist yet
  *     (Section 7).
  */
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import {
   getCommerceOperation,
   createWebhookEvent,
@@ -44,10 +45,12 @@ import {
   listActiveWebhookEndpointsForAccount,
   getExecutionBindingsForOperation,
   listCommerceObservations,
+  getLifecycleStep,
   type CommerceOperationRecord,
   type CommerceObservationRecord,
 } from './db.js'
-import { deriveRecoveryStatus } from './operationHistory.js'
+import { deriveD33ReconciliationFindings, deriveRecoveryStatus } from './operationHistory.js'
+import type { TaxonomyFinding } from './contradictionTaxonomy.js'
 
 function generateEventId(): string {
   return 'OCD-EVT-' + randomBytes(16).toString('base64url')
@@ -62,12 +65,20 @@ type WebhookEventType =
   | 'operation.recovery_required'
   | 'operation.settlement_updated'
   | 'operation.receipt_produced'
+  | 'operation.findings_updated'
 
 /** Test seam covering every real dependency emitOperationEvent() touches -- same convention as executionBinding.ts's ExecutionBindingDependencies / webhookDelivery.ts's WebhookDeliveryDependencies. */
 export interface EmitOperationEventDependencies {
   createWebhookEvent?: typeof createWebhookEvent
   createWebhookDelivery?: typeof createWebhookDelivery
   listActiveWebhookEndpointsForAccount?: typeof listActiveWebhookEndpointsForAccount
+}
+
+export interface EmitFindingsUpdatedDependencies extends EmitOperationEventDependencies {
+  getCommerceOperation?: typeof getCommerceOperation
+  getExecutionBindingsForOperation?: typeof getExecutionBindingsForOperation
+  listCommerceObservations?: typeof listCommerceObservations
+  getLifecycleStep?: typeof getLifecycleStep
 }
 
 /**
@@ -196,4 +207,52 @@ export async function emitReceiptProduced(operationId: string, receiptId: string
     dedupeKey: receiptId,
     data: { receipt_id: receiptId, verification_state: verificationState },
   })
+}
+
+/**
+ * Stable revision for the canonical D3.3 finding set only. It deliberately
+ * excludes severity, prose, evidence references, and all legacy findings:
+ * consumers are notified about a material reconciliation-class/code change,
+ * then refetch the investigation for current detail.
+ */
+export function findingsRevision(findings: TaxonomyFinding[]): string {
+  const canonical = findings.map((finding) => `${finding.finding_class}:${finding.code}`).sort().join('\n')
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`
+}
+
+/**
+ * Enqueues a small, idempotent D3.3 findings change event after a durable
+ * observation is available. This performs no network I/O and never makes a
+ * lifecycle request fail if notification infrastructure is unavailable.
+ */
+export async function emitFindingsUpdated(operationId: string, deps: EmitFindingsUpdatedDependencies = {}): Promise<void> {
+  try {
+    const getOperation = deps.getCommerceOperation ?? getCommerceOperation
+    const getBindings = deps.getExecutionBindingsForOperation ?? getExecutionBindingsForOperation
+    const getObservations = deps.listCommerceObservations ?? listCommerceObservations
+    const getPreflightStep = deps.getLifecycleStep ?? getLifecycleStep
+    const op = await getOperation(operationId)
+    if (!op?.ownerId) return
+
+    const [bindings, observations, preflightStep] = await Promise.all([
+      getBindings(operationId),
+      getObservations(operationId),
+      getPreflightStep(operationId, 'preflight'),
+    ])
+    const findingSet = deriveD33ReconciliationFindings(op, preflightStep, bindings, observations)
+    if (!findingSet?.evaluated) return
+
+    const contradictionCount = findingSet.findings.filter((finding) => finding.finding_class === 'CONTRADICTION').length
+    const evidenceGapCount = findingSet.findings.filter((finding) => finding.finding_class === 'INSUFFICIENT_EVIDENCE').length
+    const revision = findingsRevision(findingSet.findings)
+    await emitOperationEvent({
+      accountId: op.ownerId,
+      operationId,
+      type: 'operation.findings_updated',
+      dedupeKey: revision,
+      data: { revision, contradiction_count: contradictionCount, evidence_gap_count: evidenceGapCount },
+    }, deps)
+  } catch (err) {
+    console.error('D3.4B-2 findings_updated emission failed (non-fatal, operation flow is unaffected):', err)
+  }
 }

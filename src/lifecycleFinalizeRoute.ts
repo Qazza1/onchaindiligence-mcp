@@ -39,7 +39,7 @@ import {
 import { recordObservation, selectExactTransfer } from './commerceObservation.js'
 import { buildPreflightCommitment, isConservativeMatchOnlyEvidence, type PreflightCommitment } from './commerceLifecycle.js'
 import { buildCommerceReceiptCore } from './commerceReceipt.js'
-import { emitExecutionUpdated, emitSettlementUpdated, emitReceiptProduced } from './webhookEvents.js'
+import { emitExecutionUpdated, emitSettlementUpdated, emitReceiptProduced, emitFindingsUpdated } from './webhookEvents.js'
 import { verifyReceipt } from './receiptTools.js'
 import { finalizePayment, parseFinalizationExecutionInput, FinalizationAuthError, FinalizationInputError, FinalizationConflictError, FinalizationPendingError, type FinalizeDependencies } from './finalizeRoute.js'
 import { finalizationTtlHours, extractBearerCapability } from './capability.js'
@@ -446,6 +446,11 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
           if (result.observation) {
             // D2.7B (corrected): DB-only enqueue, no outbound HTTP call on this path -- see webhookEvents.ts's header.
             await emitSettlementUpdated(operationId, result.observation)
+            // The observation row is already append-only durable at this
+            // point. D3.3 may now derive a canonical reconciliation set;
+            // this enqueue remains local-only and non-fatal like every
+            // other webhook event in this route.
+            await emitFindingsUpdated(operationId)
           }
         }
       }
