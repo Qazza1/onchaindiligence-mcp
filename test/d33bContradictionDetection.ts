@@ -59,6 +59,8 @@ assert.deepEqual(first.map((f) => f.code), ['AMOUNT_MISMATCH', 'RECIPIENT_MISMAT
 const legacyPlusD33 = deriveFindings(multi, context({ max_amount: '0.000999' }))
 assert.equal(legacyPlusD33.filter((finding) => finding.code === 'AMOUNT_MISMATCH').length, 1, 'exact D2.8/D3.3 amount duplicates must collapse to one finding')
 assert.ok(legacyPlusD33.some((finding) => finding.code === 'POLICY_CONSTRAINT_VIOLATION'), 'additive D3.3 policy finding must use the existing Finding shape')
+assert.equal(legacyPlusD33.find((finding) => finding.code === 'AMOUNT_MISMATCH')?.finding_class, 'CONTRADICTION', 'taxonomy findings preserve their canonical finding_class')
+assert.equal(legacyPlusD33.find((finding) => finding.code === 'RECEIPT_INVALID')?.finding_class ?? null, null, 'legacy findings remain explicitly classless')
 console.log('ok  stable ordering, deterministic repeatability, and exact legacy-code deduplication')
 
 // Dormant rules are not fabricated from current evidence.

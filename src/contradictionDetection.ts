@@ -127,9 +127,10 @@ export function detectContradictions(
   return dedupe(deriveTaxonomyFindings(facts))
 }
 
-/** Maps internal D3.3A records into the existing public-safe Finding shape without adding response fields. */
+/** Maps internal D3.3A records into the existing public-safe Finding shape, preserving the canonical class for compatible consumers. */
 export function mapTaxonomyFindings(findings: TaxonomyFinding[]): Finding[] {
   return findings.map((finding) => ({
+    finding_class: finding.finding_class,
     code: finding.code,
     severity: finding.finding_class === 'CONTRADICTION' ? 'critical' : 'warning',
     category: finding.code.includes('POLICY') ? 'policy' : finding.code.includes('EXECUTION') ? 'execution' : finding.code.includes('IDENTITY') || finding.code.includes('ATTRIBUTION') || finding.code.includes('EVIDENCE') ? 'evidence' : 'settlement',

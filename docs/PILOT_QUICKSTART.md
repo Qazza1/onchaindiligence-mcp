@@ -187,7 +187,12 @@ curl -s https://mcp.onchaindiligence.com/me/operations \
   -H "Authorization: Bearer <api_key>"
 ```
 
-Bounded, newest-first. `GET /me/operations/:operation_id` returns full
+Bounded, newest-first. Each list item includes a compact
+`findings_summary` for the D3.3 reconciliation vocabulary only:
+`contradiction_count`, `evidence_gap_count`, and `evaluated`. A false
+`evaluated` value means reconciliation has not yet been performed from a
+durable preflight and observation; it does not mean the operation is clean.
+Use `GET /me/operations/:operation_id` for the actual evidence and full
 lifecycle detail; every response includes a `recovery` object
 (`needsAttention`, `mayAlreadyHavePaid`, `safeNextAction`) so a stuck or
 ambiguous operation is never silently retried as a fresh payment.

@@ -38,6 +38,7 @@ function completedOperationDetail(): OperationDetail {
     receipt_state: 'commerce_issued',
     preflight_receipt_id: 'OCD-RCP-PRE1',
     commerce_receipt_id: 'OCD-RCP-COM1',
+    findings_summary: { contradiction_count: 0, evidence_gap_count: 0, evaluated: true },
     preflight_receipt: { schema: 'ocd.action-receipt.v1', receipt: { receipt_id: 'OCD-RCP-PRE1', decision: { status: 'ALLOW' }, action: { kind: 'PAYMENT', resource: 'https://api.onesource.io/api/chain/block-number', network: 'eip155:8453', asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', amount: '0.001', sender: '0x4D4cd7e2Ff500483c1ea4B2cFA68e1cf41F93846', recipient: '0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea' } }, proof: {} } as any,
     execution_bindings: [
       {

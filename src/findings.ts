@@ -22,11 +22,14 @@
  */
 import type { Investigation } from './investigation.js'
 import { detectContradictions, mapTaxonomyFindings, type D33DetectionContext } from './contradictionDetection.js'
+import type { FindingClass } from './contradictionTaxonomy.js'
 
 export type FindingSeverity = 'info' | 'warning' | 'critical'
 export type FindingCategory = 'policy' | 'execution' | 'settlement' | 'evidence' | 'receipt' | 'recovery'
 
 export interface Finding {
+  /** D3.3 taxonomy class when this is a taxonomy finding; null for legacy D2.8 findings. */
+  finding_class: FindingClass | null
   code: string
   severity: FindingSeverity
   category: FindingCategory
@@ -64,8 +67,8 @@ function addressesEqual(a: string | null, b: string | null): boolean {
  * computes that field, so it necessarily runs before `findings` exists on
  * the object being assembled (see investigation.ts's getInvestigationForOwner()).
  */
-function deriveLegacyFindings(investigation: Omit<Investigation, 'findings'>): Finding[] {
-  const findings: Finding[] = []
+function deriveLegacyFindings(investigation: Omit<Investigation, 'findings'>): Array<Omit<Finding, 'finding_class'>> {
+  const findings: Array<Omit<Finding, 'finding_class'>> = []
   const { operation, preflight, execution, settlement, evidence, receipts, recovery, merchant_response } = investigation
 
   // --- RECEIPT_INVALID / RECEIPT_UNVERIFIABLE (receipt category) ----------
@@ -297,7 +300,7 @@ export function deriveFindings(investigation: Omit<Investigation, 'findings'>, d
   const d33 = d33Context ? mapTaxonomyFindings(detectContradictions(investigation, d33Context)) : []
   const d33Codes = new Set(d33.map((finding) => finding.code))
   const legacy = deriveLegacyFindings(investigation).filter((finding) => !d33Codes.has(finding.code))
-  return [...d33, ...legacy]
+  return [...d33, ...legacy.map((finding) => ({ ...finding, finding_class: null }))]
 }
 
 export function summarizeFindings(findings: Finding[]): string {

@@ -22,12 +22,22 @@ import {
   listCommerceOperationsForOwner,
   getCommerceReceiptIdForPreflightReceipt,
   getReceiptForFinalization,
+  getReconciliationInputsForOperations,
+  getLifecycleStep,
   type CommerceOperationRecord,
   type ExecutionBindingRecord,
   type CommerceObservationRecord,
 } from './db.js'
 import { verifyReceipt } from './receiptTools.js'
 import type { PublicActionReceiptEnvelope } from './receipts.js'
+import { detectContradictions } from './contradictionDetection.js'
+
+export interface FindingsSummary {
+  contradiction_count: number
+  evidence_gap_count: number
+  /** False means the durable operation has not reached a state D3.3 can reconcile. It is not a claim that no findings exist. */
+  evaluated: boolean
+}
 
 export interface OperationSummary {
   operation_id: string
@@ -38,9 +48,11 @@ export interface OperationSummary {
   receipt_state: CommerceOperationRecord['receiptState']
   preflight_receipt_id: string | null
   commerce_receipt_id: string | null
+  /** D3.4B-1: bounded D3.3-only reconciliation summary. Null for legacy operations without a durable preflight journal. */
+  findings_summary: FindingsSummary | null
 }
 
-function toSummary(op: CommerceOperationRecord, commerceReceiptId: string | null): OperationSummary {
+function toSummary(op: CommerceOperationRecord, commerceReceiptId: string | null, findingsSummary: FindingsSummary | null = null): OperationSummary {
   return {
     operation_id: op.operationId,
     created_at: op.createdAt,
@@ -50,16 +62,81 @@ function toSummary(op: CommerceOperationRecord, commerceReceiptId: string | null
     receipt_state: op.receiptState,
     preflight_receipt_id: op.preflightReceiptId,
     commerce_receipt_id: commerceReceiptId,
+    findings_summary: findingsSummary,
+  }
+}
+
+function hasFrozenReconciliationInput(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const input = (value as { input?: unknown }).input
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return false
+  const { action, policy } = input as { action?: unknown; policy?: unknown }
+  return typeof action === 'object' && action !== null && !Array.isArray(action) && typeof policy === 'object' && policy !== null && !Array.isArray(policy)
+}
+
+/**
+ * Computes only the D3.3 taxonomy counts from batch-loaded durable state.
+ * This intentionally does not assemble an Investigation, verify receipts,
+ * resolve signing keys, or read merchant evidence for every history row.
+ */
+export function deriveFindingsSummary(
+  op: CommerceOperationRecord,
+  preflight: { frozenInput: unknown } | null | undefined,
+  bindings: ExecutionBindingRecord[],
+  observations: CommerceObservationRecord[]
+): FindingsSummary | null {
+  if (!preflight) return null
+  const latestBinding = bindings.length > 0 ? bindings[bindings.length - 1] : null
+  const latestObservation = observations.length > 0 ? observations[observations.length - 1] : null
+  const evaluated = op.preflightState === 'completed' && latestObservation !== null && hasFrozenReconciliationInput(preflight.frozenInput)
+  if (!evaluated) return { contradiction_count: 0, evidence_gap_count: 0, evaluated: false }
+
+  const taxonomy = detectContradictions({
+    operation: { operation_id: op.operationId, created_at: op.createdAt, preflight_state: op.preflightState, execution_state: op.executionState, observation_state: op.observationState, receipt_state: op.receiptState },
+    preflight: { receipt_id: op.preflightReceiptId, decision: null, action: null, verification: null, expected_payer: null },
+    execution: {
+      execution_request_id: latestBinding?.executionRequestId ?? null,
+      client_submission_key: latestBinding?.clientSubmissionKey ?? null,
+      executor_identity: latestBinding?.executorIdentity ?? null,
+      executor_version: latestBinding?.executorVersion ?? null,
+      recovery_capability_class: latestBinding?.recoveryCapabilityClass ?? null,
+      provider_reference: latestBinding?.providerReference ?? null,
+      submission_state: latestBinding?.submissionState ?? null,
+      expected_payer: latestBinding?.expectedPayer ?? null,
+      transaction_hash: latestObservation?.transactionHash ?? null,
+    },
+    settlement: {
+      network: latestObservation?.network ?? null, transaction_hash: latestObservation?.transactionHash ?? null,
+      block_hash: latestObservation?.blockHash ?? null, block_number: latestObservation?.blockNumber ?? null,
+      log_index: latestObservation?.logIndex ?? null, payer: latestObservation?.observedPayer ?? null,
+      recipient: latestObservation?.observedRecipient ?? null, asset: latestObservation?.tokenContract ?? null,
+      amount_atomic: latestObservation?.observedAmountAtomic ?? null, finality_state: latestObservation?.finalityState ?? null,
+      settlement_state: null,
+    },
+    evidence: {
+      bundle_digest: latestObservation?.bundleDigest ?? null, binding_strength: latestObservation?.bindingStrength ?? null,
+      event_identity: latestObservation ? { network: latestObservation.network, block_hash: latestObservation.blockHash, transaction_hash: latestObservation.transactionHash, log_index: latestObservation.logIndex } : null,
+      observation_state: op.observationState,
+    },
+    receipts: { preflight: null, commerce: null, verification: null },
+    recovery: { needs_attention: false, may_already_have_paid: false, summary: '', safe_next_action: '' },
+    merchant_response: { evidence: [] },
+  } as any, { frozenPreflightInput: preflight.frozenInput })
+  return {
+    contradiction_count: taxonomy.filter((finding) => finding.finding_class === 'CONTRADICTION').length,
+    evidence_gap_count: taxonomy.filter((finding) => finding.finding_class === 'INSUFFICIENT_EVIDENCE').length,
+    evaluated: true,
   }
 }
 
 /** Bounded recent history, newest first. No filtering beyond ownership (Section 2: keep this slice simple). */
 export async function listOperationsForOwner(ownerId: string, options: { limit?: number; before?: string } = {}): Promise<OperationSummary[]> {
   const ops = await listCommerceOperationsForOwner(ownerId, options)
+  const inputs = await getReconciliationInputsForOperations(ops.map((op) => op.operationId))
   const summaries: OperationSummary[] = []
   for (const op of ops) {
     const commerceReceiptId = op.preflightReceiptId ? await getCommerceReceiptIdForPreflightReceipt(op.preflightReceiptId) : null
-    summaries.push(toSummary(op, commerceReceiptId))
+    summaries.push(toSummary(op, commerceReceiptId, deriveFindingsSummary(op, inputs.preflightSteps.get(op.operationId), inputs.bindings.get(op.operationId) ?? [], inputs.observations.get(op.operationId) ?? [])))
   }
   return summaries
 }
@@ -215,7 +292,11 @@ export async function getOperationDetailForOwner(operationId: string, ownerId: s
   const op = await getCommerceOperation(operationId)
   if (!op || op.ownerId !== ownerId) return { found: false }
 
-  const [bindings, observations] = await Promise.all([getExecutionBindingsForOperation(operationId), listCommerceObservations(operationId)])
+  const [bindings, observations, preflightStep] = await Promise.all([
+    getExecutionBindingsForOperation(operationId),
+    listCommerceObservations(operationId),
+    getLifecycleStep(operationId, 'preflight'),
+  ])
 
   const preflightReceipt = op.preflightReceiptId ? await getReceiptForFinalization(op.preflightReceiptId) : null
   const commerceReceiptId = op.preflightReceiptId ? await getCommerceReceiptIdForPreflightReceipt(op.preflightReceiptId) : null
@@ -238,7 +319,7 @@ export async function getOperationDetailForOwner(operationId: string, ownerId: s
   return {
     found: true,
     detail: {
-      ...toSummary(op, commerceReceiptId),
+      ...toSummary(op, commerceReceiptId, deriveFindingsSummary(op, preflightStep, bindings, observations)),
       preflight_receipt: preflightReceipt?.envelope ?? null,
       execution_bindings: bindings.map((b) => ({
         execution_request_id: b.executionRequestId,

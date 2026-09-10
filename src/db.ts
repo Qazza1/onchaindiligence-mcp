@@ -481,6 +481,51 @@ export async function getLifecycleStep(operationId: string, stepKey: string): Pr
   return rows[0] ? mapStepRow(rows[0]) : null
 }
 
+/**
+ * D3.4B-1 list-read helper.  This deliberately returns only the durable,
+ * non-secret facts required to summarize the D3.3 reconciliation taxonomy
+ * for a page of operations.  It is a bounded set of batched reads -- not a
+ * loop over the full investigation assembler, receipt verifier, or key
+ * registry.  Capability tokens and recovery credentials never leave their
+ * owning tables through this helper.
+ */
+export async function getReconciliationInputsForOperations(operationIds: string[]): Promise<{
+  preflightSteps: Map<string, Pick<LifecycleStepRow, 'frozenInput' | 'status'>>
+  bindings: Map<string, ExecutionBindingRecord[]>
+  observations: Map<string, CommerceObservationRecord[]>
+}> {
+  const preflightSteps = new Map<string, Pick<LifecycleStepRow, 'frozenInput' | 'status'>>()
+  const bindings = new Map<string, ExecutionBindingRecord[]>()
+  const observations = new Map<string, CommerceObservationRecord[]>()
+  if (operationIds.length === 0) return { preflightSteps, bindings, observations }
+
+  const [stepRows, bindingRows, observationRows] = await Promise.all([
+    sql().query(
+      "SELECT operation_id, status, frozen_input_json FROM lifecycle_steps WHERE step_key = 'preflight' AND operation_id = ANY($1::text[])",
+      [operationIds]
+    ),
+    sql().query('SELECT * FROM execution_bindings WHERE operation_id = ANY($1::text[]) ORDER BY created_at ASC', [operationIds]),
+    sql().query('SELECT * FROM commerce_observations WHERE operation_id = ANY($1::text[]) ORDER BY observed_at ASC', [operationIds]),
+  ])
+
+  for (const row of stepRows as unknown as any[]) {
+    preflightSteps.set(row.operation_id, { frozenInput: row.frozen_input_json, status: row.status })
+  }
+  for (const row of bindingRows as unknown as any[]) {
+    const binding = mapBindingRow(row)
+    const current = bindings.get(binding.operationId) ?? []
+    current.push(binding)
+    bindings.set(binding.operationId, current)
+  }
+  for (const row of observationRows as unknown as any[]) {
+    const observation = mapObservationRow(row)
+    const current = observations.get(observation.operationId) ?? []
+    current.push(observation)
+    observations.set(observation.operationId, current)
+  }
+  return { preflightSteps, bindings, observations }
+}
+
 // --- execution_bindings ----------------------------------------------------
 
 export interface ExecutionBindingRecord {
