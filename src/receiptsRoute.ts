@@ -28,7 +28,7 @@ import { normalizeReceiptId, checkReceiptStructuralIntegrity, type PublicActionR
 import { receiptStore, type ReceiptStore } from './receiptStore.js'
 import { getPublicReceipt } from './db.js'
 
-const RECEIPT_ALLOWED_ORIGINS = ['https://onchaindiligence.com']
+const RECEIPT_ALLOWED_ORIGINS = ['https://onchaindiligence.com', 'https://app.onchaindiligence.com']
 
 /**
  * D2.3 (Task 4): a database row is not automatically trustworthy merely
