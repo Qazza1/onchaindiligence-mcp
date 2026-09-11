@@ -16,6 +16,22 @@ export function isValidEvmAddress(input: string): boolean {
 }
 
 /**
+ * A Solana public key or transaction signature is base58, but the two are
+ * deliberately validated separately. This validator is only for public keys
+ * (wallets, mints, and token accounts), which are 32 bytes when decoded.
+ * Keeping this side-effect-free lets consequential input guards reject a
+ * malformed Solana recipient before any paid external check is attempted.
+ */
+export function isValidSolanaAddress(input: string): boolean {
+  const value = input.trim()
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value)
+}
+
+export function isValidPaymentAddress(network: string, input: string): boolean {
+  return network === 'solana:mainnet' ? isValidSolanaAddress(input) : isValidEvmAddress(input)
+}
+
+/**
  * UK Companies House registration number. Canonically 8 characters: either 8
  * digits, or a 2-letter prefix (SC/NI/OC/…) followed by 6 digits. Older
  * records can be shorter before zero-padding, so this stays deliberately

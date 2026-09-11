@@ -18,16 +18,27 @@
 import { getSupportedAsset, type SettlementObservation, type ObservedTransfer } from './settlement.js'
 import { decimalAmountToAtomicUnits, atomicUnitsToDecimalAmount } from './money.js'
 import type { Receipt, ReceiptCheck, ReceiptAction, ReceiptExecution, ReceiptSettlement } from './receipts.js'
+import { isValidEvmAddress } from './inputValidation.js'
 
 export interface FinalizationExecutionInput {
-  transaction_hash: `0x${string}`
+  /** EVM transaction hash or Solana transaction signature. */
+  transaction_hash: string
   execution_provider: 'x402' | 'paybox' | 'wallet' | 'other'
   provider_reference: string | null
   result_digest: string | null
 }
 
 function addressesEqual(a: string | null, b: string | null): boolean {
-  return a !== null && b !== null && a.toLowerCase() === b.toLowerCase()
+  if (a === null || b === null) return false
+  return isValidEvmAddress(a) && isValidEvmAddress(b) ? a.toLowerCase() === b.toLowerCase() : a === b
+}
+
+function settlementNetworkLabel(network: string | null): string {
+  if (network === 'eip155:8453') return 'Base mainnet'
+  if (network === 'eip155:1') return 'Ethereum mainnet'
+  if (network === 'eip155:4217') return 'Tempo mainnet'
+  if (network === 'solana:mainnet') return 'Solana mainnet'
+  return network ?? 'the configured settlement network'
 }
 
 function pickObservedTransfer(
@@ -74,6 +85,7 @@ export function buildCommerceReceiptCore(
   const checks: ReceiptCheck[] = []
   const pf = preflightReceipt.action
   const asset = getSupportedAsset(pf.network ?? '', pf.asset ?? '')
+  const networkLabel = settlementNetworkLabel(pf.network)
   const preflightAmountAtomic =
     asset && pf.amount !== null ? decimalAmountToAtomicUnits(pf.amount, asset.decimals) : null
 
@@ -90,10 +102,10 @@ export function buildCommerceReceiptCore(
     result: found ? 'PASS' : observation.state === 'rpc-unavailable' ? 'UNKNOWN' : 'FAIL',
     summary:
       observation.state === 'not-found'
-        ? 'No transaction was found on Base mainnet for the supplied hash at inspection time.'
+        ? `No transaction was found on ${networkLabel} for the supplied reference at inspection time.`
         : observation.state === 'rpc-unavailable'
-          ? `The Base RPC endpoint could not be reached to look up the transaction: ${observation.rpcError ?? 'unknown error'}.`
-          : 'A transaction matching the supplied hash was found on Base mainnet.',
+          ? `The ${networkLabel} RPC endpoint could not be reached to look up the transaction: ${observation.rpcError ?? 'unknown error'}.`
+          : `A transaction matching the supplied reference was found on ${networkLabel}.`,
     evidence_digest: null,
   })
 
@@ -128,7 +140,7 @@ export function buildCommerceReceiptCore(
   checks.push(
     matchCheck(
       'network-matches-preflight',
-      pf.network === 'eip155:8453',
+      pf.network !== null,
       'The observed settlement network matches the network proposed in the preflight.',
       'The observed settlement network does not match the network proposed in the preflight.'
     )
@@ -184,8 +196,8 @@ export function buildCommerceReceiptCore(
   const exactMatch = observation.state === 'success' && !anyMatchFail && allApplicableMatchPass
 
   // D2.2B2: "settlement" and "execution matched what was preflighted" are
-  // kept strictly independent (see this file's header). A supported Base
-  // USDC transfer that actually settled on-chain is a confirmed SETTLEMENT
+  // kept strictly independent (see this file's header). A supported
+  // canonical-asset transfer that actually settled on-chain is a confirmed SETTLEMENT
   // even when it paid the wrong recipient/amount/sender — that mismatch is
   // reported by execution-matches-preflight and the individual
   // *-matches-preflight checks above, not by hiding the settlement itself.
@@ -271,7 +283,7 @@ export function buildCommerceReceiptCore(
     observation.state === 'not-found'
       ? 'No transaction was found for the supplied hash at inspection time.'
       : observation.state === 'rpc-unavailable'
-        ? `Settlement could not be independently verified: the Base RPC endpoint could not be reached (${observation.rpcError ?? 'unknown error'}).`
+        ? `Settlement could not be independently verified: the ${networkLabel} RPC endpoint could not be reached (${observation.rpcError ?? 'unknown error'}).`
         : observation.state === 'reverted'
           ? 'The observed transaction reverted; no value moved.'
           : !observation.sufficientlyConfirmed
@@ -279,15 +291,15 @@ export function buildCommerceReceiptCore(
             : !hasSupportedTransfer
               ? 'The transaction succeeded, but no transfer of the asset proposed in the preflight was observed in it.'
               : exactMatch
-                ? 'Independently observed on Base mainnet: the proposed transfer settled exactly as preflighted.'
-                : 'Independently observed on Base mainnet: a transfer of the proposed asset settled, but it did not match the payment proposed in the preflight — see checks for the exact discrepancy.'
+                ? `Independently observed on ${networkLabel}: the proposed transfer settled exactly as preflighted.`
+                : `Independently observed on ${networkLabel}: a transfer of the proposed asset settled, but it did not match the payment proposed in the preflight — see checks for the exact discrepancy.`
 
   const settlementRecord: ReceiptSettlement = { status: settlementStatus, detail: settlementDetail }
 
   const limitations = [
     'This receipt records the OBSERVED execution and settlement; `decision` is copied unchanged from the original PREFLIGHT receipt and was not re-evaluated here.',
-    'A transaction hash was supplied by the caller; OnChainDiligence independently inspected Base mainnet rather than trusting the caller, PayBox, or any x402 facilitator report of success.',
-    'v1 settlement verification supports Base mainnet USDC ERC-20 transfers only.',
+    `A transaction reference was supplied by the caller; OnChainDiligence independently inspected ${networkLabel} rather than trusting the caller, PayBox, or any x402 facilitator report of success.`,
+    'Settlement verification is limited to the canonical asset and transfer profile supported for the receipt network.',
     'service-delivery-verification is NOT_CHECKED in v1: a caller-supplied result digest, where present, is recorded as a claim only, not independently verified.',
     'No identity is inferred for the sender or recipient wallet beyond the address itself.',
   ]

@@ -23,7 +23,7 @@
  * directly rather than each re-implementing policy evaluation.
  */
 import { screenAddress, type SanctionsResult } from './chainalysis.js'
-import { isValidEvmAddress } from './inputValidation.js'
+import { isValidEvmAddress, isValidPaymentAddress } from './inputValidation.js'
 import { isCanonicalDecimalAmount, isAmountWithinMax } from './money.js'
 import { attest } from './attest.js'
 import { putReceipt as putReceiptDurable } from './db.js'
@@ -85,7 +85,7 @@ export interface PreflightAction {
   resource: string | null
   /** CAIP-2 network identifier, e.g. "eip155:8453" for Base mainnet. */
   network: string
-  /** Canonical ERC-20 token contract address — never a bare ticker like "USDC". */
+  /** Canonical network-native asset identifier — never a bare ticker like "USDC". */
   asset: string
   /** Canonical decimal string, e.g. "1.00". Never a float. */
   amount: string
@@ -205,17 +205,21 @@ function optionalStringArray(value: unknown, field: string): string[] | null {
   return value as string[]
 }
 
-function requireEvmAddress(value: unknown, field: string): string {
+function requirePaymentAddress(value: unknown, field: string, network: string): string {
   const s = requireString(value, field)
-  if (!isValidEvmAddress(s)) {
-    throw new PreflightInputError(`${field} must be a 0x-prefixed, 40-hex-character EVM address`)
+  if (!isValidPaymentAddress(network, s)) {
+    throw new PreflightInputError(
+      network === 'solana:mainnet'
+        ? `${field} must be a base58 Solana public key`
+        : `${field} must be a 0x-prefixed, 40-hex-character EVM address`
+    )
   }
   return s
 }
 
-function optionalEvmAddress(value: unknown, field: string): string | null {
+function optionalPaymentAddress(value: unknown, field: string, network: string): string | null {
   if (value === null || value === undefined) return null
-  return requireEvmAddress(value, field)
+  return requirePaymentAddress(value, field, network)
 }
 
 function requireOrigin(value: string, field: string): string {
@@ -246,15 +250,15 @@ function parseAction(raw: unknown): PreflightAction {
   if (!CAIP2_PATTERN.test(network)) {
     throw new PreflightInputError('action.network must be a CAIP-2 identifier, e.g. "eip155:8453"')
   }
-  const asset = requireEvmAddress(a.asset, 'action.asset')
+  const asset = requirePaymentAddress(a.asset, 'action.asset', network)
   const amount = requireString(a.amount, 'action.amount')
   if (!isCanonicalDecimalAmount(amount)) {
     throw new PreflightInputError(
       'action.amount must be a canonical decimal string (no leading zeros, no sign, no scientific notation), e.g. "1.00" — never a float or a ticker-scaled integer'
     )
   }
-  const recipient = requireEvmAddress(a.recipient, 'action.recipient')
-  const sender = optionalEvmAddress(a.sender, 'action.sender')
+  const recipient = requirePaymentAddress(a.recipient, 'action.recipient', network)
+  const sender = optionalPaymentAddress(a.sender, 'action.sender', network)
   const resource = optionalString(a.resource, 'action.resource')
   if (resource !== null) {
     try {
@@ -276,7 +280,7 @@ const POLICY_KEYS = [
   'expected_payer',
 ] as const
 
-function parsePolicy(raw: unknown): PreflightPolicy {
+function parsePolicy(raw: unknown, actionNetwork: string): PreflightPolicy {
   if (!isPlainObject(raw)) throw new PreflightInputError('policy must be an object')
   rejectUnknownKeys(raw, POLICY_KEYS, 'policy')
   const p = raw
@@ -293,12 +297,12 @@ function parsePolicy(raw: unknown): PreflightPolicy {
   const allowedAssets = optionalStringArray(p.allowed_assets, 'policy.allowed_assets')
   if (allowedAssets) {
     for (const asset_ of allowedAssets) {
-      if (!isValidEvmAddress(asset_)) {
-        throw new PreflightInputError(`policy.allowed_assets contains a non-address value: "${asset_}" (use contract addresses, not ticker symbols)`)
+      if (!isValidPaymentAddress(actionNetwork, asset_)) {
+        throw new PreflightInputError(`policy.allowed_assets contains an asset identifier not valid for ${actionNetwork} (use canonical asset addresses or mints, not ticker symbols)`)
       }
     }
   }
-  const expectedRecipient = optionalEvmAddress(p.expected_recipient, 'policy.expected_recipient')
+  const expectedRecipient = optionalPaymentAddress(p.expected_recipient, 'policy.expected_recipient', actionNetwork)
   const allowedResourceOrigins = optionalStringArray(p.allowed_resource_origins, 'policy.allowed_resource_origins')
   if (allowedResourceOrigins) {
     for (const origin of allowedResourceOrigins) requireOrigin(origin, 'policy.allowed_resource_origins')
@@ -308,7 +312,7 @@ function parsePolicy(raw: unknown): PreflightPolicy {
   // only an expected_payer still imposes no ALLOW/BLOCK gate at all, so it
   // must not be able to silently satisfy "this policy is intentionally
   // unconstrained".
-  const expectedPayer = optionalEvmAddress(p.expected_payer, 'policy.expected_payer')
+  const expectedPayer = optionalPaymentAddress(p.expected_payer, 'policy.expected_payer', actionNetwork)
 
   // D2.3 (Task 5): a policy where every constraint is null/omitted is
   // indistinguishable, on its face, from a caller who forgot to set policy
@@ -350,7 +354,7 @@ export function parsePreflightInput(raw: unknown): PreflightInput {
   rejectUnknownKeys(raw, ['action', 'policy', 'options', 'references', 'publication'], 'body')
 
   const action = parseAction(raw.action)
-  const policy = parsePolicy(raw.policy)
+  const policy = parsePolicy(raw.policy, action.network)
 
   const rawOptions = raw.options ?? {}
   if (!isPlainObject(rawOptions)) throw new PreflightInputError('options must be an object')
@@ -359,6 +363,11 @@ export function parsePreflightInput(raw: unknown): PreflightInput {
     throw new PreflightInputError('options.screen_recipient_sanctions must be a boolean')
   }
   const options: PreflightOptions = { screen_recipient_sanctions: rawOptions.screen_recipient_sanctions === true }
+  if (options.screen_recipient_sanctions && action.network === 'solana:mainnet') {
+    throw new PreflightInputError(
+      'options.screen_recipient_sanctions is not available for Solana payments: the configured sanctions oracle accepts EVM addresses only'
+    )
+  }
 
   const rawReferences = raw.references ?? {}
   if (!isPlainObject(rawReferences)) throw new PreflightInputError('references must be an object')
@@ -429,7 +438,8 @@ export function parseInspectInput(raw: unknown): InspectPaymentInput {
     }
   }
 
-  return { action: parseAction(raw.action), policy: parsePolicy(raw.policy) }
+  const action = parseAction(raw.action)
+  return { action, policy: parsePolicy(raw.policy, action.network) }
 }
 
 /**
@@ -455,7 +465,7 @@ export async function inspectPayment(raw: unknown): Promise<InspectPaymentResult
 }
 
 function addressesEqual(a: string, b: string): boolean {
-  return a.toLowerCase() === b.toLowerCase()
+  return isValidEvmAddress(a) && isValidEvmAddress(b) ? a.toLowerCase() === b.toLowerCase() : a === b
 }
 
 /**

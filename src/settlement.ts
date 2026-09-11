@@ -21,20 +21,22 @@
 import { createPublicClient, http, getAddress, parseAbi, parseEventLogs, type Log, type Hex } from 'viem'
 import { decodeErc3009Authorization, type DecodedPaymentAuthorization } from './paymentAuthorization.js'
 import { BASE_CAIP2, getConfiguredRpcUrl, getNetworkMinConfirmations, getSettlementNetwork } from './settlementNetworks.js'
+import { SOLANA_CAIP2, getSolanaSupportedAsset, isValidSolanaSignature, observeSolanaTransaction } from './solanaSettlement.js'
+import type { FinalityEvaluation } from './finality.js'
 
 const TRANSFER_ABI = parseAbi(['event Transfer(address indexed from, address indexed to, uint256 value)'])
 
 export { BASE_CAIP2 }
 
 export function getSupportedAsset(network: string, assetContract: string): { decimals: number; symbol: string } | null {
-  return getSettlementNetwork(network)?.assets[assetContract.toLowerCase()] ?? null
+  return getSettlementNetwork(network)?.assets[assetContract.toLowerCase()] ?? getSolanaSupportedAsset(network, assetContract)
 }
 
 export class UnsupportedSettlementScopeError extends Error {
   constructor(network: string, assetContract: string) {
     super(
       `settlement verification does not support network "${network}" / asset "${assetContract}" in v1 — ` +
-        `supported canonical assets are Base (${BASE_CAIP2}) USDC, Ethereum (eip155:1) USDC, and Tempo (eip155:4217) pathUSD`
+        `supported canonical assets are Base (${BASE_CAIP2}) USDC, Ethereum (eip155:1) USDC, Tempo (eip155:4217) pathUSD, and Solana (${SOLANA_CAIP2}) USDC`
     )
     this.name = 'UnsupportedSettlementScopeError'
   }
@@ -44,6 +46,11 @@ const TRANSACTION_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/
 
 export function isValidTransactionHash(value: unknown): value is `0x${string}` {
   return typeof value === 'string' && TRANSACTION_HASH_PATTERN.test(value)
+}
+
+/** A finalization transaction identifier: EVM hash or Solana base58 signature. */
+export function isValidTransactionReference(value: unknown): value is string {
+  return isValidTransactionHash(value) || isValidSolanaSignature(value)
 }
 
 // D2.2B2: the confirmation-depth lookup (current tip + the tx's own block)
@@ -102,8 +109,14 @@ export interface ObservedTransfer {
    * intended payment -- see commerceObservation.ts's append-only handling.
    */
   blockHash: string
+  /** EVM transaction hash or Solana transaction signature. */
   transactionHash: string
+  /** Existing normalized event ordinal. Solana retains actual instruction identity below. */
   logIndex: number
+  sourceAccount?: string | null
+  destinationAccount?: string | null
+  instructionIndex?: number | null
+  innerInstructionIndex?: number | null
 }
 
 export type ChainInspectionState = 'not-found' | 'reverted' | 'success' | 'rpc-unavailable'
@@ -130,6 +143,8 @@ export interface SettlementObservation {
    * never fabricated, never inferred from the Transfer log alone.
    */
   paymentAuthorization: DecodedPaymentAuthorization | null
+  /** Present for non-EVM observers that establish their own finality evidence. */
+  finality?: FinalityEvaluation | null
 }
 
 const NOT_FOUND: SettlementObservation = {
@@ -141,6 +156,7 @@ const NOT_FOUND: SettlementObservation = {
   transfers: [],
   rpcError: null,
   paymentAuthorization: null,
+  finality: null,
 }
 
 /**
@@ -169,11 +185,15 @@ export interface MinimalSettlementClient {
  * `state: 'rpc-unavailable'` / `'not-found'`, never `'success'`.
  */
 export async function observeTransaction(
-  transactionHash: `0x${string}`,
+  transactionHash: string,
   network: string,
   assetContract: string,
   deps: { client?: MinimalSettlementClient } = {}
 ): Promise<SettlementObservation> {
+  if (network === SOLANA_CAIP2) {
+    if (!getSolanaSupportedAsset(network, assetContract)) throw new UnsupportedSettlementScopeError(network, assetContract)
+    return observeSolanaTransaction(transactionHash, network, assetContract)
+  }
   const networkConfig = getSettlementNetwork(network)
   if (!networkConfig || !getSupportedAsset(network, assetContract)) {
     throw new UnsupportedSettlementScopeError(network, assetContract)
@@ -187,7 +207,7 @@ export async function observeTransaction(
 
   let receipt
   try {
-    receipt = await publicClient.getTransactionReceipt({ hash: transactionHash })
+    receipt = await publicClient.getTransactionReceipt({ hash: transactionHash as `0x${string}` })
   } catch (err: any) {
     if (err?.name === 'TransactionReceiptNotFoundError') return NOT_FOUND
     return { ...NOT_FOUND, state: 'rpc-unavailable', rpcError: err?.message || 'RPC error fetching transaction receipt' }
@@ -206,6 +226,7 @@ export async function observeTransaction(
       transfers: [],
       rpcError: null,
       paymentAuthorization: null,
+      finality: null,
     }
   }
 
@@ -238,7 +259,7 @@ export async function observeTransaction(
   let paymentAuthorization: DecodedPaymentAuthorization | null = null
   if (publicClient.getTransaction) {
     try {
-      const tx = await publicClient.getTransaction({ hash: transactionHash })
+      const tx = await publicClient.getTransaction({ hash: transactionHash as `0x${string}` })
       paymentAuthorization = decodeErc3009Authorization(tx.input)
     } catch {
       paymentAuthorization = null
@@ -275,6 +296,7 @@ export async function observeTransaction(
       transfers,
       rpcError: err?.message || 'RPC error fetching current block number/timestamp',
       paymentAuthorization,
+      finality: null,
     }
   }
   const confirmations = Number(currentBlock - receipt.blockNumber) + 1
@@ -309,5 +331,6 @@ export async function observeTransaction(
     transfers,
     rpcError: finalityRpcError,
     paymentAuthorization,
+    finality: null,
   }
 }

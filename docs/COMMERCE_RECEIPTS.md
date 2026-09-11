@@ -45,6 +45,9 @@ Content-Type: application/json
 }
 ```
 
+`transaction_hash` is an EVM hash for EVM receipts, or a base58 Solana
+transaction signature for a `solana:mainnet` receipt.
+
 Not a generic receipt-creation endpoint: `amount`, `recipient`, `asset`,
 `sender`, and `network` are **rejected** if the caller supplies them (400) —
 those settlement facts come only from the bound PREFLIGHT receipt and
@@ -62,6 +65,17 @@ decimals, plus Tempo mainnet pathUSD TIP-20 (`eip155:4217`,
 network/asset combination fails clearly (400) rather than pretending to
 support it. The USDC addresses are the current canonical USDC contracts in
 [Circle's contract-address registry](https://developers.circle.com/stablecoins/usdc-contract-addresses); Tempo documents pathUSD as its genesis USD stablecoin.
+
+Solana mainnet (`solana:mainnet`) is supported for Circle's native USDC SPL
+mint `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` (6 decimals) only. OCD
+reads `jsonParsed` transaction data at Solana's `finalized` commitment,
+includes both top-level and inner SPL Token Program (`Tokenkeg…`) transfers,
+and resolves both source and destination **token accounts** at `finalized`
+commitment before reporting their wallet owners. It does not treat a token
+account itself as a recipient wallet and does not currently support
+Token-2022 or arbitrary SPL mints. The Solana observer requires
+`SOLANA_RPC_URL`; no public fallback is used because Solana's public RPC
+endpoints are rate-limited and explicitly unsuitable for production traffic.
 
 ## Independent settlement verification
 
@@ -88,6 +102,11 @@ dependency), and reports only what it actually observed:
    behind the configured RPC's native `finalized` head
    (`tempo-tip20-finalized-head.v1`). Tempo's deterministic consensus does not
    let OCD promote inclusion or a confirmation count into a finality claim.
+   Solana: settlement is confirmed only after `getTransaction` and its block
+   are available at Solana's native `finalized` commitment and the selected
+   slot is at or behind the RPC's finalized slot
+   (`solana-usdc-finalized.v1`). A merely `processed` or `confirmed`
+   transaction is never promoted to settlement `CONFIRMED`.
 
 **`settlement: CONFIRMED` means the observed transaction settled — it never
 by itself means "matched what was authorized."** That is a separate,

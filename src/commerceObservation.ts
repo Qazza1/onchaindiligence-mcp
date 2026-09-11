@@ -24,6 +24,7 @@
  * itself grant any binding strength above TRANSFER_MATCH_ONLY.
  */
 import { getAddress } from 'viem'
+import { isValidEvmAddress } from './inputValidation.js'
 import type { ObservedTransfer, SettlementObservation } from './settlement.js'
 import { evaluateSettlementFinality, type MinimalFinalityClient, type FinalityEvaluation } from './finality.js'
 import { getSettlementNetwork } from './settlementNetworks.js'
@@ -31,7 +32,7 @@ import { deriveBindingStrength, isConservativeMatchOnlyEvidence, buildCommerceLi
 import { recordCommerceObservation, type CommerceObservationRecord, type ExecutionBindingRecord } from './db.js'
 
 function addressesEqual(a: string | null, b: string | null): boolean {
-  return a !== null && b !== null && a.toLowerCase() === b.toLowerCase()
+  return a !== null && b !== null && (isValidEvmAddress(a) && isValidEvmAddress(b) ? a.toLowerCase() === b.toLowerCase() : a === b)
 }
 
 /**
@@ -92,8 +93,10 @@ export async function recordObservation(
 
   let finality: FinalityEvaluation
   const finalityPolicy = getSettlementNetwork(params.network)?.finalityPolicy
-  if (!finalityPolicy) throw new Error(`no finality policy is configured for ${params.network}`)
-  if (observation.state === 'reverted') {
+  if (observation.finality) {
+    finality = observation.finality
+  } else if (!finalityPolicy) throw new Error(`no finality policy is configured for ${params.network}`)
+  else if (observation.state === 'reverted') {
     finality = {
       policy: finalityPolicy,
       state: 'reverted',
@@ -139,7 +142,12 @@ export async function recordObservation(
         observed_payer: selectedTransfer.from,
         observed_recipient: selectedTransfer.to,
         observed_amount_atomic: selectedTransfer.amountAtomic.toString(),
-        token_contract: getAddress(params.tokenContract),
+        token_contract: isValidEvmAddress(params.tokenContract) ? getAddress(params.tokenContract) : params.tokenContract,
+        chain_event_kind: selectedTransfer.instructionIndex === undefined ? ('EVM_LOG' as const) : ('SPL_TRANSFER' as const),
+        source_account: selectedTransfer.sourceAccount ?? null,
+        destination_account: selectedTransfer.destinationAccount ?? null,
+        instruction_index: selectedTransfer.instructionIndex ?? null,
+        inner_instruction_index: selectedTransfer.innerInstructionIndex ?? null,
       }
     : null
 
@@ -191,7 +199,12 @@ export async function recordObservation(
     observedPayer: selectedTransfer.from,
     observedRecipient: selectedTransfer.to,
     observedAmountAtomic: selectedTransfer.amountAtomic.toString(),
-    tokenContract: getAddress(params.tokenContract),
+    tokenContract: isValidEvmAddress(params.tokenContract) ? getAddress(params.tokenContract) : params.tokenContract,
+    chainEventKind: selectedTransfer.instructionIndex === undefined ? 'EVM_LOG' : 'SPL_TRANSFER',
+    sourceAccount: selectedTransfer.sourceAccount ?? null,
+    destinationAccount: selectedTransfer.destinationAccount ?? null,
+    instructionIndex: selectedTransfer.instructionIndex ?? null,
+    innerInstructionIndex: selectedTransfer.innerInstructionIndex ?? null,
     paymentAuthorizer: observedAuthorizer,
     paymentAuthorizationNonce: observation.paymentAuthorization?.nonce ?? null,
     finalityPolicy: finality.policy,

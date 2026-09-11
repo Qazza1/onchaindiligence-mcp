@@ -27,6 +27,7 @@ import { BASE_CAIP2, ETHEREUM_CAIP2, TEMPO_CAIP2 } from './settlementNetworks.js
 export const BASE_FINALITY_POLICY = 'base-usdc-safe-head.v1'
 export const ETHEREUM_FINALITY_POLICY = 'ethereum-usdc-finalized-head.v1'
 export const TEMPO_FINALITY_POLICY = 'tempo-tip20-finalized-head.v1'
+export const SOLANA_FINALITY_POLICY = 'solana-usdc-finalized.v1'
 
 export type FinalityState = 'safe' | 'pending' | 'unverifiable' | 'reverted'
 
@@ -37,7 +38,7 @@ export interface ChainHeadUsed {
 }
 
 export interface FinalityEvaluation {
-  policy: typeof BASE_FINALITY_POLICY | typeof ETHEREUM_FINALITY_POLICY | typeof TEMPO_FINALITY_POLICY
+  policy: typeof BASE_FINALITY_POLICY | typeof ETHEREUM_FINALITY_POLICY | typeof TEMPO_FINALITY_POLICY | typeof SOLANA_FINALITY_POLICY
   state: FinalityState
   chainHeadUsed: ChainHeadUsed | null
   selectedBlock: { number: string; hash: string }
