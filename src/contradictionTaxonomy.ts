@@ -28,6 +28,9 @@ export const CONTRADICTION_CODES = [
   // ERC-20 approval. These two are used only by the allowance reconciler.
   'SPENDER_MISMATCH',
   'ALLOWANCE_MISMATCH',
+  'ROUTER_MISMATCH',
+  'OUTPUT_ASSET_MISMATCH',
+  'MINIMUM_OUTPUT_NOT_MET',
 ] as const
 
 export const INSUFFICIENT_EVIDENCE_CODES = [
