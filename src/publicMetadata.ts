@@ -42,6 +42,7 @@ import {
   VERDICT_DESCRIPTION,
 } from './discovery.js'
 import { INSPECT_DESCRIPTION } from './inspectRoute.js'
+import { PREFLIGHT_ALLOWANCE_DESCRIPTION } from './allowanceRoute.js'
 
 const BASE_URL = 'https://mcp.onchaindiligence.com'
 
@@ -261,6 +262,20 @@ const RESOURCES: ResourceSpec[] = [
         },
       },
     },
+  },
+  {
+    path: '/x402/preflight-allowance',
+    method: 'POST',
+    operationId: 'preflightAllowance',
+    summary: 'Evaluate a Base USDC ERC-20 allowance or revocation before execution',
+    description: PREFLIGHT_ALLOWANCE_DESCRIPTION,
+    priceUsd: config.prices.preflight,
+    requestBody: {
+      description: 'Strict Base canonical-USDC allowance action and deterministic policy. Amounts are uint256 atomic-unit strings; REVOKE is approve(spender, 0).',
+      example: { action: { kind: 'ERC20_ALLOWANCE', network: 'eip155:8453', token: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', owner: null, spender: '0x000000000000000000000000000000000000dEaD', amount_atomic: '1000000', intent: 'SET_ALLOWANCE' }, policy: { allowed_networks: ['eip155:8453'], allowed_tokens: ['0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'], allowed_spenders: ['0x000000000000000000000000000000000000dEaD'], max_allowance_atomic: '1000000' } },
+      schema: { type: 'object', required: ['action', 'policy'], properties: { action: { type: 'object', required: ['kind', 'network', 'token', 'spender', 'amount_atomic', 'intent'], properties: { kind: { type: 'string', enum: ['ERC20_ALLOWANCE'] }, network: { type: 'string', enum: ['eip155:8453'] }, token: { type: 'string' }, owner: { type: ['string', 'null'] }, spender: { type: 'string' }, amount_atomic: { type: 'string' }, intent: { type: 'string', enum: ['SET_ALLOWANCE', 'REVOKE'] } } }, policy: { type: 'object' }, options: { type: 'object' } } },
+    },
+    responseSchema: { type: 'object', required: ['decision', 'checks', 'artifact'], properties: { decision: { type: 'object' }, checks: { type: 'array' }, artifact: { type: 'object', description: 'Signed portable onchaindiligence.erc20-allowance-action.v1 artifact; not a payment receipt.' } } },
   },
 ]
 

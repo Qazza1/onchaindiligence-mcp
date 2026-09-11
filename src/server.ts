@@ -61,6 +61,7 @@ import { preflightPayment, inspectPayment } from './preflight.js'
 import { INSPECT_DESCRIPTION } from './inspectRoute.js'
 import { getReceiptById, verifyReceipt, VerifyReceiptInputError } from './receiptTools.js'
 import { inspectAllowance, observeAllowance, preflightAllowance, INSPECT_ALLOWANCE_DESCRIPTION, OBSERVE_ALLOWANCE_DESCRIPTION, PREFLIGHT_ALLOWANCE_DESCRIPTION } from './allowanceRoute.js'
+export { PREFLIGHT_ALLOWANCE_DESCRIPTION } from './allowanceRoute.js'
 
 // Fail fast if misconfigured — same discipline as the HTTP API.
 assertConfigured()

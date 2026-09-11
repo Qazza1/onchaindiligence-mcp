@@ -61,6 +61,7 @@ const PAID_ROUTES: Array<{ key: string; priceUsd: number }> = [
   { key: 'GET /x402/us-company', priceUsd: config.prices.usCompany },
   { key: 'GET /x402/diligence', priceUsd: config.prices.diligence },
   { key: 'GET /x402/verdict/:address', priceUsd: config.prices.screen },
+  { key: 'POST /x402/preflight-allowance', priceUsd: config.prices.preflight },
   { key: 'POST /x402/preflight-payment', priceUsd: config.prices.preflight },
   { key: 'POST /x402/lifecycle/preflight-payment', priceUsd: config.prices.preflight },
 ]
@@ -100,7 +101,7 @@ for (const route of PAID_ROUTES) {
   // the receipt envelope's nested receipt.proof.
   const example = entry.extensions.bazaar.info?.output?.example
   assert.ok(
-    example?.attestation || example?.receipt?.proof,
+    example?.attestation || example?.receipt?.proof || example?.artifact?.attestation,
     `${route.key} Bazaar example must show a signed proof (attestation or receipt.proof)`
   )
   assert.ok(

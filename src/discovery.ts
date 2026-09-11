@@ -189,6 +189,14 @@ export const X402_ROUTES: X402RoutesConfig = {
       accepts: { scheme: 'exact', price: usd(config.prices.preflight), network: CAIP2, payTo: config.x402.recipient },
       description: PREFLIGHT_ALLOWANCE_DESCRIPTION,
       mimeType: 'application/json',
+      extensions: {
+        ...declareDiscoveryExtension({
+          bodyType: 'json',
+          input: { action: { kind: 'ERC20_ALLOWANCE', network: 'eip155:8453', token: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', owner: null, spender: '0x000000000000000000000000000000000000dEaD', amount_atomic: '1000000', intent: 'SET_ALLOWANCE' }, policy: { allowed_networks: ['eip155:8453'], allowed_tokens: ['0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'], allowed_spenders: ['0x000000000000000000000000000000000000dEaD'], max_allowance_atomic: '1000000' } },
+          inputSchema: { properties: { action: { type: 'object' }, policy: { type: 'object' }, options: { type: 'object' } } },
+          output: { example: { decision: { status: 'ALLOW' }, artifact: { data: { schema: 'onchaindiligence.erc20-allowance-action.v1', artifact_type: 'PREFLIGHT' }, attestation: { signed: true, key_id: 'ed25519-EXAMPLEKEY000000', algorithm: 'ed25519', signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg' } } }, schema: { type: 'object', properties: { decision: { type: 'object' }, artifact: { type: 'object' } } } },
+        }),
+      },
     },
     'GET /x402/screen/:address': {
       accepts: {
