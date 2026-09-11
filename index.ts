@@ -41,6 +41,7 @@ import { mountWebhooks } from './src/webhookRoute.js'
 import { mountMerchantEvidence } from './src/merchantEvidenceRoute.js'
 import { mountProviderEvidence } from './src/providerEvidenceRoute.js'
 import { mountTurnkeyWebhook } from './src/turnkeyWebhookRoute.js'
+import { mountCrossmintWebhook } from './src/crossmintWebhookRoute.js'
 import { mountWorkspace } from './src/workspaceRoute.js'
 import { mountDashboardCors } from './src/dashboardCors.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
@@ -214,5 +215,12 @@ mountProviderEvidence(app)
 // executor itself established; never trusts an operation id from Turnkey.
 // See src/turnkeyWebhookRoute.ts.
 mountTurnkeyWebhook(app)
+
+// D3.4C4: POST /webhooks/crossmint/transfer -- inbound, Svix-signature-
+// verified Crossmint wallet-transfer evidence. Correlated to an operation
+// ONLY via the durable execution_bindings.provider_reference the executor
+// itself established; never trusts an operation id from Crossmint.
+// See src/crossmintWebhookRoute.ts.
+mountCrossmintWebhook(app)
 
 export default app

@@ -292,6 +292,133 @@ export function parseTurnkeyWebhookEvidenceInput(body: unknown, webhookEventId: 
   }
 }
 
+// ---------------------------------------------------------------------
+// D3.4C4 -- Crossmint Agent Wallet transfer webhook evidence.
+//
+// Confirmed directly against current official Crossmint documentation
+// (docs.crossmint.com, re-checked at implementation time, not from memory):
+// wallet transfer webhooks (`wallets.transfer.in` / `wallets.transfer.out`)
+// are ALWAYS terminal -- `data.status` is only ever `succeeded` or `failed`,
+// with no pending/broadcasting intermediate state exposed at the webhook
+// layer (unlike Turnkey's BROADCASTING). Only `wallets.transfer.out`
+// (an OCD-controlled wallet sending funds out) is in scope for provider
+// evidence about an OCD-authorized payment -- `wallets.transfer.in`
+// describes funds arriving, which is not an execution claim about
+// anything OCD authorized, and `wallets.signer.exported` is an unrelated
+// security event; both are acknowledged but never parsed as evidence here.
+//
+// IDENTITY DISCIPLINE (the most important Crossmint-specific issue, per
+// current docs): `data.transferId` (Crossmint's own transfer identity) and
+// `data.onChain.txId` (the final on-chain transaction hash) are the only
+// two identities the current webhook payload and Get Transaction API
+// actually document. No `userOperationHash` field appears anywhere in
+// current Crossmint API reference or webhook documentation -- this module
+// therefore never looks for one and never risks collapsing a UserOperation
+// hash into `transaction_hash`. If Crossmint later exposes one, it must be
+// evaluated for its own guarantees before being treated as equivalent to
+// `onChain.txId`, never assumed.
+//
+// Unlike Turnkey's webhook (which asserts nothing about payer/amount/
+// asset/recipient), Crossmint's webhook DOES document `data.sender`,
+// `data.recipient`, and `data.token` fields as its own claim -- so, per
+// this module's own field-mapping rule ("populate ONLY fields the provider
+// itself actually asserts"), those fields ARE populated here from
+// Crossmint's claim, unlike the Turnkey/PayBox branches. This is still
+// never treated as independent settlement evidence -- it is what Crossmint
+// claims, checked against OCD's own frozen mandate and independent Base
+// observation exactly like every other provider's claim.
+// ---------------------------------------------------------------------
+export const CROSSMINT_EXECUTOR_IDENTITY = 'crossmint-base-usdc'
+
+export type CrossmintTransferEventType = 'wallets.transfer.in' | 'wallets.transfer.out'
+
+/** Chain identifiers Crossmint documents for its wallet/transfer objects, mapped conservatively to CAIP-2 only where unambiguous. Anything else stays null -- never guessed. */
+const CROSSMINT_CHAIN_TO_CAIP2: Readonly<Record<string, string>> = {
+  base: 'eip155:8453',
+}
+
+/** True only for the one event type this module accepts as a provider execution claim (an OCD-controlled wallet sending funds out). `wallets.transfer.in` and `wallets.signer.exported` are real Crossmint events but are never terminal PROVIDER-EXECUTION evidence in this module's sense. */
+export function isCrossmintOutboundTransferEvent(eventType: unknown): eventType is 'wallets.transfer.out' {
+  return eventType === 'wallets.transfer.out'
+}
+
+/**
+ * Normalizes an ALREADY SIGNATURE-VERIFIED Crossmint `wallets.transfer.out`
+ * webhook message into the existing ProviderEvidenceInput shape. Callers
+ * MUST verify the webhook signature (crossmintWebhookVerification.ts) and
+ * MUST check isCrossmintOutboundTransferEvent(body.type) before calling
+ * this.
+ *
+ * `svixEventId` is the delivery's `svix-id` header value -- not a body
+ * field -- mirroring parseTurnkeyWebhookEvidenceInput()'s choice of the
+ * transport-level per-delivery id over any payload-internal id, for the
+ * same reason: it is the identifier Svix's own signed input is computed
+ * over, and is Crossmint's documented stable per-event identity.
+ */
+export function parseCrossmintWebhookEvidenceInput(body: unknown, svixEventId: string): ProviderEvidenceInput {
+  if (!object(body)) throw new ProviderEvidenceInputError('body must be a JSON object')
+  if (body.type !== 'wallets.transfer.out') throw new ProviderEvidenceInputError('expected a wallets.transfer.out webhook message')
+  const data = object(body.data) ? body.data : null
+  if (!data) throw new ProviderEvidenceInputError('wallets.transfer.out webhook is missing data')
+
+  const transferId = optionalString(data.transferId, 'data.transferId', 200)
+  if (!transferId) throw new ProviderEvidenceInputError('data.transferId is required')
+  const status = data.status
+  if (status !== 'succeeded' && status !== 'failed') {
+    throw new ProviderEvidenceInputError('data.status must be succeeded or failed (current Crossmint transfer webhooks carry no non-terminal status)')
+  }
+
+  const sender = object(data.sender) ? data.sender : null
+  const recipient = object(data.recipient) ? data.recipient : null
+  const token = object(data.token) ? data.token : null
+  const onChain = object(data.onChain) ? data.onChain : null
+  const error = object(data.error) ? data.error : null
+
+  const txHash = onChain ? optionalString(onChain.txId, 'data.onChain.txId', 66) : null
+  if (txHash !== null && !isValidTransactionHash(txHash)) throw new ProviderEvidenceInputError('data.onChain.txId must be a 0x-prefixed 32-byte transaction hash, or absent')
+
+  const senderChain = sender ? optionalString(sender.chain, 'data.sender.chain', 64) : null
+  const network = senderChain ? (CROSSMINT_CHAIN_TO_CAIP2[senderChain] ?? null) : null
+
+  const failureCode = status === 'failed' ? (error ? optionalString(error.reason, 'data.error.reason', 128) ?? 'CROSSMINT_FAILED' : 'CROSSMINT_FAILED') : null
+  const failureDigest = error
+    ? contentId({ message: optionalString(error.message, 'data.error.message', 512), reason: optionalString(error.reason, 'data.error.reason', 128), revert: object(error.revert) ? error.revert : null })
+    : null
+
+  const completedAt = optionalString(data.completedAt, 'data.completedAt', 64)
+  if (completedAt !== null && Number.isNaN(Date.parse(completedAt))) throw new ProviderEvidenceInputError('data.completedAt must be an ISO timestamp, or absent')
+
+  return {
+    provider: 'crossmint',
+    providerVersion: 'v1',
+    providerExecutionId: transferId,
+    correlationReference: `crossmint:${transferId}`,
+    x402Version: null,
+    claimedState: status === 'succeeded' ? 'SUCCEEDED' : 'FAILED',
+    transactionHash: txHash,
+    network,
+    // Crossmint's webhook DOES assert these -- unlike Turnkey, they are
+    // populated from the provider's own claim (see this section's header).
+    payer: sender ? optionalAddress(sender.address, 'data.sender.address') : null,
+    amountAtomic: token ? optionalString(token.rawAmount, 'data.token.rawAmount', 100) : null,
+    asset: token ? optionalAddress(token.contractAddress, 'data.token.contractAddress') : null,
+    recipient: recipient ? optionalAddress(recipient.address, 'data.recipient.address') : null,
+    failureCode,
+    failureDigest,
+    rawReferenceDigest: contentId({
+      transfer_id: transferId,
+      status,
+      sender_locator: sender ? optionalString(sender.locator, 'data.sender.locator', 200) : null,
+      recipient_locator: recipient ? optionalString(recipient.locator, 'data.recipient.locator', 200) : null,
+      token_locator: token ? optionalString(token.locator, 'data.token.locator', 200) : null,
+      svix_event_id: svixEventId,
+    }),
+    executionRequestId: null, // resolved by the webhook route via provider_reference, then attached before recordProviderEvidence() is called
+    providerEventId: svixEventId,
+    providerTimestamp: completedAt,
+  }
+}
+
 function evidenceId(operationId: string, input: ProviderEvidenceInput): string {
   return contentId({ operationId, ...input, sourceAuthentication: PROVIDER_EVIDENCE_SOURCE })
 }
@@ -321,6 +448,12 @@ export async function recordProviderEvidence(operationId: string, input: Provide
       if (binding.executorIdentity !== TURNKEY_EXECUTOR_IDENTITY) throw new ProviderEvidenceInputError('Turnkey provider evidence requires a Turnkey execution binding')
       if (binding.providerReference !== input.correlationReference) {
         throw new ProviderEvidenceInputError('Turnkey sendTransactionStatusId does not match the durable execution binding provider_reference')
+      }
+    }
+    if (input.provider === 'crossmint') {
+      if (binding.executorIdentity !== CROSSMINT_EXECUTOR_IDENTITY) throw new ProviderEvidenceInputError('Crossmint provider evidence requires a Crossmint execution binding')
+      if (binding.providerReference !== input.correlationReference) {
+        throw new ProviderEvidenceInputError('Crossmint transferId does not match the durable execution binding provider_reference')
       }
     }
   }
