@@ -60,6 +60,7 @@ import { attest } from './attest.js'
 import { preflightPayment, inspectPayment } from './preflight.js'
 import { INSPECT_DESCRIPTION } from './inspectRoute.js'
 import { getReceiptById, verifyReceipt, VerifyReceiptInputError } from './receiptTools.js'
+import { inspectAllowance, observeAllowance, preflightAllowance, INSPECT_ALLOWANCE_DESCRIPTION, OBSERVE_ALLOWANCE_DESCRIPTION, PREFLIGHT_ALLOWANCE_DESCRIPTION } from './allowanceRoute.js'
 
 // Fail fast if misconfigured — same discipline as the HTTP API.
 assertConfigured()
@@ -477,6 +478,30 @@ export const handler = createPaidMcpHandler(
         }
       }
     )
+
+    // D3.6A: allowance is a distinct consequential action, not a PAYMENT
+    // alias. The strict parser in allowance.ts remains the authority.
+    const allowanceSchema = {
+      action: z.object({
+        kind: z.literal('ERC20_ALLOWANCE'), network: z.string(), token: z.string(), owner: z.string().nullable().optional(), spender: z.string(), amount_atomic: z.string(), intent: z.enum(['SET_ALLOWANCE', 'REVOKE']),
+      }),
+      policy: z.object({
+        allowed_networks: z.array(z.string()).nullable().optional(), allowed_tokens: z.array(z.string()).nullable().optional(), allowed_spenders: z.array(z.string()).nullable().optional(), max_allowance_atomic: z.string().nullable().optional(), exact_allowance_atomic: z.string().nullable().optional(), revoke_only: z.boolean().optional(), unlimited_allowance: z.enum(['ALLOW', 'REQUIRE_APPROVAL', 'BLOCK']).nullable().optional(), acknowledge_unconstrained: z.boolean().optional(),
+      }),
+      options: z.object({ observe_current_allowance: z.boolean().optional() }).optional(),
+    }
+    server.tool('inspect_allowance', INSPECT_ALLOWANCE_DESCRIPTION, allowanceSchema, { readOnlyHint: true, openWorldHint: false }, async (args) => {
+      try { return { content: [{ type: 'text', text: JSON.stringify(await inspectAllowance(args), null, 2) }] } }
+      catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Allowance inspection failed.' }] } }
+    })
+    server.paidTool('preflight_allowance', PREFLIGHT_ALLOWANCE_DESCRIPTION, { price: config.prices.preflight }, allowanceSchema, { readOnlyHint: true, openWorldHint: true }, async (args) => {
+      try { return { content: [{ type: 'text', text: JSON.stringify(await preflightAllowance(args), null, 2) }] } }
+      catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Allowance preflight failed.' }] } }
+    })
+    server.tool('observe_allowance', OBSERVE_ALLOWANCE_DESCRIPTION, { artifact: z.unknown(), transaction_hash: z.string() }, { readOnlyHint: true, openWorldHint: true }, async (args) => {
+      try { return { content: [{ type: 'text', text: JSON.stringify(await observeAllowance(args), null, 2) }] } }
+      catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Allowance observation failed.' }] } }
+    })
 
     // --- get_receipt (D2.5, deferred from D2.3) -- FREE, no payment wrapper ---
     server.tool(

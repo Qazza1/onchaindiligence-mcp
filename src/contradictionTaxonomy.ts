@@ -24,6 +24,10 @@ export const CONTRADICTION_CODES = [
   'DUPLICATE_EXECUTION',
   'PAYMENT_IDENTITY_MISMATCH',
   'TEMPORAL_CONSTRAINT_VIOLATION',
+  // D3.6A: recipient/amount are payment-specific and would misdescribe an
+  // ERC-20 approval. These two are used only by the allowance reconciler.
+  'SPENDER_MISMATCH',
+  'ALLOWANCE_MISMATCH',
 ] as const
 
 export const INSUFFICIENT_EVIDENCE_CODES = [

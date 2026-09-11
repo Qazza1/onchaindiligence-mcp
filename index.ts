@@ -44,6 +44,7 @@ import { mountTurnkeyWebhook } from './src/turnkeyWebhookRoute.js'
 import { mountCrossmintWebhook } from './src/crossmintWebhookRoute.js'
 import { mountWorkspace } from './src/workspaceRoute.js'
 import { mountDashboardCors } from './src/dashboardCors.js'
+import { mountAllowanceRoutes } from './src/allowanceRoute.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
 import { outcomeForStatus, readMcpEnvelope, recordEvent } from './src/telemetry.js'
 
@@ -113,6 +114,7 @@ const recordHttpFunnel = async (c: any, next: () => Promise<void>) => {
 app.use('/x402/*', recordHttpFunnel)
 app.use('/mcp', requireSigningReadiness)
 app.use('/x402/*', requireSigningReadiness)
+app.use('/allowances/observe', requireSigningReadiness)
 app.use('/x402/verdict/:address', requireCanonicalVerdictReadiness)
 
 /**
@@ -150,6 +152,9 @@ mountLifecycle(app)
 // on already being in place. Does not touch the /mcp handler above. Safe to
 // remove by deleting this call and src/discovery.ts.
 mountDiscovery(app)
+// D3.6A: portable ERC-20 allowance inspection/observation. The paid
+// preflight terminal route itself is mounted by discovery after its x402 gate.
+mountAllowanceRoutes(app)
 
 // D2.4: mounts the TERMINAL POST /x402/lifecycle/preflight-payment handler.
 // Must be registered AFTER mountDiscovery (immediately above) so that call's

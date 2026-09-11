@@ -55,6 +55,8 @@ import {
   PreflightInputError,
   type PreflightDependencies,
 } from './preflight.js'
+import { parseAllowanceInput, AllowanceInputError } from './allowance.js'
+import { PREFLIGHT_ALLOWANCE_DESCRIPTION, preflightAllowance } from './allowanceRoute.js'
 
 /**
  * Price strings for the x402 middleware, derived from the SAME canonical
@@ -180,6 +182,14 @@ export const DILIGENCE_DESCRIPTION =
  * there is exactly one definition of what this server charges for.
  */
 export const X402_ROUTES: X402RoutesConfig = {
+    // D3.6A: same paid preflight rail as payments, but a separate strict
+    // allowance artifact. It is intentionally not advertised as a Bazaar
+    // resource until a real agent integration exists.
+    'POST /x402/preflight-allowance': {
+      accepts: { scheme: 'exact', price: usd(config.prices.preflight), network: CAIP2, payTo: config.x402.recipient },
+      description: PREFLIGHT_ALLOWANCE_DESCRIPTION,
+      mimeType: 'application/json',
+    },
     'GET /x402/screen/:address': {
       accepts: {
         scheme: 'exact',
@@ -877,6 +887,14 @@ export function mountDiscovery(app: Hono): void {
     await next()
   })
 
+  // Keep malformed allowance requests outside the x402 payment flow too.
+  app.use('/x402/preflight-allowance', async (c, next) => {
+    let body: unknown
+    try { body = await c.req.raw.clone().json() } catch { return c.json({ error: 'body must be valid JSON' }, 400) }
+    try { parseAllowanceInput(body) } catch (err: any) { return c.json({ error: err instanceof AllowanceInputError ? err.message : 'invalid allowance input' }, 400) }
+    await next()
+  })
+
   // Scoped to /x402/* deliberately. The middleware only gates the routes in
   // X402_ROUTES, but an unscoped `app.use` still RUNS it on every request —
   // including `/`, `/mcp` and the free discovery documents — which makes those
@@ -890,6 +908,10 @@ export function mountDiscovery(app: Hono): void {
   // receipt. See preflight.ts — this route is a thin transport adapter over
   // the shared preflightPayment() service the MCP tool also calls.
   app.post('/x402/preflight-payment', preflightPostHandler)
+  app.post('/x402/preflight-allowance', async (c) => {
+    try { return c.json(await preflightAllowance(await c.req.json()), 200) }
+    catch (err: any) { return c.json({ error: err?.message || 'allowance preflight failed' }, err instanceof AllowanceInputError ? 400 : 502) }
+  })
 
   // Paid handler — only runs after payment verifies and settles.
   // Every result is wrapped in the same signed envelope the HTTP API returns,
