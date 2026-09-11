@@ -198,6 +198,11 @@ export interface ExactObservationIdentity {
   observed_recipient: string | null
   observed_amount_atomic: string | null
   token_contract: string
+  chain_event_kind?: 'EVM_LOG' | 'SPL_TRANSFER'
+  source_account?: string | null
+  destination_account?: string | null
+  instruction_index?: number | null
+  inner_instruction_index?: number | null
 }
 
 export interface PaymentIdentityCommitment {

@@ -25,7 +25,7 @@ import {
   hashCapabilityToken,
 } from './db.js'
 import { extractBearerCapability } from './capability.js'
-import { observeTransaction, isValidTransactionHash, UnsupportedSettlementScopeError, BASE_CAIP2 } from './settlement.js'
+import { observeTransaction, isValidTransactionReference, UnsupportedSettlementScopeError, BASE_CAIP2 } from './settlement.js'
 import { buildCommerceReceiptCore, type FinalizationExecutionInput } from './commerceReceipt.js'
 import { attest } from './attest.js'
 import {
@@ -113,8 +113,8 @@ export function parseFinalizationExecutionInput(raw: unknown): FinalizationExecu
       )
     }
   }
-  if (!isValidTransactionHash(raw.transaction_hash)) {
-    throw new FinalizationInputError('transaction_hash must be a 0x-prefixed, 64-hex-character transaction hash')
+  if (!isValidTransactionReference(raw.transaction_hash)) {
+    throw new FinalizationInputError('transaction_hash must be an EVM transaction hash or a base58 Solana transaction signature')
   }
   if (typeof raw.execution_provider !== 'string' || !EXECUTION_PROVIDERS.has(raw.execution_provider)) {
     throw new FinalizationInputError('execution_provider must be one of: x402, paybox, wallet, other')
@@ -239,10 +239,11 @@ export async function finalizePayment(
   }
 
   let observation
+  const network = preflightReceipt.action.network ?? BASE_CAIP2
   try {
     observation = await (deps.observeTransaction ?? observeTransaction)(
       execution.transaction_hash,
-      preflightReceipt.action.network ?? BASE_CAIP2,
+      network,
       preflightReceipt.action.asset ?? ''
     )
   } catch (err) {
@@ -259,14 +260,14 @@ export async function finalizePayment(
   if (observation.state === 'not-found') {
     throw new FinalizationPendingError(
       'transaction-not-found',
-      'The supplied transaction was not yet found on Base mainnet. This is retryable: the finalization capability has not been consumed.',
+      `The supplied transaction was not yet found on ${network}. This is retryable: the finalization capability has not been consumed.`,
       425
     )
   }
   if (observation.state === 'rpc-unavailable') {
     throw new FinalizationPendingError(
       'rpc-unavailable',
-      `The Base RPC endpoint could not be reached: ${observation.rpcError ?? 'unknown error'}. This is retryable: the finalization capability has not been consumed.`,
+      `The ${network} RPC endpoint could not be reached: ${observation.rpcError ?? 'unknown error'}. This is retryable: the finalization capability has not been consumed.`,
       503
     )
   }

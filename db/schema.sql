@@ -173,6 +173,16 @@ CREATE TABLE IF NOT EXISTS commerce_observations (
 );
 
 CREATE INDEX IF NOT EXISTS commerce_observations_operation_idx ON commerce_observations (operation_id);
+
+-- D3.5C4 — additive non-EVM event identity. Existing EVM rows retain the
+-- default EVM_LOG classification. Solana's normalized log_index remains the
+-- natural-key event ordinal, while these fields retain its actual SPL
+-- instruction and token-account identities without mislabeling them as logs.
+ALTER TABLE commerce_observations ADD COLUMN IF NOT EXISTS chain_event_kind TEXT NOT NULL DEFAULT 'EVM_LOG';
+ALTER TABLE commerce_observations ADD COLUMN IF NOT EXISTS source_account TEXT;
+ALTER TABLE commerce_observations ADD COLUMN IF NOT EXISTS destination_account TEXT;
+ALTER TABLE commerce_observations ADD COLUMN IF NOT EXISTS instruction_index INTEGER;
+ALTER TABLE commerce_observations ADD COLUMN IF NOT EXISTS inner_instruction_index INTEGER;
 CREATE INDEX IF NOT EXISTS execution_bindings_operation_idx ON execution_bindings (operation_id);
 
 -- D2.7A -- authenticated private operation history + recovery center.

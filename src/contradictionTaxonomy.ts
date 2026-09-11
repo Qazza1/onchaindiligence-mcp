@@ -11,6 +11,8 @@
  * contradiction.
  */
 
+import { isValidSolanaAddress } from './inputValidation.js'
+
 export const CONTRADICTION_CODES = [
   'AMOUNT_MISMATCH',
   'ASSET_MISMATCH',
@@ -98,6 +100,18 @@ export function normalizeEvmAddress(value: string): string | null {
   return EVM_ADDRESS.test(value) ? value.toLowerCase() : null
 }
 
+/**
+ * Reconciliation addresses are chain-scoped facts. EVM addresses compare
+ * case-insensitively; Solana public keys are canonical base58 and compare
+ * exactly. Unknown shapes stay uncomparable rather than being normalized by
+ * guesswork.
+ */
+export function normalizeSupportedAddress(value: string): string | null {
+  const trimmed = value.trim()
+  if (EVM_ADDRESS.test(trimmed)) return trimmed.toLowerCase()
+  return isValidSolanaAddress(trimmed) ? trimmed : null
+}
+
 /** Canonical CAIP-2 only; display labels such as “Base” are intentionally rejected. */
 export function normalizeNetwork(value: string): string | null {
   const match = CAIP2.exec(value)
@@ -180,7 +194,7 @@ export function deriveTaxonomyFindings(facts: ReconciliationFacts): TaxonomyFind
   if (facts.observation) {
     compare('AMOUNT_MISMATCH', mandate.amount_atomic, observation.amount_atomic, normalizeAtomicAmount, 'amount in atomic units')
     compare('ASSET_MISMATCH', mandate.asset, observation.asset, normalizeAsset, 'asset identity')
-    compare('RECIPIENT_MISMATCH', mandate.recipient, observation.recipient, normalizeEvmAddress, 'recipient address')
+    compare('RECIPIENT_MISMATCH', mandate.recipient, observation.recipient, normalizeSupportedAddress, 'recipient address')
     compare('NETWORK_MISMATCH', mandate.network, observation.network, normalizeNetwork, 'network identifier')
   }
 
@@ -195,8 +209,8 @@ export function deriveTaxonomyFindings(facts: ReconciliationFacts): TaxonomyFind
         output.push(finding('CONTRADICTION', 'POLICY_CONSTRAINT_VIOLATION', { max_amount_atomic: facts.policy.max_amount_atomic }, { amount_atomic: observation.amount_atomic }, ['POLICY', 'CHAIN_OBSERVATION', 'BINDING_EVIDENCE'], 'Independently observed attributable amount exceeds an explicit policy maximum.', facts))
       }
       if (facts.policy.recipient_allowlist) {
-        const recipient = observation.recipient ? normalizeEvmAddress(observation.recipient) : null
-        const allowlist = facts.policy.recipient_allowlist.map(normalizeEvmAddress)
+        const recipient = observation.recipient ? normalizeSupportedAddress(observation.recipient) : null
+        const allowlist = facts.policy.recipient_allowlist.map(normalizeSupportedAddress)
         if (recipient !== null && allowlist.every((entry) => entry !== recipient)) {
           output.push(finding('CONTRADICTION', 'POLICY_CONSTRAINT_VIOLATION', { recipient_allowlist: facts.policy.recipient_allowlist }, { recipient: observation.recipient }, ['POLICY', 'CHAIN_OBSERVATION', 'BINDING_EVIDENCE'], 'Independently observed attributable recipient is outside an explicit policy allowlist.', facts))
         }
