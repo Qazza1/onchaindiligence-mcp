@@ -651,6 +651,26 @@ export async function getExecutionBinding(executionRequestId: string): Promise<E
 }
 
 /**
+ * D3.4C3: read-only lookup by the durable `provider_reference` a provider
+ * webhook can independently derive (e.g. `turnkey:<sendTransactionStatusId>`)
+ * -- this is how an inbound provider push (which never carries an OCD
+ * operation id) is correlated to the durable binding/operation it belongs
+ * to, WITHOUT trusting anything the provider claims about which operation
+ * it is. `provider_reference` has no uniqueness constraint at the DB level
+ * (see schema.sql), so this returns the most recently created match, and a
+ * caller finding more than one match for a value that is supposed to be
+ * unique per provider convention should treat that as its own anomaly
+ * rather than silently picking one.
+ */
+export async function getExecutionBindingByProviderReference(providerReference: string): Promise<ExecutionBindingRecord | null> {
+  const rows = (await sql().query(
+    'SELECT * FROM execution_bindings WHERE provider_reference = $1 ORDER BY created_at DESC LIMIT 1',
+    [providerReference]
+  )) as unknown as any[]
+  return rows[0] ? mapBindingRow(rows[0]) : null
+}
+
+/**
  * D2.6 correction (Astra final-review, remaining bypass): read-only lookup
  * of EVERY durable execution binding for an operation, so the server can
  * determine from DURABLE STATE -- never from a caller-supplied

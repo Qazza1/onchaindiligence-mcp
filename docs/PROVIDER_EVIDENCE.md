@@ -95,3 +95,64 @@ own chain observation. Gateway-mode claims do not alter the existing
 `TRANSFER_MATCH_ONLY` cap, and PayBox's own approval model (including any
 "Always Ask" configuration) remains independent of OCD `ALLOW` or
 `REQUIRE_APPROVAL` policy decisions.
+
+## Turnkey transaction-status evidence (D3.4C3)
+
+Turnkey exposes two distinct mechanisms, confirmed directly against current
+official Turnkey documentation: a standalone `SIGN_TRANSACTION` activity
+that signs only (no broadcast, no transaction hash), and `ethSendTransaction()`
+(sign + broadcast in one call), whose progress is tracked by
+`sendTransactionStatusId` via polling or the `transaction:status` webhook.
+Only the combined send/track lifecycle is accepted as provider evidence here
+— a bare signing activity proves a signature was produced, never that
+anything was broadcast, included, or settled.
+
+`POST /webhooks/turnkey/transaction-status` receives Turnkey's own signed
+push notification directly (not the recovery-credential-gated caller-reported
+endpoint above — Turnkey pushes evidence to OCD, it is not relayed by the
+caller). Every delivery is Ed25519-signature-verified against Turnkey's
+public JWKS (`GET https://api.turnkey.com/public/v1/discovery/webhooks/jwks`)
+before anything in the body is trusted, per Turnkey's documented
+`v1.ed25519.<key-id>.<timestamp>.<event-id>.<raw-body>` signed format, a
+5-minute replay window, and fail-closed rejection of any signature algorithm
+or version other than the current `ed25519`/`v1`. **A verified signature
+means "Turnkey authored this claim." It never means "the payment settled."**
+
+Only `INCLUDED` and `FAILED` are terminal. `BROADCASTING` is acknowledged
+(so Turnkey does not endlessly retry a delivery OCD has no use for) but is
+never recorded as provider evidence. An `INCLUDED` message that also carries
+Turnkey's documented on-chain-revert `error` is recorded as `FAILED`, not
+`SUCCEEDED` — the transaction landed, but did not succeed.
+
+The webhook carries no OCD operation id. Correlation is one-directional and
+entirely OCD-owned: `sendTransactionStatusId` becomes
+`turnkey:<sendTransactionStatusId>`, which must exactly match an existing
+durable `execution_bindings.provider_reference` (established by the
+executor at `submit()` time, D2.6's model) belonging to a Turnkey execution
+binding. A webhook with no matching durable binding is acknowledged but
+never attached to an arbitrary operation. Duplicate deliveries (a Turnkey
+retry of the same event) are absorbed by the existing content-addressed
+`provider_evidence` idempotency — no separate webhook-event-id table exists
+or is needed.
+
+Field mapping: `provider_execution_id` is Turnkey's `sendTransactionStatusId`
+(the durable send/track identity); `provider_event_id` is the webhook
+delivery's own `X-Turnkey-Event-Id` header (Turnkey's documented stable
+per-event/retry-dedupe identifier — the existing semantic intent of this
+field), not the signing `activityId`. `activityId` is retained only inside
+`raw_reference_digest`, since no current Turnkey documentation establishes a
+durable guaranteed linkage between an `activityId` and the
+`sendTransactionStatusId` it may accompany — that correlation is treated as
+unknown, not assumed. As with every other provider, `payer`/`amount`/`asset`/
+`recipient` are left null: Turnkey's transaction-status message does not
+assert them, and a provider claim must never be made to look like an
+assertion the provider did not actually make.
+
+A verified Turnkey webhook alone never raises binding strength past
+`TRANSFER_MATCH_ONLY`. `EXECUTOR_CORRELATED` requires the existing durable
+execution-binding correlation plus Turnkey's own direct
+`sendTransactionStatusId → txHash` claim (a direct provider-asserted
+linkage, unlike PayBox gateway mode's conservative log-search recovery).
+`PAYMENT_IDENTITY_LINKED` still requires the same independently-decoded
+on-chain authorizer match every other executor needs; `commerceLifecycle.ts`
+is unmodified.
