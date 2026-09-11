@@ -25,7 +25,8 @@
  */
 import { getAddress } from 'viem'
 import type { ObservedTransfer, SettlementObservation } from './settlement.js'
-import { evaluateBaseFinality, BASE_FINALITY_POLICY, type MinimalFinalityClient, type FinalityEvaluation } from './finality.js'
+import { evaluateSettlementFinality, type MinimalFinalityClient, type FinalityEvaluation } from './finality.js'
+import { getSettlementNetwork } from './settlementNetworks.js'
 import { deriveBindingStrength, isConservativeMatchOnlyEvidence, buildCommerceLifecycleBundle, type BindingStrength, type CommerceLifecycleBundleV1 } from './commerceLifecycle.js'
 import { recordCommerceObservation, type CommerceObservationRecord, type ExecutionBindingRecord } from './db.js'
 
@@ -90,18 +91,20 @@ export async function recordObservation(
   const { observation, selectedTransfer } = params
 
   let finality: FinalityEvaluation
+  const finalityPolicy = getSettlementNetwork(params.network)?.finalityPolicy
+  if (!finalityPolicy) throw new Error(`no finality policy is configured for ${params.network}`)
   if (observation.state === 'reverted') {
     finality = {
-      policy: BASE_FINALITY_POLICY,
+      policy: finalityPolicy,
       state: 'reverted',
       chainHeadUsed: null,
       selectedBlock: { number: observation.blockNumber?.toString() ?? '0', hash: selectedTransfer?.blockHash ?? '' },
     }
   } else if (params.finalityClient && observation.blockNumber !== null && selectedTransfer) {
-    finality = await evaluateBaseFinality(params.finalityClient, observation.blockNumber, selectedTransfer.blockHash as `0x${string}`)
+    finality = await evaluateSettlementFinality(params.network, params.finalityClient, observation.blockNumber, selectedTransfer.blockHash as `0x${string}`)
   } else {
     finality = {
-      policy: BASE_FINALITY_POLICY,
+      policy: finalityPolicy,
       state: 'unverifiable',
       chainHeadUsed: null,
       selectedBlock: { number: observation.blockNumber?.toString() ?? '0', hash: selectedTransfer?.blockHash ?? '' },

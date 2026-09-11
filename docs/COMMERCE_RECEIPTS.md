@@ -54,18 +54,18 @@ into durable storage besides a preflight's own opt-in publication of itself.
 
 ## v1 chain/asset scope
 
-Base mainnet (`eip155:8453`) ERC-20 transfers only, Base USDC
-(`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`, 6 decimals) as the only
-supported asset. A different network/asset combination fails clearly (400)
-rather than pretending to support it. `src/settlement.ts`'s per-network,
-per-asset registry is structured to extend cleanly — but nothing here fakes
-multi-chain support that doesn't exist yet.
+Canonical USDC ERC-20 transfers on Base mainnet (`eip155:8453`,
+`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`) and Ethereum mainnet
+(`eip155:1`, `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`), each with 6
+decimals. A different network/asset combination fails clearly (400) rather
+than pretending to support it. The addresses are the current canonical USDC
+contracts in [Circle's contract-address registry](https://developers.circle.com/stablecoins/usdc-contract-addresses).
 
 ## Independent settlement verification
 
 OCD never trusts a caller's, PayBox's, or an x402 facilitator's claim that a
 payment succeeded. `src/settlement.ts` reads the transaction receipt and logs
-directly from a Base JSON-RPC endpoint (reusing the existing viem
+directly from the configured network JSON-RPC endpoint (reusing the existing viem
 dependency), and reports only what it actually observed:
 
 1. Transaction not found (yet, or ever) -> never fabricated as confirmed.
@@ -76,9 +76,11 @@ dependency), and reports only what it actually observed:
 4. Transaction confirmed, and a Transfer matching the preflight's asset,
    recipient, amount (and sender, if the preflight required one) is found ->
    execution `CONFIRMED`, settlement `CONFIRMED`.
-5. Confirmed but below the configured minimum confirmation depth
-   (`BASE_MIN_CONFIRMATIONS`, default 1) -> settlement `UNVERIFIED` (pending),
-   never prematurely `CONFIRMED`.
+5. Base: confirmed but below the configured minimum confirmation depth
+   (`BASE_MIN_CONFIRMATIONS`, default 1) -> settlement `UNVERIFIED` (pending).
+   Ethereum: settlement is confirmed only when the transaction block is at or
+   behind the RPC's native `finalized` head (`ethereum-usdc-finalized-head.v1`).
+   If that head cannot be read, OCD does not substitute a confirmation count.
 
 **`settlement: CONFIRMED` means the observed transaction settled — it never
 by itself means "matched what was authorized."** That is a separate,

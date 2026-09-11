@@ -1,11 +1,9 @@
 /**
  * settlement.ts — independent on-chain settlement verification (D2.2).
  *
- * V1 CHAIN SCOPE, explicitly: Base mainnet (eip155:8453) ERC-20 transfers
- * only, with Base USDC as the only supported asset. This is a truthful,
- * narrow scope — not a fake multi-chain abstraction — but the shape here
- * (a per-network/per-asset registry + one inspection function) is meant to
- * extend cleanly when a second network/asset is actually added.
+ * Supported EVM scope: Base and Ethereum mainnet canonical USDC transfers.
+ * The network registry is intentionally small and explicit; this module is
+ * shared transaction/receipt/log observation, not a universal chain plugin.
  *
  * OCD never trusts a caller's claim that a payment settled. This module
  * reads the transaction receipt and its logs directly from a Base JSON-RPC
@@ -20,29 +18,22 @@
  * no second blockchain stack.
  */
 import { createPublicClient, http, getAddress, parseAbi, parseEventLogs, type Log, type Hex } from 'viem'
-import { base } from 'viem/chains'
 import { decodeErc3009Authorization, type DecodedPaymentAuthorization } from './paymentAuthorization.js'
+import { BASE_CAIP2, getConfiguredRpcUrl, getNetworkMinConfirmations, getSettlementNetwork } from './settlementNetworks.js'
 
 const TRANSFER_ABI = parseAbi(['event Transfer(address indexed from, address indexed to, uint256 value)'])
 
-export const BASE_CAIP2 = 'eip155:8453'
-
-/** Per-network, per-asset (lowercase address) support registry. Extend here for future networks/assets. */
-const SUPPORTED_SETTLEMENT_ASSETS: Record<string, Record<string, { decimals: number; symbol: string }>> = {
-  [BASE_CAIP2]: {
-    '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': { decimals: 6, symbol: 'USDC' },
-  },
-}
+export { BASE_CAIP2 }
 
 export function getSupportedAsset(network: string, assetContract: string): { decimals: number; symbol: string } | null {
-  return SUPPORTED_SETTLEMENT_ASSETS[network]?.[assetContract.toLowerCase()] ?? null
+  return getSettlementNetwork(network)?.assets[assetContract.toLowerCase()] ?? null
 }
 
 export class UnsupportedSettlementScopeError extends Error {
   constructor(network: string, assetContract: string) {
     super(
       `settlement verification does not support network "${network}" / asset "${assetContract}" in v1 — ` +
-        `only Base mainnet (${BASE_CAIP2}) USDC is supported`
+        `supported canonical assets are Base (${BASE_CAIP2}) USDC and Ethereum (eip155:1) USDC`
     )
     this.name = 'UnsupportedSettlementScopeError'
   }
@@ -52,12 +43,6 @@ const TRANSACTION_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/
 
 export function isValidTransactionHash(value: unknown): value is `0x${string}` {
   return typeof value === 'string' && TRANSACTION_HASH_PATTERN.test(value)
-}
-
-function minConfirmations(): number {
-  const raw = process.env.BASE_MIN_CONFIRMATIONS
-  const parsed = raw ? Number(raw) : NaN
-  return Number.isInteger(parsed) && parsed >= 1 ? parsed : 1
 }
 
 // D2.2B2: the confirmation-depth lookup (current tip + the tx's own block)
@@ -91,10 +76,14 @@ async function withBoundedRetry<T>(fn: () => Promise<T>): Promise<T> {
 // it per call — and doing so sidesteps a gnarly TS inference mismatch
 // between `base`'s OP-stack-specific client type and a module-level
 // `ReturnType<typeof createPublicClient> | null` variable.
-export function getClient() {
+export function getClient(network = BASE_CAIP2) {
+  const config = getSettlementNetwork(network)
+  if (!config) throw new UnsupportedSettlementScopeError(network, '')
+  const rpcUrl = getConfiguredRpcUrl(config)
+  if (!rpcUrl) throw new Error(`${config.rpcEnvVar} is required for settlement observation on ${network}`)
   return createPublicClient({
-    chain: base,
-    transport: http(process.env.BASE_RPC_URL || 'https://mainnet.base.org'),
+    chain: config.chain,
+    transport: http(rpcUrl),
   })
 }
 
@@ -105,7 +94,7 @@ export interface ObservedTransfer {
   amountAtomic: bigint
   /**
    * D2.4 (Section 8): the exact selected event's own identity -- network is
-   * implicit (this module is Base-only), so block_hash + transaction_hash +
+   * supplied separately by the caller, so block_hash + transaction_hash +
    * log_index together uniquely identify THIS transfer log, never an
    * ambiguous "largest transfer in the tx" guess. A reorg/re-inclusion
    * produces a genuinely different blockHash for what is otherwise the same
@@ -174,7 +163,7 @@ export interface MinimalSettlementClient {
 }
 
 /**
- * Independently inspects a transaction on Base mainnet. Never fabricates a
+ * Independently inspects a transaction on a configured EVM network. Never fabricates a
  * confirmed result: an RPC failure or a not-yet-mined transaction reports
  * `state: 'rpc-unavailable'` / `'not-found'`, never `'success'`.
  */
@@ -184,10 +173,16 @@ export async function observeTransaction(
   assetContract: string,
   deps: { client?: MinimalSettlementClient } = {}
 ): Promise<SettlementObservation> {
-  if (!getSupportedAsset(network, assetContract)) {
+  const networkConfig = getSettlementNetwork(network)
+  if (!networkConfig || !getSupportedAsset(network, assetContract)) {
     throw new UnsupportedSettlementScopeError(network, assetContract)
   }
-  const publicClient = deps.client ?? getClient()
+  let publicClient: MinimalSettlementClient
+  try {
+    publicClient = deps.client ?? getClient(network)
+  } catch (err: any) {
+    return { ...NOT_FOUND, state: 'rpc-unavailable', rpcError: err?.message || 'RPC configuration unavailable' }
+  }
 
   let receipt
   try {
@@ -283,14 +278,35 @@ export async function observeTransaction(
   }
   const confirmations = Number(currentBlock - receipt.blockNumber) + 1
 
+  let sufficientlyConfirmed: boolean
+  let finalityRpcError: string | null = null
+  if (networkConfig.finalityBlockTag === 'finalized') {
+    try {
+      const finalized = await withBoundedRetry(async () => {
+        const head = await (publicClient as unknown as { getBlock: (args: { blockTag: 'finalized' }) => Promise<{ number: bigint }> }).getBlock({ blockTag: 'finalized' })
+        if (typeof head.number !== 'bigint') throw new Error('RPC finalized block response had no block number')
+        return head
+      })
+      sufficientlyConfirmed = receipt.blockNumber <= finalized.number
+    } catch (err: any) {
+      // Ethereum must never fall back to a confirmation count while its
+      // policy is finalized-head. Keep independently-read receipt/log facts,
+      // but make legacy settlement finalization wait/retry instead.
+      sufficientlyConfirmed = false
+      finalityRpcError = err?.message || 'RPC error fetching Ethereum finalized head'
+    }
+  } else {
+    sufficientlyConfirmed = confirmations >= (getNetworkMinConfirmations(networkConfig) ?? 1)
+  }
+
   return {
     state: 'success',
     blockNumber: receipt.blockNumber,
     blockTimestamp,
     confirmations,
-    sufficientlyConfirmed: confirmations >= minConfirmations(),
+    sufficientlyConfirmed,
     transfers,
-    rpcError: null,
+    rpcError: finalityRpcError,
     paymentAuthorization,
   }
 }

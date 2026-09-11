@@ -22,26 +22,57 @@
  * instead, honestly, rather than fabricating a finality claim.
  */
 import type { Hex } from 'viem'
+import { BASE_CAIP2, ETHEREUM_CAIP2 } from './settlementNetworks.js'
 
 export const BASE_FINALITY_POLICY = 'base-usdc-safe-head.v1'
+export const ETHEREUM_FINALITY_POLICY = 'ethereum-usdc-finalized-head.v1'
 
 export type FinalityState = 'safe' | 'pending' | 'unverifiable' | 'reverted'
 
 export interface ChainHeadUsed {
-  tag: 'safe'
+  tag: 'safe' | 'finalized'
   number: string
   hash: string
 }
 
 export interface FinalityEvaluation {
-  policy: typeof BASE_FINALITY_POLICY
+  policy: typeof BASE_FINALITY_POLICY | typeof ETHEREUM_FINALITY_POLICY
   state: FinalityState
   chainHeadUsed: ChainHeadUsed | null
   selectedBlock: { number: string; hash: string }
 }
 
 export interface MinimalFinalityClient {
-  getBlock: (args: { blockTag: 'safe' }) => Promise<{ number: bigint; hash: Hex }>
+  getBlock: (args: { blockTag: 'safe' | 'finalized' }) => Promise<{ number: bigint; hash: Hex }>
+}
+
+/** Ethereum uses the consensus-layer finalized head, not a confirmation count. */
+export async function evaluateEthereumFinality(
+  client: MinimalFinalityClient,
+  selectedBlockNumber: bigint,
+  selectedBlockHash: Hex
+): Promise<FinalityEvaluation> {
+  const selectedBlock = { number: selectedBlockNumber.toString(), hash: selectedBlockHash }
+  try {
+    const finalizedBlock = await client.getBlock({ blockTag: 'finalized' })
+    const chainHeadUsed: ChainHeadUsed = { tag: 'finalized', number: finalizedBlock.number.toString(), hash: finalizedBlock.hash }
+    const state: FinalityState = selectedBlockNumber <= finalizedBlock.number ? 'safe' : 'pending'
+    return { policy: ETHEREUM_FINALITY_POLICY, state, chainHeadUsed, selectedBlock }
+  } catch {
+    return { policy: ETHEREUM_FINALITY_POLICY, state: 'unverifiable', chainHeadUsed: null, selectedBlock }
+  }
+}
+
+/** One explicit finality-policy dispatch point for supported EVM networks. */
+export async function evaluateSettlementFinality(
+  network: string,
+  client: MinimalFinalityClient,
+  selectedBlockNumber: bigint,
+  selectedBlockHash: Hex
+): Promise<FinalityEvaluation> {
+  if (network === BASE_CAIP2) return evaluateBaseFinality(client, selectedBlockNumber, selectedBlockHash)
+  if (network === ETHEREUM_CAIP2) return evaluateEthereumFinality(client, selectedBlockNumber, selectedBlockHash)
+  throw new Error(`no finality policy is configured for ${network}`)
 }
 
 /**

@@ -35,9 +35,8 @@ request) is stated explicitly, never implied.
 - An existing wallet/execution path that can sign and submit an on-chain
   payment yourself (PayBox is one compatible option, not a requirement —
   any x402-capable or direct on-chain execution path works).
-- Base mainnet USDC is the only network/asset OCD independently observes
-  settlement for today (v1 scope, stated honestly — not a hidden
-  limitation).
+- OCD independently observes canonical USDC settlement on Base mainnet and
+  Ethereum mainnet. Other network/asset combinations remain unsupported.
 - A small amount of USDC to pay OCD's own per-call fees ($0.01 for a
   preflight call; see the price list in `docs/BAZAAR_ACTIVATION.md` for
   every other paid check).

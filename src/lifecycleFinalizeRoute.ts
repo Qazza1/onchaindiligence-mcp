@@ -438,7 +438,13 @@ export function createOperationFinalizeHandler(deps: LifecycleFinalizeDependenci
             preflightReceiptDigest,
             preflightCommitment: commitment,
             tokenContract: frozen.input.action.asset,
-            finalityClient: observation.state === 'success' ? getClient() : null,
+            // Use the exact action network's configured client. This stays
+            // separate from provider evidence and lets finality dispatch pick
+            // Base safe-head versus Ethereum finalized-head honestly.
+            finalityClient: (() => {
+              if (observation.state !== 'success') return null
+              try { return getClient(frozen.input.action.network ?? BASE_CAIP2) } catch { return null }
+            })(),
             priorObservation: null,
           })
           evidence = { bundle_digest: result.bundleDigest, binding_strength: result.bindingStrength }
