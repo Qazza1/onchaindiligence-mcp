@@ -57,9 +57,11 @@ into durable storage besides a preflight's own opt-in publication of itself.
 Canonical USDC ERC-20 transfers on Base mainnet (`eip155:8453`,
 `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`) and Ethereum mainnet
 (`eip155:1`, `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`), each with 6
-decimals. A different network/asset combination fails clearly (400) rather
-than pretending to support it. The addresses are the current canonical USDC
-contracts in [Circle's contract-address registry](https://developers.circle.com/stablecoins/usdc-contract-addresses).
+decimals, plus Tempo mainnet pathUSD TIP-20 (`eip155:4217`,
+`0x20c0000000000000000000000000000000000000`, 6 decimals). A different
+network/asset combination fails clearly (400) rather than pretending to
+support it. The USDC addresses are the current canonical USDC contracts in
+[Circle's contract-address registry](https://developers.circle.com/stablecoins/usdc-contract-addresses); Tempo documents pathUSD as its genesis USD stablecoin.
 
 ## Independent settlement verification
 
@@ -76,11 +78,16 @@ dependency), and reports only what it actually observed:
 4. Transaction confirmed, and a Transfer matching the preflight's asset,
    recipient, amount (and sender, if the preflight required one) is found ->
    execution `CONFIRMED`, settlement `CONFIRMED`.
-5. Base: confirmed but below the configured minimum confirmation depth
+5. Finality:
+   Base: confirmed but below the configured minimum confirmation depth
    (`BASE_MIN_CONFIRMATIONS`, default 1) -> settlement `UNVERIFIED` (pending).
    Ethereum: settlement is confirmed only when the transaction block is at or
    behind the RPC's native `finalized` head (`ethereum-usdc-finalized-head.v1`).
    If that head cannot be read, OCD does not substitute a confirmation count.
+   Tempo: settlement is confirmed only when the transaction block is at or
+   behind the configured RPC's native `finalized` head
+   (`tempo-tip20-finalized-head.v1`). Tempo's deterministic consensus does not
+   let OCD promote inclusion or a confirmation count into a finality claim.
 
 **`settlement: CONFIRMED` means the observed transaction settled — it never
 by itself means "matched what was authorized."** That is a separate,

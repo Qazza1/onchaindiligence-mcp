@@ -36,7 +36,8 @@ request) is stated explicitly, never implied.
   payment yourself (PayBox is one compatible option, not a requirement —
   any x402-capable or direct on-chain execution path works).
 - OCD independently observes canonical USDC settlement on Base mainnet and
-  Ethereum mainnet. Other network/asset combinations remain unsupported.
+  Ethereum mainnet, plus Tempo mainnet pathUSD. Other network/asset
+  combinations remain unsupported.
 - A small amount of USDC to pay OCD's own per-call fees ($0.01 for a
   preflight call; see the price list in `docs/BAZAAR_ACTIVATION.md` for
   every other paid check).

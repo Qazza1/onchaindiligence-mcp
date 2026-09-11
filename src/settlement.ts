@@ -1,12 +1,13 @@
 /**
  * settlement.ts — independent on-chain settlement verification (D2.2).
  *
- * Supported EVM scope: Base and Ethereum mainnet canonical USDC transfers.
+ * Supported EVM scope: Base/Ethereum canonical USDC and Tempo mainnet pathUSD
+ * transfers.
  * The network registry is intentionally small and explicit; this module is
  * shared transaction/receipt/log observation, not a universal chain plugin.
  *
  * OCD never trusts a caller's claim that a payment settled. This module
- * reads the transaction receipt and its logs directly from a Base JSON-RPC
+ * reads the transaction receipt and its logs directly from a configured EVM JSON-RPC
  * endpoint and reports only what it actually observed: whether the
  * transaction was found, whether it reverted, how many confirmations it
  * has, and every ERC-20 Transfer log emitted by the expected asset
@@ -33,7 +34,7 @@ export class UnsupportedSettlementScopeError extends Error {
   constructor(network: string, assetContract: string) {
     super(
       `settlement verification does not support network "${network}" / asset "${assetContract}" in v1 — ` +
-        `supported canonical assets are Base (${BASE_CAIP2}) USDC and Ethereum (eip155:1) USDC`
+        `supported canonical assets are Base (${BASE_CAIP2}) USDC, Ethereum (eip155:1) USDC, and Tempo (eip155:4217) pathUSD`
     )
     this.name = 'UnsupportedSettlementScopeError'
   }

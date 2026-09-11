@@ -22,10 +22,11 @@
  * instead, honestly, rather than fabricating a finality claim.
  */
 import type { Hex } from 'viem'
-import { BASE_CAIP2, ETHEREUM_CAIP2 } from './settlementNetworks.js'
+import { BASE_CAIP2, ETHEREUM_CAIP2, TEMPO_CAIP2 } from './settlementNetworks.js'
 
 export const BASE_FINALITY_POLICY = 'base-usdc-safe-head.v1'
 export const ETHEREUM_FINALITY_POLICY = 'ethereum-usdc-finalized-head.v1'
+export const TEMPO_FINALITY_POLICY = 'tempo-tip20-finalized-head.v1'
 
 export type FinalityState = 'safe' | 'pending' | 'unverifiable' | 'reverted'
 
@@ -36,7 +37,7 @@ export interface ChainHeadUsed {
 }
 
 export interface FinalityEvaluation {
-  policy: typeof BASE_FINALITY_POLICY | typeof ETHEREUM_FINALITY_POLICY
+  policy: typeof BASE_FINALITY_POLICY | typeof ETHEREUM_FINALITY_POLICY | typeof TEMPO_FINALITY_POLICY
   state: FinalityState
   chainHeadUsed: ChainHeadUsed | null
   selectedBlock: { number: string; hash: string }
@@ -63,6 +64,28 @@ export async function evaluateEthereumFinality(
   }
 }
 
+/**
+ * Tempo uses deterministic Simplex BFT finality. OCD still asks its configured
+ * RPC for the standard `finalized` head and records that head as the evidence
+ * basis; an included block is never silently treated as final merely because
+ * it has confirmations.
+ */
+export async function evaluateTempoFinality(
+  client: MinimalFinalityClient,
+  selectedBlockNumber: bigint,
+  selectedBlockHash: Hex
+): Promise<FinalityEvaluation> {
+  const selectedBlock = { number: selectedBlockNumber.toString(), hash: selectedBlockHash }
+  try {
+    const finalizedBlock = await client.getBlock({ blockTag: 'finalized' })
+    const chainHeadUsed: ChainHeadUsed = { tag: 'finalized', number: finalizedBlock.number.toString(), hash: finalizedBlock.hash }
+    const state: FinalityState = selectedBlockNumber <= finalizedBlock.number ? 'safe' : 'pending'
+    return { policy: TEMPO_FINALITY_POLICY, state, chainHeadUsed, selectedBlock }
+  } catch {
+    return { policy: TEMPO_FINALITY_POLICY, state: 'unverifiable', chainHeadUsed: null, selectedBlock }
+  }
+}
+
 /** One explicit finality-policy dispatch point for supported EVM networks. */
 export async function evaluateSettlementFinality(
   network: string,
@@ -72,6 +95,7 @@ export async function evaluateSettlementFinality(
 ): Promise<FinalityEvaluation> {
   if (network === BASE_CAIP2) return evaluateBaseFinality(client, selectedBlockNumber, selectedBlockHash)
   if (network === ETHEREUM_CAIP2) return evaluateEthereumFinality(client, selectedBlockNumber, selectedBlockHash)
+  if (network === TEMPO_CAIP2) return evaluateTempoFinality(client, selectedBlockNumber, selectedBlockHash)
   throw new Error(`no finality policy is configured for ${network}`)
 }
 
