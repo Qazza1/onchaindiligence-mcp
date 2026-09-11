@@ -180,6 +180,118 @@ export function parseProviderEvidenceInput(body: unknown): ProviderEvidenceInput
   }
 }
 
+// ---------------------------------------------------------------------
+// D3.4C3 -- Turnkey transaction-status webhook evidence.
+//
+// Turnkey's `SIGN_TRANSACTION` activity signs only -- it never broadcasts
+// and carries no transaction hash, so it is never accepted as provider
+// evidence by this module (see docs/PROVIDER_EVIDENCE.md's Turnkey
+// section). The only path recognized here is the combined send/track
+// lifecycle (`ethSendTransaction()` + the `transaction:status` webhook):
+// BROADCASTING is non-terminal and is never persisted as a provider claim;
+// INCLUDED (with no error) is SUCCEEDED; FAILED, and INCLUDED WITH an
+// on-chain-revert `error`, are both FAILED -- current official Turnkey
+// docs state INCLUDED "if the transaction reverted onchain, error is also
+// present", so a reverted-but-included transaction is still an execution
+// failure, not a success, even though a txHash exists.
+//
+// No current Turnkey documentation establishes a durable guaranteed
+// linkage between `activityId` (the signing activity) and
+// `sendTransactionStatusId` (the send/track identity) beyond both
+// appearing on the same webhook message -- this module does NOT rely on
+// activityId for correlation (sendTransactionStatusId is what becomes
+// `correlationReference`/`provider_reference`); activityId is retained
+// only inside `rawReferenceDigest` for traceability. See D3.4C3-PREP item 4.
+// ---------------------------------------------------------------------
+export const TURNKEY_EXECUTOR_IDENTITY = 'turnkey-base-usdc'
+
+export type TurnkeyTransactionStatus = 'BROADCASTING' | 'INCLUDED' | 'FAILED'
+
+/** True for a webhook message this module can accept as terminal provider evidence. BROADCASTING is never terminal. */
+export function isTerminalTurnkeyStatus(status: unknown): status is 'INCLUDED' | 'FAILED' {
+  return status === 'INCLUDED' || status === 'FAILED'
+}
+
+/**
+ * Normalizes an ALREADY SIGNATURE-VERIFIED Turnkey `transaction:status`
+ * webhook message into the existing ProviderEvidenceInput shape. Callers
+ * MUST verify the webhook signature (turnkeyWebhookVerification.ts) and
+ * MUST check isTerminalTurnkeyStatus() before calling this -- a
+ * BROADCASTING message has no terminal claim to normalize.
+ *
+ * `webhookEventId` is the delivery's `X-Turnkey-Event-Id` header value --
+ * NOT a body field -- documented as "stable across retry attempts for the
+ * same webhook event", i.e. Turnkey's own retry-dedupe identity. This is
+ * intentionally what becomes `providerEventId`, not `msg.activityId`: the
+ * task's own instruction is to preserve the EXISTING semantic intent of
+ * provider_event_id (a stable per-EVENT identifier), which the webhook
+ * delivery id satisfies far more directly than the signing activity id
+ * does. `activityId` is preserved in `rawReferenceDigest` instead (see
+ * above) rather than overloading this field.
+ */
+export function parseTurnkeyWebhookEvidenceInput(body: unknown, webhookEventId: string): ProviderEvidenceInput {
+  if (!object(body)) throw new ProviderEvidenceInputError('body must be a JSON object')
+  if (body.type !== 'transaction:status') throw new ProviderEvidenceInputError('expected a transaction:status webhook message')
+  const msg = object(body.msg) ? body.msg : null
+  if (!msg) throw new ProviderEvidenceInputError('transaction:status webhook is missing msg')
+
+  const sendTransactionStatusId = optionalString(msg.sendTransactionStatusId, 'msg.sendTransactionStatusId', 200)
+  if (!sendTransactionStatusId) throw new ProviderEvidenceInputError('msg.sendTransactionStatusId is required')
+  const activityId = optionalString(msg.activityId, 'msg.activityId', 200)
+  const status = msg.status
+  if (!isTerminalTurnkeyStatus(status)) {
+    throw new ProviderEvidenceInputError('msg.status must be INCLUDED or FAILED to be recorded as terminal provider evidence (BROADCASTING is non-terminal)')
+  }
+  const caip2 = optionalString(msg.caip2, 'msg.caip2', 160)
+  const idempotencyKey = optionalString(msg.idempotencyKey, 'msg.idempotencyKey', 200)
+  const txHash = optionalString(msg.txHash, 'msg.txHash', 66)
+  if (txHash !== null && !isValidTransactionHash(txHash)) throw new ProviderEvidenceInputError('msg.txHash must be a 0x-prefixed 32-byte transaction hash, or absent')
+  const error = object(msg.error) ? msg.error : null
+  const errorMessage = error ? optionalString(error.message, 'msg.error.message', 512) : null
+
+  // status === 'FAILED' -> never landed onchain (no txHash per docs).
+  // status === 'INCLUDED' with `error` present -> landed but reverted --
+  // still a FAILED claim, with the txHash retained (the transaction exists
+  // on-chain; it just didn't succeed).
+  const reverted = status === 'INCLUDED' && error !== null
+  const claimedState: 'SUCCEEDED' | 'FAILED' = status === 'FAILED' || reverted ? 'FAILED' : 'SUCCEEDED'
+  const failureCode = status === 'FAILED' ? 'TURNKEY_FAILED' : reverted ? 'TURNKEY_REVERTED' : null
+  const failureDigest = error ? contentId({ message: errorMessage, eth_revert_chain: error.eth ?? null, solana: error.solana ?? null }) : null
+
+  const timestampRaw = msg.timestamp
+  const providerTimestamp = (() => {
+    if (typeof timestampRaw === 'number' && Number.isFinite(timestampRaw)) return new Date(timestampRaw * 1000).toISOString()
+    if (typeof timestampRaw === 'string' && /^\d+$/.test(timestampRaw)) return new Date(Number(timestampRaw) * 1000).toISOString()
+    return null
+  })()
+
+  return {
+    provider: 'turnkey',
+    providerVersion: 'v1',
+    providerExecutionId: sendTransactionStatusId,
+    correlationReference: `turnkey:${sendTransactionStatusId}`,
+    x402Version: null,
+    claimedState,
+    transactionHash: txHash,
+    network: caip2,
+    // Turnkey's transaction:status message never asserts payer/amount/
+    // asset/recipient -- these stay null so a provider claim can never be
+    // mistaken for an assertion Turnkey did not actually make. The frozen
+    // OCD mandate and the independent Base observation remain the only
+    // sources for these fields.
+    payer: null,
+    amountAtomic: null,
+    asset: null,
+    recipient: null,
+    failureCode,
+    failureDigest,
+    rawReferenceDigest: contentId({ activity_id: activityId, send_transaction_status_id: sendTransactionStatusId, status, caip2, idempotency_key: idempotencyKey }),
+    executionRequestId: null, // resolved by the webhook route via provider_reference, then attached before recordProviderEvidence() is called
+    providerEventId: webhookEventId,
+    providerTimestamp,
+  }
+}
+
 function evidenceId(operationId: string, input: ProviderEvidenceInput): string {
   return contentId({ operationId, ...input, sourceAuthentication: PROVIDER_EVIDENCE_SOURCE })
 }
@@ -203,6 +315,12 @@ export async function recordProviderEvidence(operationId: string, input: Provide
       if (binding.executorIdentity !== 'paybox-x402-base-usdc') throw new ProviderEvidenceInputError('PayBox provider evidence requires a PayBox execution binding')
       if (binding.providerReference !== input.correlationReference) {
         throw new ProviderEvidenceInputError('PayBox request_id does not match the durable execution binding provider_reference')
+      }
+    }
+    if (input.provider === 'turnkey') {
+      if (binding.executorIdentity !== TURNKEY_EXECUTOR_IDENTITY) throw new ProviderEvidenceInputError('Turnkey provider evidence requires a Turnkey execution binding')
+      if (binding.providerReference !== input.correlationReference) {
+        throw new ProviderEvidenceInputError('Turnkey sendTransactionStatusId does not match the durable execution binding provider_reference')
       }
     }
   }

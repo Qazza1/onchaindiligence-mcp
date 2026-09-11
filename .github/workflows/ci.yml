@@ -86,3 +86,6 @@ jobs:
       - run: npx --no-install tsx test/d29aMerchantEvidence.ts
       # D2.10C: free Plugin-only transport and submission contract.
       - run: node --import tsx --test test/publicMcp.ts
+      # D3.4C3: Turnkey webhook signature verification, provider-evidence
+      # normalization/correlation, and reconciliation reuse.
+      - run: npx --no-install tsx test/d34c3TurnkeyProviderEvidence.ts

@@ -40,6 +40,7 @@ import { mountSavedReceipts } from './src/savedReceiptsRoute.js'
 import { mountWebhooks } from './src/webhookRoute.js'
 import { mountMerchantEvidence } from './src/merchantEvidenceRoute.js'
 import { mountProviderEvidence } from './src/providerEvidenceRoute.js'
+import { mountTurnkeyWebhook } from './src/turnkeyWebhookRoute.js'
 import { mountWorkspace } from './src/workspaceRoute.js'
 import { mountDashboardCors } from './src/dashboardCors.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
@@ -206,5 +207,12 @@ mountMerchantEvidence(app)
 // operation recovery credential. It is append-only provider-reported evidence,
 // never a replacement for independently observed settlement.
 mountProviderEvidence(app)
+
+// D3.4C3: POST /webhooks/turnkey/transaction-status -- inbound, Ed25519-
+// signature-verified Turnkey transaction-status evidence. Correlated to an
+// operation ONLY via the durable execution_bindings.provider_reference the
+// executor itself established; never trusts an operation id from Turnkey.
+// See src/turnkeyWebhookRoute.ts.
+mountTurnkeyWebhook(app)
 
 export default app

@@ -27,6 +27,7 @@ import { randomBytes } from 'node:crypto'
 import {
   createExecutionBinding as dbCreateExecutionBinding,
   getExecutionBinding as dbGetExecutionBinding,
+  getExecutionBindingByProviderReference as dbGetExecutionBindingByProviderReference,
   listExecutionBindingsForOperation as dbListExecutionBindingsForOperation,
   updateExecutionBindingSubmissionState as dbUpdateSubmissionState,
   updateExecutionBindingProviderReference as dbUpdateProviderReference,
@@ -96,6 +97,7 @@ export interface CreateExecutionBindingParams {
 export interface ExecutionBindingDependencies {
   createExecutionBinding?: typeof dbCreateExecutionBinding
   getExecutionBinding?: typeof dbGetExecutionBinding
+  getExecutionBindingByProviderReference?: typeof dbGetExecutionBindingByProviderReference
   listExecutionBindingsForOperation?: typeof dbListExecutionBindingsForOperation
   updateExecutionBindingSubmissionState?: typeof dbUpdateSubmissionState
   updateExecutionBindingProviderReference?: typeof dbUpdateProviderReference
@@ -114,6 +116,21 @@ export async function getExecutionBinding(
   deps: ExecutionBindingDependencies = {}
 ): Promise<ExecutionBindingRecord | null> {
   return (deps.getExecutionBinding ?? dbGetExecutionBinding)(executionRequestId)
+}
+
+/**
+ * D3.4C3: the ONLY correlation path an inbound provider webhook may use to
+ * find "its" operation -- by the durable provider_reference established at
+ * prepare()/submit() time (D2.6), never by an operation id the provider
+ * claims. Returns null when no durable binding matches, which callers MUST
+ * treat as "not correlated" (see turnkeyWebhookRoute.ts), never as license
+ * to guess or attach the claim to an arbitrary operation.
+ */
+export async function getExecutionBindingByProviderReference(
+  providerReference: string,
+  deps: ExecutionBindingDependencies = {}
+): Promise<ExecutionBindingRecord | null> {
+  return (deps.getExecutionBindingByProviderReference ?? dbGetExecutionBindingByProviderReference)(providerReference)
 }
 
 /**
