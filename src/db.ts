@@ -694,11 +694,6 @@ export interface CommerceObservationRecord {
   blockHash: string
   transactionHash: string
   logIndex: number
-  chainEventKind?: 'EVM_LOG' | 'SPL_TRANSFER'
-  sourceAccount?: string | null
-  destinationAccount?: string | null
-  instructionIndex?: number | null
-  innerInstructionIndex?: number | null
   observedPayer: string | null
   observedRecipient: string | null
   observedAmountAtomic: string | null
@@ -721,11 +716,6 @@ function mapObservationRow(row: any): CommerceObservationRecord {
     blockHash: row.block_hash,
     transactionHash: row.transaction_hash,
     logIndex: row.log_index,
-    chainEventKind: row.chain_event_kind ?? 'EVM_LOG',
-    sourceAccount: row.source_account ?? null,
-    destinationAccount: row.destination_account ?? null,
-    instructionIndex: row.instruction_index ?? null,
-    innerInstructionIndex: row.inner_instruction_index ?? null,
     observedPayer: row.observed_payer ?? null,
     observedRecipient: row.observed_recipient ?? null,
     observedAmountAtomic: row.observed_amount_atomic ?? null,
@@ -753,11 +743,10 @@ export async function recordCommerceObservation(
   const inserted = (await sql().query(
     `INSERT INTO commerce_observations
        (observation_id, operation_id, network, block_number, block_hash, transaction_hash, log_index,
-        chain_event_kind, source_account, destination_account, instruction_index, inner_instruction_index,
         observed_payer, observed_recipient, observed_amount_atomic, token_contract,
         payment_authorizer, payment_authorization_nonce, finality_policy, finality_state,
         chain_head_used_json, binding_strength, bundle_digest)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19,$20,$21,$22,$23)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18)
      ON CONFLICT (network, block_hash, transaction_hash, log_index) DO NOTHING
      RETURNING *`,
     [
@@ -768,11 +757,6 @@ export async function recordCommerceObservation(
       params.blockHash,
       params.transactionHash,
       params.logIndex,
-      params.chainEventKind ?? 'EVM_LOG',
-      params.sourceAccount ?? null,
-      params.destinationAccount ?? null,
-      params.instructionIndex ?? null,
-      params.innerInstructionIndex ?? null,
       params.observedPayer,
       params.observedRecipient,
       params.observedAmountAtomic,

@@ -55,9 +55,11 @@ function timestamp(blockTime: unknown): string | null {
 }
 
 function normalizedInstructionIndex(parentIndex: number, innerIndex: number | null): number {
-  // The legacy storage natural key calls this a log index. For Solana it is a
-  // deterministic event ordinal only; the actual parent/inner indexes are
-  // retained separately in the normalized observation fields.
+  // The existing storage natural key calls this a log index. For Solana it is
+  // a reversible deterministic event ordinal: parent*1000 for a top-level
+  // instruction, parent*1000+(inner+1) for an inner instruction. The full
+  // normalized observation/bundle also carries the explicit indexes; no
+  // schema migration is needed just to rename an already-generic integer.
   return parentIndex * 1000 + (innerIndex === null ? 0 : innerIndex + 1)
 }
 
