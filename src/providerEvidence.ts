@@ -138,6 +138,10 @@ export function parseProviderEvidenceInput(body: unknown): ProviderEvidenceInput
     if (!object(body.paybox_response)) throw new ProviderEvidenceInputError('paybox_response must be a JSON object')
     return parsePayBoxProviderEvidenceInput(body, body.paybox_response)
   }
+  if (body.cdp_response !== undefined) {
+    if (!object(body.cdp_response)) throw new ProviderEvidenceInputError('cdp_response must be a JSON object')
+    return parseCdpProviderEvidenceInput(body, body.cdp_response)
+  }
   const provider = optionalString(body.provider ?? 'x402-facilitator', 'provider', 120)!
   const rawClaim = body.x402_settle_response ?? body.claim ?? body
   if (!object(rawClaim)) throw new ProviderEvidenceInputError('x402_settle_response must be a JSON object')
@@ -419,6 +423,111 @@ export function parseCrossmintWebhookEvidenceInput(body: unknown, svixEventId: s
   }
 }
 
+// ---------------------------------------------------------------------
+// D3.4C5 -- Coinbase Developer Platform (CDP) Server Wallet execution
+// evidence.
+//
+// Confirmed directly against current official CDP documentation
+// (docs.cdp.coinbase.com) at implementation time: this integrates at the
+// Server Wallet v2 EVM Account (EOA) execution layer -- `sendEvmTransaction`
+// -- never through AgentKit (an orchestration framework, not a provider
+// identity) and never through Smart Accounts/user operations.
+//
+// THE CENTRAL IDENTITY FINDING: for an EOA Server Wallet send, current CDP
+// documentation defines exactly ONE response identity --
+// `transactionHash` -- with NO separate provider request/operation id
+// distinct from it. This is confirmed, not assumed: the same underlying
+// send response shape (`{ transactionHash, userOpHash }`, confirmed via
+// CDP's "Send USDC on EVM" reference) populates exactly one of the two
+// fields depending on account type, and for Smart Accounts, `userOpHash`
+// IS a genuinely distinct identity from the eventual on-chain transaction
+// hash -- which is exactly why Smart Account/user-operation execution is
+// OUT OF SCOPE here: there is nothing to (mis)collapse for the EOA path
+// this module targets, but a Smart Account path would need its own design
+// to keep `userOpHash` and `transaction_hash` distinct, mirroring exactly
+// the discipline D3.4C4 applied to Crossmint's UserOperation question.
+//
+// NO WEBHOOK, NO PROPRIETARY STATUS API: current CDP documentation exposes
+// no wallet-transaction webhook/event mechanism for this send path, and
+// `waitForTransactionReceipt()` is documented as a thin wrapper over
+// standard EVM JSON-RPC (the same primitive OCD's own independent Base
+// observer already uses) -- not a CDP-proprietary status lifecycle. So,
+// per this milestone's own instruction not to invent a webhook that
+// doesn't exist, CDP evidence is caller-reported through the SAME
+// recovery-credential-gated endpoint x402/PayBox already use (a
+// `cdp_response` branch here), submitted by CdpCommerceExecutor
+// (onchaindiligence-sdk) once `sendEvmTransaction` returns -- mirroring
+// PayBox's shape exactly (a webhook-less provider), not Turnkey's/
+// Crossmint's (push-webhook-driven) shape.
+//
+// `claimedState: 'SUCCEEDED'` here means "CDP's server wallet successfully
+// broadcast this transaction" -- the same character of claim x402's own
+// `success: true` facilitator response already makes (a checked claim, not
+// proof of on-chain inclusion) -- never "CDP confirms settlement". OCD's
+// independent Base observer remains the only source of actual
+// inclusion/revert/settlement truth, exactly as for every other provider.
+// ---------------------------------------------------------------------
+export const CDP_EXECUTOR_IDENTITY = 'cdp-base-usdc'
+
+/** Chain identifiers a caller may report for CDP, mapped conservatively to CAIP-2 only where unambiguous. Anything else stays null -- never guessed. */
+const CDP_CHAIN_TO_CAIP2: Readonly<Record<string, string>> = {
+  base: 'eip155:8453',
+}
+
+function parseCdpProviderEvidenceInput(body: Record<string, unknown>, rawClaim: Record<string, unknown>): ProviderEvidenceInput {
+  const status = rawClaim.status
+  if (status !== 'success' && status !== 'failed') {
+    throw new ProviderEvidenceInputError('cdp_response.status must be success or failed (a pending/unbroadcast attempt is not terminal provider evidence)')
+  }
+  const transactionHash = optionalString(rawClaim.transaction_hash, 'cdp_response.transaction_hash', 66)
+  if (status === 'success' && !transactionHash) throw new ProviderEvidenceInputError('cdp_response.transaction_hash is required when status is success')
+  if (transactionHash !== null && !isValidTransactionHash(transactionHash)) {
+    throw new ProviderEvidenceInputError('cdp_response.transaction_hash must be a 0x-prefixed 32-byte transaction hash, or absent')
+  }
+  const network = (() => {
+    const chain = optionalString(rawClaim.network, 'cdp_response.network', 64)
+    return chain ? (CDP_CHAIN_TO_CAIP2[chain] ?? null) : null
+  })()
+  const errorObj = object(rawClaim.error) ? rawClaim.error : null
+  const failureCode = status === 'failed' ? optionalString(errorObj?.code, 'cdp_response.error.code', 128) ?? 'CDP_SEND_FAILED' : null
+  const failureDigest = errorObj ? contentId({ code: optionalString(errorObj.code, 'cdp_response.error.code', 128), message: optionalString(errorObj.message, 'cdp_response.error.message', 512) }) : null
+  const timestamp = optionalString(body.provider_timestamp, 'provider_timestamp', 64)
+  if (timestamp !== null && Number.isNaN(Date.parse(timestamp))) throw new ProviderEvidenceInputError('provider_timestamp must be an ISO timestamp, or null')
+
+  // No separate provider request identity is documented for this send path
+  // (see this section's header) -- the transaction hash IS the durable
+  // identity. When the send never broadcast (status: failed, no hash), the
+  // caller-supplied idempotency key stands in as the only identity CDP
+  // itself confirms existed for this specific attempt.
+  const idempotencyKey = optionalString(rawClaim.idempotency_key, 'cdp_response.idempotency_key', 200)
+  const providerExecutionId = transactionHash ?? idempotencyKey
+  if (!providerExecutionId) throw new ProviderEvidenceInputError('cdp_response must include transaction_hash (success) or idempotency_key (failed) to identify this attempt')
+
+  return {
+    provider: 'cdp',
+    providerVersion: optionalString(body.provider_version, 'provider_version', 120),
+    providerExecutionId,
+    correlationReference: `cdp:${providerExecutionId}`,
+    x402Version: null,
+    claimedState: status === 'success' ? 'SUCCEEDED' : 'FAILED',
+    transactionHash,
+    network,
+    // CDP's sendEvmTransaction response documents only transactionHash/
+    // userOpHash -- it asserts nothing about payer/amount/asset/recipient,
+    // so these stay null, same discipline as Turnkey's webhook section.
+    payer: null,
+    amountAtomic: null,
+    asset: null,
+    recipient: null,
+    failureCode,
+    failureDigest,
+    rawReferenceDigest: optionalDigest(body.raw_reference_digest, 'raw_reference_digest') ?? contentId({ provider: 'cdp', status, network, idempotency_key: idempotencyKey }),
+    executionRequestId: optionalString(body.execution_request_id, 'execution_request_id'),
+    providerEventId: null,
+    providerTimestamp: timestamp,
+  }
+}
+
 function evidenceId(operationId: string, input: ProviderEvidenceInput): string {
   return contentId({ operationId, ...input, sourceAuthentication: PROVIDER_EVIDENCE_SOURCE })
 }
@@ -454,6 +563,12 @@ export async function recordProviderEvidence(operationId: string, input: Provide
       if (binding.executorIdentity !== CROSSMINT_EXECUTOR_IDENTITY) throw new ProviderEvidenceInputError('Crossmint provider evidence requires a Crossmint execution binding')
       if (binding.providerReference !== input.correlationReference) {
         throw new ProviderEvidenceInputError('Crossmint transferId does not match the durable execution binding provider_reference')
+      }
+    }
+    if (input.provider === 'cdp') {
+      if (binding.executorIdentity !== CDP_EXECUTOR_IDENTITY) throw new ProviderEvidenceInputError('CDP provider evidence requires a CDP execution binding')
+      if (binding.providerReference !== input.correlationReference) {
+        throw new ProviderEvidenceInputError('CDP transaction identity does not match the durable execution binding provider_reference')
       }
     }
   }

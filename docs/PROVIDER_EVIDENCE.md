@@ -220,3 +220,78 @@ key (only that the header "prevents duplicate transactions") — so, per
 this project's conservative-by-default discipline, a lost response before
 the transfer `id` is known is still treated as ambiguous, never silently
 retried, mirroring Turnkey's and PayBox's own honest gap.
+
+## Coinbase Developer Platform (CDP) Server Wallet evidence (D3.4C5)
+
+This integrates at the CDP Server Wallet v2 EVM Account (EOA) execution
+layer — `sendEvmTransaction` — confirmed directly against current official
+CDP documentation, never through AgentKit (an orchestration/developer
+framework, not a provider identity) and never through Smart
+Accounts/user-operations.
+
+**The central identity finding:** for an EOA Server Wallet send, current
+CDP documentation defines exactly one response identity —
+`transactionHash` — with no separate provider request/operation id
+distinct from it. This is confirmed, not assumed: the same underlying send
+response shape (`{ transactionHash, userOpHash }`, confirmed via CDP's
+"Send USDC on EVM" reference) populates exactly one of the two fields
+depending on account type. For Smart Accounts, `userOpHash` *is* a
+genuinely distinct identity from the eventual on-chain transaction hash —
+which is exactly why Smart Account/user-operation execution is out of
+scope here, mirroring the same discipline D3.4C4 applied to Crossmint's
+UserOperation question. `providerExecutionId` therefore equals
+`transaction_hash` on a successful send; when a send never broadcasts (no
+hash exists at all), the caller-supplied idempotency key stands in as the
+only identity CDP itself confirms existed for that attempt.
+
+**No webhook, no proprietary status API:** current CDP documentation
+exposes no wallet-transaction webhook/event mechanism for this send path,
+and `waitForTransactionReceipt()` is documented as a thin wrapper over
+standard EVM JSON-RPC — the same primitive OCD's own independent Base
+observer already uses, not a CDP-proprietary status lifecycle. Per this
+milestone's own instruction not to invent a webhook that doesn't exist, CDP
+evidence is caller-reported through the same recovery-credential-gated
+`POST /operations/:operationId/provider-evidence` endpoint x402 and PayBox
+already use (a `cdp_response` body key), submitted by
+`CdpCommerceExecutor` (`onchaindiligence-sdk`) once `sendEvmTransaction`
+returns — architecturally closer to PayBox's webhook-less shape than to
+Turnkey's/Crossmint's push-webhook shape.
+
+```json
+{
+  "execution_request_id": "OCD-EXEC-…",
+  "cdp_response": {
+    "status": "success",
+    "transaction_hash": "0x…",
+    "network": "base",
+    "idempotency_key": "…"
+  }
+}
+```
+
+`claimedState: 'SUCCEEDED'` here means "CDP's server wallet successfully
+broadcast this transaction" — the same character of claim x402's own
+`success: true` facilitator response already makes (a checked claim, not
+proof of on-chain inclusion), never "CDP confirms settlement." OCD's
+independent Base observer remains the only source of actual
+inclusion/revert/settlement truth, exactly as for every other provider.
+`network` is mapped from CDP's chain string to CAIP-2 only for the one
+unambiguous case this milestone supports (`"base"` → `eip155:8453`); any
+other chain string is left null. As with Turnkey, `payer`/`amount`/`asset`/
+`recipient` stay null — CDP's send response documents neither.
+
+**CdpCommerceExecutor** passes `clientSubmissionKey` as CDP's own
+documented `X-Idempotency-Key`, which CDP's docs state more strongly than
+Crossmint's own equivalent header: "duplicate requests with the same key
+will return identical responses." Even so, this adapter keeps the same
+atomic-claim-before-provider-call discipline as every other executor and
+still reports a lost-response-before-hash-known window as an honest
+ambiguity — the code never auto-retries — but its error message notes that
+a manual retry with the same idempotency key is safe per CDP's own
+documented guarantee, unlike Turnkey's/PayBox's/Crossmint's weaker or
+absent equivalents.
+
+A CDP claim alone never raises binding strength past `TRANSFER_MATCH_ONLY`.
+`PAYMENT_IDENTITY_LINKED` still requires the same independently-decoded
+on-chain authorizer match every other executor needs; `commerceLifecycle.ts`
+is unmodified.
