@@ -156,3 +156,67 @@ linkage, unlike PayBox gateway mode's conservative log-search recovery).
 `PAYMENT_IDENTITY_LINKED` still requires the same independently-decoded
 on-chain authorizer match every other executor needs; `commerceLifecycle.ts`
 is unmodified.
+
+## Crossmint Agent Wallet transfer evidence (D3.4C4)
+
+Confirmed directly against current official Crossmint documentation
+(docs.crossmint.com): Crossmint wallet-transfer webhooks
+(`wallets.transfer.in` / `wallets.transfer.out`) are always terminal —
+`data.status` is only ever `succeeded` or `failed`, with no
+broadcasting/pending intermediate state exposed at the webhook layer.
+Only `wallets.transfer.out` (an OCD-controlled wallet sending funds out)
+is accepted as a provider execution claim; `wallets.transfer.in` (funds
+arriving) and `wallets.signer.exported` (a key-export security event) are
+real, validly-signed Crossmint events but describe nothing about an
+OCD-authorized payment's outcome, and are acknowledged without being
+recorded as provider evidence.
+
+`POST /webhooks/crossmint/transfer` receives Crossmint's own signed push
+notification directly. Every delivery is verified using the official
+`svix` package against `svix-id`/`svix-timestamp`/`svix-signature` and the
+exact raw request body, using the endpoint's own Crossmint Console signing
+secret (`CROSSMINT_WEBHOOK_SECRET`) — per Crossmint's own documented
+instruction to use the raw body and the official Svix library rather than
+a hand-rolled HMAC check. **A verified signature means "this provider claim
+was delivered by the configured Crossmint webhook endpoint." It never
+means "the payment settled."**
+
+**Identity discipline (the central Crossmint-specific issue):**
+`data.transferId` (Crossmint's own transfer identity) and `data.onChain.txId`
+(the final on-chain transaction hash) are the only two identities current
+Crossmint documentation defines. No `userOperationHash` field appears
+anywhere in current Crossmint API reference or webhook documentation, even
+though Agent Wallets may be smart-contract/account-abstraction wallets —
+this module therefore never looks for a UserOperation hash and never risks
+collapsing one into `transaction_hash`. If Crossmint later exposes one, it
+must be evaluated for its own guarantees before being treated as
+equivalent to `onChain.txId`, never assumed equivalent.
+
+**Field mapping is different from Turnkey/PayBox in one respect:**
+Crossmint's webhook *does* document `data.sender`, `data.recipient`, and
+`data.token` as its own claim (addresses, raw amount, token contract), so —
+per this module's own rule of populating only what a provider actually
+asserts — those fields are populated from Crossmint's claim here, unlike
+Turnkey's webhook (which asserts none of them). This is still never
+independent settlement evidence; it is checked against OCD's own frozen
+mandate and independent Base observation exactly like every other
+provider's claim. `network` is mapped from Crossmint's `chain` string to
+OCD's CAIP-2 form only for the one unambiguous case this milestone
+supports (`"base"` → `eip155:8453`); any other chain string is left null
+rather than guessed.
+
+A verified Crossmint webhook alone never raises binding strength past
+`TRANSFER_MATCH_ONLY`. `EXECUTOR_CORRELATED` requires the existing durable
+execution-binding correlation plus Crossmint's own direct
+`transferId → onChain.txId` claim. `PAYMENT_IDENTITY_LINKED` still requires
+the same independently-decoded on-chain authorizer match every other
+executor needs; `commerceLifecycle.ts` is unmodified.
+
+**CrossmintCommerceExecutor** (`onchaindiligence-sdk`) uses Crossmint's
+documented `x-idempotency-key` transfer-request header as defense-in-depth,
+but current Crossmint documentation does not explicitly state that a lost
+response after a successful send is always safe to retry with the same
+key (only that the header "prevents duplicate transactions") — so, per
+this project's conservative-by-default discipline, a lost response before
+the transfer `id` is known is still treated as ambiguous, never silently
+retried, mirroring Turnkey's and PayBox's own honest gap.

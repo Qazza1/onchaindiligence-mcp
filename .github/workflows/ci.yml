@@ -89,3 +89,6 @@ jobs:
       # D3.4C3: Turnkey webhook signature verification, provider-evidence
       # normalization/correlation, and reconciliation reuse.
       - run: npx --no-install tsx test/d34c3TurnkeyProviderEvidence.ts
+      # D3.4C4: Crossmint webhook signature verification (Svix), provider-
+      # evidence normalization/correlation, and reconciliation reuse.
+      - run: npx --no-install tsx test/d34c4CrossmintProviderEvidence.ts
