@@ -42,6 +42,7 @@ import { mountMerchantEvidence } from './src/merchantEvidenceRoute.js'
 import { mountProviderEvidence } from './src/providerEvidenceRoute.js'
 import { mountTurnkeyWebhook } from './src/turnkeyWebhookRoute.js'
 import { mountCrossmintWebhook } from './src/crossmintWebhookRoute.js'
+import { mountCircleWebhook } from './src/circleWebhookRoute.js'
 import { mountWorkspace } from './src/workspaceRoute.js'
 import { mountDashboardCors } from './src/dashboardCors.js'
 import { mountAllowanceRoutes } from './src/allowanceRoute.js'
@@ -233,5 +234,12 @@ mountTurnkeyWebhook(app)
 // itself established; never trusts an operation id from Crossmint.
 // See src/crossmintWebhookRoute.ts.
 mountCrossmintWebhook(app)
+
+// D3.4C6: POST /webhooks/circle/transaction-status -- inbound, ECDSA-
+// signature-verified Circle v2 wallet-transaction evidence. Correlated to
+// an operation ONLY via the durable execution_bindings.provider_reference
+// the executor itself established; never trusts an operation id from
+// Circle. See src/circleWebhookRoute.ts.
+mountCircleWebhook(app)
 
 export default app

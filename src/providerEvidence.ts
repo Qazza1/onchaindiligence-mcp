@@ -528,6 +528,125 @@ function parseCdpProviderEvidenceInput(body: Record<string, unknown>, rawClaim: 
   }
 }
 
+// ---------------------------------------------------------------------
+// D3.4C6 -- Circle Developer-Controlled Wallets transaction evidence.
+//
+// Confirmed directly against current official Circle documentation
+// (developers.circle.com) at implementation time: there is NO distinct
+// "Agent Wallet" product -- programmatic/agent use goes through the same
+// Developer-Controlled Wallets API used for any server-side wallet. This
+// integrates there, never against a fabricated inheritance story.
+//
+// IDENTITY DISCIPLINE: Circle's transaction object carries `id` (Circle's
+// own durable transaction identity, returned immediately on creation) and
+// `txHash` (the eventual on-chain hash, populated once mined) as two
+// clearly distinct, separately-named fields -- confirmed via Circle's own
+// Create/Get Transaction response schema. This module never conflates
+// them: `providerExecutionId` is always `notification.id`, never `txHash`.
+//
+// STATE DISCIPLINE (unusually well-documented among this project's
+// providers): Circle's own docs explicitly separate `CONFIRMED`
+// ("included in a block, awaiting finality") from `COMPLETE` ("finalized
+// on-chain, irreversible") -- a stronger, more conservative distinction
+// than Turnkey's INCLUDED or Crossmint's succeeded. Only `COMPLETE`
+// (success) and `FAILED`/`CANCELLED`/`DENIED` (failure) are treated as
+// terminal provider evidence here; `INITIATED`, `QUEUED`, `SENT`, and
+// `CONFIRMED` are all non-terminal and never persisted as a claim, exactly
+// like Turnkey's BROADCASTING.
+//
+// WEBHOOK: Circle's v2 notification system (`transactions.outbound` for
+// an OCD-initiated payment out) is signature-verified
+// (circleWebhookVerification.ts) before anything here is trusted. Only
+// `transactions.outbound` is accepted as a provider execution claim;
+// `transactions.inbound` and any other notification type are
+// out-of-scope and never parsed as OCD execution evidence, mirroring
+// D3.4C4's `wallets.transfer.out`-only scoping of Crossmint.
+//
+// FIELD HONESTY: Circle's transaction object DOES document
+// `sourceAddress`/`destinationAddress` as its own asserted claim, so
+// `payer`/`recipient` are populated here (same discipline as Crossmint).
+// `amount`/`asset` are deliberately left null in this milestone: Circle's
+// `amounts` field shape (decimal vs atomic units, single value vs array)
+// was not confirmed with enough precision from available documentation to
+// populate an atomic-unit claim without risking an incorrect one -- see
+// docs/PROVIDER_EVIDENCE.md's Circle section for the exact reasoning and
+// the follow-up needed to add it safely.
+// ---------------------------------------------------------------------
+export const CIRCLE_EXECUTOR_IDENTITY = 'circle-base-usdc'
+
+export type CircleTransactionState = 'INITIATED' | 'QUEUED' | 'SENT' | 'CONFIRMED' | 'COMPLETE' | 'FAILED' | 'CANCELLED' | 'DENIED'
+
+/** Chain identifiers Circle documents for its wallet/transaction objects, mapped conservatively to CAIP-2 only where unambiguous. Anything else stays null -- never guessed. */
+const CIRCLE_CHAIN_TO_CAIP2: Readonly<Record<string, string>> = {
+  BASE: 'eip155:8453',
+}
+
+/** True only for a Circle transaction state this module accepts as terminal. CONFIRMED ("included, awaiting finality" per Circle's own docs) is deliberately NOT terminal -- only COMPLETE (finalized) or a definitive failure state is. */
+export function isTerminalCircleState(state: unknown): state is 'COMPLETE' | 'FAILED' | 'CANCELLED' | 'DENIED' {
+  return state === 'COMPLETE' || state === 'FAILED' || state === 'CANCELLED' || state === 'DENIED'
+}
+
+/** True only for the one Circle notification type this module accepts as a provider execution claim (an OCD-controlled wallet sending funds out). */
+export function isCircleOutboundNotification(notificationType: unknown): notificationType is 'transactions.outbound' {
+  return notificationType === 'transactions.outbound'
+}
+
+/**
+ * Normalizes an ALREADY SIGNATURE-VERIFIED Circle v2 notification envelope
+ * into the existing ProviderEvidenceInput shape. Callers MUST verify the
+ * webhook signature (circleWebhookVerification.ts) and MUST check
+ * isCircleOutboundNotification(body.notificationType) before calling this.
+ *
+ * `notificationId` comes from the envelope BODY itself (not a header,
+ * unlike Turnkey's X-Turnkey-Event-Id / Crossmint's svix-id) -- it is
+ * still exactly the same kind of stable per-delivery identity, and is
+ * itself covered by the raw-body signature, so using it is safe.
+ */
+export function parseCircleWebhookEvidenceInput(body: unknown): ProviderEvidenceInput {
+  if (!object(body)) throw new ProviderEvidenceInputError('body must be a JSON object')
+  if (body.notificationType !== 'transactions.outbound') throw new ProviderEvidenceInputError('expected a transactions.outbound notification')
+  const notification = object(body.notification) ? body.notification : null
+  if (!notification) throw new ProviderEvidenceInputError('notification envelope is missing notification')
+
+  const transactionId = optionalString(notification.id, 'notification.id', 200)
+  if (!transactionId) throw new ProviderEvidenceInputError('notification.id is required')
+  const state = notification.state
+  if (!isTerminalCircleState(state)) {
+    throw new ProviderEvidenceInputError('notification.state must be COMPLETE, FAILED, CANCELLED, or DENIED to be recorded as terminal provider evidence (INITIATED/QUEUED/SENT/CONFIRMED are non-terminal)')
+  }
+  const txHash = optionalString(notification.txHash, 'notification.txHash', 66)
+  if (txHash !== null && !isValidTransactionHash(txHash)) throw new ProviderEvidenceInputError('notification.txHash must be a 0x-prefixed 32-byte transaction hash, or absent')
+
+  const blockchain = optionalString(notification.blockchain, 'notification.blockchain', 64)
+  const network = blockchain ? (CIRCLE_CHAIN_TO_CAIP2[blockchain] ?? null) : null
+
+  const failureCode = state === 'FAILED' || state === 'CANCELLED' || state === 'DENIED' ? state : null
+  const notificationId = optionalString(body.notificationId, 'notificationId', 200)
+  const timestamp = optionalString(body.timestamp, 'timestamp', 64)
+
+  return {
+    provider: 'circle',
+    providerVersion: 'v2',
+    providerExecutionId: transactionId,
+    correlationReference: `circle:${transactionId}`,
+    x402Version: null,
+    claimedState: state === 'COMPLETE' ? 'SUCCEEDED' : 'FAILED',
+    transactionHash: txHash,
+    network,
+    payer: optionalAddress(notification.sourceAddress, 'notification.sourceAddress'),
+    recipient: optionalAddress(notification.destinationAddress, 'notification.destinationAddress'),
+    // Deliberately null -- see this section's header on amounts/asset uncertainty.
+    amountAtomic: null,
+    asset: null,
+    failureCode,
+    failureDigest: failureCode ? contentId({ state, transaction_id: transactionId }) : null,
+    rawReferenceDigest: contentId({ transaction_id: transactionId, state, blockchain, subscription_id: optionalString(body.subscriptionId, 'subscriptionId', 200), notification_id: notificationId }),
+    executionRequestId: null, // resolved by the webhook route via provider_reference, then attached before recordProviderEvidence() is called
+    providerEventId: notificationId,
+    providerTimestamp: timestamp,
+  }
+}
+
 function evidenceId(operationId: string, input: ProviderEvidenceInput): string {
   return contentId({ operationId, ...input, sourceAuthentication: PROVIDER_EVIDENCE_SOURCE })
 }
@@ -569,6 +688,12 @@ export async function recordProviderEvidence(operationId: string, input: Provide
       if (binding.executorIdentity !== CDP_EXECUTOR_IDENTITY) throw new ProviderEvidenceInputError('CDP provider evidence requires a CDP execution binding')
       if (binding.providerReference !== input.correlationReference) {
         throw new ProviderEvidenceInputError('CDP transaction identity does not match the durable execution binding provider_reference')
+      }
+    }
+    if (input.provider === 'circle') {
+      if (binding.executorIdentity !== CIRCLE_EXECUTOR_IDENTITY) throw new ProviderEvidenceInputError('Circle provider evidence requires a Circle execution binding')
+      if (binding.providerReference !== input.correlationReference) {
+        throw new ProviderEvidenceInputError('Circle transaction id does not match the durable execution binding provider_reference')
       }
     }
   }

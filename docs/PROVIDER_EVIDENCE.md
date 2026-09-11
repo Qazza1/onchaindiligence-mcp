@@ -295,3 +295,75 @@ A CDP claim alone never raises binding strength past `TRANSFER_MATCH_ONLY`.
 `PAYMENT_IDENTITY_LINKED` still requires the same independently-decoded
 on-chain authorizer match every other executor needs; `commerceLifecycle.ts`
 is unmodified.
+
+## Circle Developer-Controlled Wallets evidence (D3.4C6)
+
+Confirmed directly against current official Circle documentation
+(developers.circle.com): there is **no distinct "Agent Wallet" product** —
+programmatic/agent use goes through the same Developer-Controlled Wallets
+API as any server-side wallet. This integrates there.
+
+**Identity discipline:** Circle's transaction object carries `id` (Circle's
+own durable transaction identity, returned immediately on creation) and
+`txHash` (the eventual on-chain hash) as two clearly distinct, separately-
+documented fields. `providerExecutionId` is always `notification.id`,
+never `txHash`.
+
+**State discipline (unusually well-documented among this project's
+providers):** Circle's own docs explicitly separate `CONFIRMED`
+("included in a block, awaiting finality") from `COMPLETE` ("finalized
+on-chain, irreversible") — a stronger, more conservative distinction than
+Turnkey's `INCLUDED` or Crossmint's `succeeded`. Only `COMPLETE` (success)
+and `FAILED`/`CANCELLED`/`DENIED` (failure) are terminal; `INITIATED`,
+`QUEUED`, `SENT`, and `CONFIRMED` are all non-terminal and never persisted
+as a claim — mirroring Turnkey's `BROADCASTING`.
+
+`POST /webhooks/circle/transaction-status` receives Circle's v2 direct-
+HTTPS-POST notification. Every delivery is verified over the **raw request
+body** using `ECDSA_SHA_256` (`X-Circle-Signature`) against a public key
+fetched by `X-Circle-Key-Id` from
+`GET https://api.circle.com/v2/notifications/publicKey/<keyId>` — an
+endpoint that itself requires `Authorization: Bearer <CIRCLE_API_KEY>`
+(an authenticated Circle API credential, unlike Turnkey's fully public
+JWKS or Crossmint's shared Svix secret). The key is cached indefinitely
+per `keyId`, per Circle's own documented guidance that it is static.
+**A verified signature means "Circle authored this claim." It never means
+"the payment settled."**
+
+**Two honest, flagged gaps in current documentation, neither papered
+over:**
+- Circle's docs give no replay-window/timestamp-tolerance guidance for v2
+  webhooks (unlike Turnkey's explicit 5-minute window) — this module does
+  not invent one; correlation plus content-addressed idempotency is what
+  actually protects against a stale or replayed delivery mattering.
+- The exact byte encoding of the `X-Circle-Signature` header value
+  (base64 vs hex) was not confirmed from any page fetched during
+  implementation; this module assumes base64
+  (`src/circleWebhookVerification.ts`'s `CIRCLE_SIGNATURE_ENCODING`
+  constant is the one place to change) and this must be confirmed against
+  Circle's own code sample or a live test delivery before production use.
+
+Only `transactions.outbound` is accepted as a provider execution claim;
+`transactions.inbound` and any other notification type are acknowledged
+but never parsed as OCD execution evidence, mirroring D3.4C4's
+`wallets.transfer.out`-only scoping of Crossmint.
+
+**Field mapping:** Circle's transaction object does document
+`sourceAddress`/`destinationAddress` as its own claim, so `payer`/
+`recipient` are populated (same discipline as Crossmint). `amount`/`asset`
+are deliberately left null this milestone — Circle's `amounts` field shape
+(decimal vs atomic units, single value vs array) was not confirmed with
+enough precision to populate an atomic-unit claim without risking an
+incorrect one; adding it is a safe, small follow-up once confirmed against
+a real sandbox response, not a redesign. `network` maps only Circle's
+documented `"BASE"` blockchain value to `eip155:8453`; anything else stays
+null.
+
+A Circle claim alone never raises binding strength past
+`TRANSFER_MATCH_ONLY`. `PAYMENT_IDENTITY_LINKED` still requires the same
+independently-decoded on-chain authorizer match every other executor
+needs; `commerceLifecycle.ts` is unmodified.
+
+**Relationship context:** this integration is built entirely from Circle's
+public, current API documentation. It is not built on, and does not imply,
+any partnership, endorsement, or approval by Circle.
