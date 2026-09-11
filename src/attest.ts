@@ -40,7 +40,7 @@ export interface Attestation {
   signed: boolean
   schema_version?: string
   issuer?: string
-  purpose?: 'compliance-screening-result' | 'public-action-receipt'
+  purpose?: 'compliance-screening-result' | 'public-action-receipt' | 'erc20-allowance-action'
   issued_at?: string
   key_id?: string
   algorithm?: string
@@ -86,7 +86,7 @@ export class CanonicalVerdictError extends Error {
  */
 export async function attest<T>(
   data: T,
-  options: { purpose?: 'public-action-receipt' } = {}
+  options: { purpose?: 'public-action-receipt' | 'erc20-allowance-action' } = {}
 ): Promise<SignedEnvelope<T>> {
   if (!ATTEST_SERVICE_TOKEN) {
     throw new Error('attestation service credential is not configured')
