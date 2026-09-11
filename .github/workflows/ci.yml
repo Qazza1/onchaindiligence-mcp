@@ -92,3 +92,6 @@ jobs:
       # D3.4C4: Crossmint webhook signature verification (Svix), provider-
       # evidence normalization/correlation, and reconciliation reuse.
       - run: npx --no-install tsx test/d34c4CrossmintProviderEvidence.ts
+      # D3.4C5: Coinbase/CDP caller-reported provider-evidence normalization,
+      # correlation, and reconciliation reuse.
+      - run: npx --no-install tsx test/d34c5CdpProviderEvidence.ts
