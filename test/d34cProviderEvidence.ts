@@ -47,6 +47,30 @@ assert.equal(parsed.transactionHash, TX)
 assert.equal((parsed as any).rawResponse, undefined)
 console.log('ok  standard x402 facilitator response is normalized without storing raw response material')
 
+// PayBox is a distinct provider claim format. A terminal request snapshot is
+// recorded as PayBox's assertion only; gateway metadata never becomes an OCD
+// observation or an inferred transaction identity.
+const PAYBOX_REQUEST = '7a998655-147e-4cfb-8269-01672dfc515d'
+const payboxParsed = parseProviderEvidenceInput({
+  provider_version: 'v1-gateway',
+  execution_request_id: EXEC,
+  paybox_response: {
+    request_id: PAYBOX_REQUEST,
+    status: 'success', output_id: 'paybox-output-1', audit_id: 'paybox-audit-1',
+    payment: { gateway: true, status: 'succeeded', ok: true, network: 'eip155:8453', scheme: 'exact' },
+    response: { status: 200, ok: true },
+  },
+})
+assert.equal(payboxParsed.provider, 'paybox')
+assert.equal(payboxParsed.providerExecutionId, PAYBOX_REQUEST)
+assert.equal(payboxParsed.correlationReference, `paybox:${PAYBOX_REQUEST}`)
+assert.equal(payboxParsed.claimedState, 'SUCCEEDED')
+assert.equal(payboxParsed.network, 'eip155:8453')
+assert.equal(payboxParsed.transactionHash, null)
+assert.match(payboxParsed.rawReferenceDigest!, /^sha256:/)
+assert.throws(() => parseProviderEvidenceInput({ paybox_response: { request_id: PAYBOX_REQUEST, status: 'pending_approval' } }), /pending states are not terminal/)
+console.log('ok  PayBox terminal status and safe gateway metadata normalize without inventing a settlement claim')
+
 // A: provider success + matching independent observation.
 assert.ok(!codes(inv()).some((code) => code.includes('STATUS_') || code.includes('INDEPENDENTLY_')), codes(inv()).join(', '))
 // B: provider success + no independent observation creates the existing,
@@ -81,6 +105,21 @@ const store = {
 const first = await recordProviderEvidence(OP, { ...parsed, executionRequestId: EXEC }, store)
 const second = await recordProviderEvidence(OP, { ...parsed, executionRequestId: EXEC }, store)
 assert.equal(first.created, true); assert.equal(second.created, false); assert.equal(first.evidence.sourceAuthentication, PROVIDER_EVIDENCE_SOURCE)
+
+const payboxBinding: ExecutionBindingRecord = { ...binding, executorIdentity: 'paybox-x402-base-usdc', executorVersion: 'v1-gateway', providerReference: `paybox:${PAYBOX_REQUEST}` }
+const payboxStore = { ...store, getExecutionBinding: async (id: string) => id === EXEC ? payboxBinding : null }
+const payboxFirst = await recordProviderEvidence(OP, payboxParsed, payboxStore)
+const payboxSecond = await recordProviderEvidence(OP, payboxParsed, payboxStore)
+assert.equal(payboxFirst.created, true); assert.equal(payboxSecond.created, false)
+await assert.rejects(
+  () => recordProviderEvidence(OP, { ...payboxParsed, correlationReference: 'paybox:decoy' }, payboxStore),
+  /does not match the durable execution binding/
+)
+await assert.rejects(
+  () => recordProviderEvidence(OP, payboxParsed, { ...store, getExecutionBinding: async () => binding }),
+  /requires a PayBox execution binding/
+)
+console.log('ok  PayBox claims are operation-bound to the exact durable PayBox request identity and idempotent')
 const app = new Hono()
 mountProviderEvidence(app, { authenticateOperation: async () => ({ operationId: OP } as CommerceOperationRecord), emitFindingsUpdated: async () => {}, ...store } as any)
 const response = await app.request(`/operations/${OP}/provider-evidence`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-ocd-recovery-credential': 'test' }, body: JSON.stringify({ x402_settle_response: { success: false, error: 'declined' }, execution_request_id: EXEC }) })

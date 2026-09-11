@@ -35,6 +35,73 @@ export interface ProviderEvidenceInput {
   providerTimestamp: string | null
 }
 
+/**
+ * PayBox's public request status is deliberately normalized separately from
+ * the standard x402 facilitator response.  The two systems do not make the
+ * same assertion: a PayBox request is a provider-side execution claim, not
+ * an x402 settlement response and never an OCD chain observation.
+ *
+ * Only PayBox terminal states are accepted.  Pending approval/signature is
+ * intentionally omitted rather than being recast as a failure; the existing
+ * execution binding already represents a submitted-but-unresolved attempt.
+ */
+function parsePayBoxProviderEvidenceInput(body: Record<string, unknown>, rawClaim: Record<string, unknown>): ProviderEvidenceInput {
+  const requestId = optionalString(rawClaim.request_id, 'paybox_response.request_id', 200)
+  if (!requestId) throw new ProviderEvidenceInputError('paybox_response.request_id is required')
+  const status = optionalString(rawClaim.status, 'paybox_response.status', 64)
+  if (status !== 'success' && status !== 'denied' && status !== 'error') {
+    throw new ProviderEvidenceInputError('paybox_response.status must be one of: success, denied, error (pending states are not terminal provider evidence)')
+  }
+  const payment = object(rawClaim.payment) ? rawClaim.payment : null
+  const resourceResponse = object(rawClaim.response) ? rawClaim.response : null
+  const rawReferenceDigest = optionalDigest(body.raw_reference_digest, 'raw_reference_digest') ?? contentId({
+    provider: 'paybox', request_id: requestId, status,
+    output_id: optionalString(rawClaim.output_id, 'paybox_response.output_id', 200),
+    audit_id: optionalString(rawClaim.audit_id, 'paybox_response.audit_id', 200),
+    payment: payment ? {
+      gateway: payment.gateway === true, status: optionalString(payment.status, 'paybox_response.payment.status', 64),
+      ok: payment.ok === true, network: optionalString(payment.network, 'paybox_response.payment.network', 160),
+      scheme: optionalString(payment.scheme, 'paybox_response.payment.scheme', 64),
+    } : null,
+    response: resourceResponse ? {
+      status: typeof resourceResponse.status === 'number' && Number.isSafeInteger(resourceResponse.status) ? resourceResponse.status : null,
+      ok: resourceResponse.ok === true,
+    } : null,
+  })
+  const failureDigest = optionalDigest(body.error_digest, 'error_digest')
+  const failureCode = status === 'success' ? null : status === 'denied' ? 'PAYBOX_DENIED' : 'PAYBOX_ERROR'
+  const timestamp = optionalString(body.provider_timestamp, 'provider_timestamp', 64)
+  if (timestamp !== null && Number.isNaN(Date.parse(timestamp))) throw new ProviderEvidenceInputError('provider_timestamp must be an ISO timestamp, or null')
+
+  return {
+    provider: 'paybox',
+    providerVersion: optionalString(body.provider_version, 'provider_version', 120),
+    providerExecutionId: requestId,
+    correlationReference: `paybox:${requestId}`,
+    x402Version: null,
+    claimedState: status === 'success' ? 'SUCCEEDED' : 'FAILED',
+    transactionHash: null,
+    // A gateway response can report the payment network.  Amount, asset,
+    // payer and recipient are intentionally left null unless a future
+    // PayBox public response actually supplies them; frozen OCD action data
+    // is not rewritten as a provider assertion.
+    network: payment ? optionalString(payment.network, 'paybox_response.payment.network', 160) : null,
+    payer: null,
+    amountAtomic: null,
+    asset: null,
+    recipient: null,
+    failureCode,
+    failureDigest,
+    rawReferenceDigest,
+    executionRequestId: optionalString(body.execution_request_id, 'execution_request_id'),
+    // output_id is the documented non-secret, provider-generated result
+    // identity. audit_id remains only in the digest, avoiding a new schema
+    // field with ambiguous semantics.
+    providerEventId: optionalString(rawClaim.output_id, 'paybox_response.output_id', 200),
+    providerTimestamp: timestamp,
+  }
+}
+
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -67,6 +134,10 @@ function optionalAddress(value: unknown, name: string): string | null {
  */
 export function parseProviderEvidenceInput(body: unknown): ProviderEvidenceInput {
   if (!object(body)) throw new ProviderEvidenceInputError('body must be a JSON object')
+  if (body.paybox_response !== undefined) {
+    if (!object(body.paybox_response)) throw new ProviderEvidenceInputError('paybox_response must be a JSON object')
+    return parsePayBoxProviderEvidenceInput(body, body.paybox_response)
+  }
   const provider = optionalString(body.provider ?? 'x402-facilitator', 'provider', 120)!
   const rawClaim = body.x402_settle_response ?? body.claim ?? body
   if (!object(rawClaim)) throw new ProviderEvidenceInputError('x402_settle_response must be a JSON object')
@@ -128,6 +199,12 @@ export async function recordProviderEvidence(operationId: string, input: Provide
   if (input.executionRequestId) {
     const binding = await getBinding(input.executionRequestId)
     if (!binding || binding.operationId !== operationId) throw new ProviderEvidenceInputError('execution_request_id does not belong to this operation')
+    if (input.provider === 'paybox') {
+      if (binding.executorIdentity !== 'paybox-x402-base-usdc') throw new ProviderEvidenceInputError('PayBox provider evidence requires a PayBox execution binding')
+      if (binding.providerReference !== input.correlationReference) {
+        throw new ProviderEvidenceInputError('PayBox request_id does not match the durable execution binding provider_reference')
+      }
+    }
   }
   const create = deps.createProviderEvidence ?? createProviderEvidence
   return create({ evidenceId: evidenceId(operationId, input), operationId, ...input, sourceAuthentication: PROVIDER_EVIDENCE_SOURCE })

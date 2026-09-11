@@ -60,3 +60,38 @@ Provider evidence is intentionally not added to Action Receipt v1 in this
 milestone. It remains durable authenticated investigation evidence. A future
 receipt version can reference this evidence only through an explicit,
 versioned, signed contract change.
+
+## PayBox request claim input (D3.4C2)
+
+The same endpoint also accepts a terminal PayBox request snapshot. This is
+normalization of PayBox's own public request result; it does not cause OCD to
+submit, authorize, or finalize a payment.
+
+```json
+{
+  "provider_version": "v1-gateway",
+  "execution_request_id": "OCD-EXEC-…",
+  "paybox_response": {
+    "request_id": "…",
+    "status": "success",
+    "output_id": "…",
+    "audit_id": "…",
+    "payment": { "gateway": true, "status": "succeeded", "ok": true, "network": "eip155:8453", "scheme": "exact" },
+    "response": { "status": 200, "ok": true }
+  }
+}
+```
+
+Only terminal `success`, `denied`, and `error` states are recorded. Pending
+approval/signature remains unresolved execution state, not a provider failure.
+For PayBox, the request ID must exactly match the existing operation binding's
+`provider_reference` (`paybox:<request_id>`) and that binding must identify
+the existing PayBox executor. The adapter keeps the request/result identity
+and a digest of safe response metadata; it does not store authorization
+headers, credentials, raw response bodies, or an inferred transaction hash.
+
+`success` is a PayBox provider claim. OCD only reports settlement after its
+own chain observation. Gateway-mode claims do not alter the existing
+`TRANSFER_MATCH_ONLY` cap, and PayBox's own approval model (including any
+"Always Ask" configuration) remains independent of OCD `ALLOW` or
+`REQUIRE_APPROVAL` policy decisions.
