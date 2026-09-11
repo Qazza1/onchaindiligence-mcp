@@ -87,9 +87,13 @@ export function detectContradictions(
   const supported = network && asset ? getSupportedAsset(network, asset) : null
   const amountAtomic = amount && supported ? decimalAmountToAtomicUnits(amount, supported.decimals)?.toString() : undefined
   const hasObservation = investigation.evidence.event_identity !== null
+  const latestProviderClaims = investigation.provider_evidence?.evidence ?? []
+  const latestProviderClaim = latestProviderClaims.length > 0
+    ? latestProviderClaims[latestProviderClaims.length - 1]
+    : null
   // A preflight that was never submitted has no observation-reconciliation
   // obligation. Do not manufacture generic missing-evidence findings.
-  if (!hasObservation) return []
+  if (!hasObservation && !latestProviderClaim) return []
 
   const facts: ReconciliationFacts = {
     attribution: attribution(investigation.evidence.binding_strength, hasObservation),
@@ -110,6 +114,18 @@ export function detectContradictions(
       asset: investigation.settlement.asset ?? undefined,
       recipient: investigation.settlement.recipient ?? undefined,
       network: investigation.settlement.network ?? undefined,
+    } : undefined,
+    executor_claim: latestProviderClaim ? {
+      execution_status: latestProviderClaim.claimed_state === 'SUCCEEDED' ? 'CONFIRMED' : 'FAILED',
+      settlement_status: latestProviderClaim.claimed_state === 'SUCCEEDED' ? 'CONFIRMED' : 'NOT_CONFIRMED',
+    } : undefined,
+    independent: latestProviderClaim ? {
+      // Only a durable OCD observation establishes the right-hand side. A
+      // provider hash, network, or response must never be used here.
+      execution_status: hasObservation ? 'CONFIRMED' : 'UNKNOWN',
+      settlement_status: hasObservation
+        ? (investigation.settlement.settlement_state === 'CONFIRMED' || investigation.evidence.observation_state === 'confirmed' ? 'CONFIRMED' : 'NOT_CONFIRMED')
+        : 'UNVERIFIED',
     } : undefined,
     // These are the only existing, explicit payment constraints that D3.3A
     // can evaluate with current observation fields. allowed_assets remains

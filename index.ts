@@ -39,6 +39,7 @@ import { mountAccountHistory } from './src/accountHistoryRoute.js'
 import { mountSavedReceipts } from './src/savedReceiptsRoute.js'
 import { mountWebhooks } from './src/webhookRoute.js'
 import { mountMerchantEvidence } from './src/merchantEvidenceRoute.js'
+import { mountProviderEvidence } from './src/providerEvidenceRoute.js'
 import { mountWorkspace } from './src/workspaceRoute.js'
 import { mountDashboardCors } from './src/dashboardCors.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
@@ -200,5 +201,10 @@ mountWebhooks(app)
 // (recovery-credential-gated, same auth as the D2.4 execution-binding
 // routes above). See src/merchantEvidenceRoute.ts.
 mountMerchantEvidence(app)
+
+// D3.4C1: captures a normalized x402/executor provider claim under the
+// operation recovery credential. It is append-only provider-reported evidence,
+// never a replacement for independently observed settlement.
+mountProviderEvidence(app)
 
 export default app

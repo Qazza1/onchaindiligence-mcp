@@ -142,7 +142,8 @@ function unresolvedForComparison(facts: ReconciliationFacts, expected: unknown, 
 }
 
 function incompatibleTerminal(left: string | undefined, right: string | undefined): boolean {
-  return (left === 'CONFIRMED' && right === 'FAILED') || (left === 'FAILED' && right === 'CONFIRMED') || (left === 'CONFIRMED' && right === 'NOT_CONFIRMED')
+  return (left === 'CONFIRMED' && right === 'FAILED') || (left === 'FAILED' && right === 'CONFIRMED') ||
+    (left === 'CONFIRMED' && right === 'NOT_CONFIRMED') || (left === 'NOT_CONFIRMED' && right === 'CONFIRMED')
 }
 
 /**
@@ -173,13 +174,18 @@ export function deriveTaxonomyFindings(facts: ReconciliationFacts): TaxonomyFind
     }
   }
 
-  compare('AMOUNT_MISMATCH', mandate.amount_atomic, observation.amount_atomic, normalizeAtomicAmount, 'amount in atomic units')
-  compare('ASSET_MISMATCH', mandate.asset, observation.asset, normalizeAsset, 'asset identity')
-  compare('RECIPIENT_MISMATCH', mandate.recipient, observation.recipient, normalizeEvmAddress, 'recipient address')
-  compare('NETWORK_MISMATCH', mandate.network, observation.network, normalizeNetwork, 'network identifier')
+  // Provider claims may arrive before OCD has observed the chain. Report the
+  // precise terminal-status evidence gap below, not a noisy gap for every
+  // mandate field that has no independent counterpart yet.
+  if (facts.observation) {
+    compare('AMOUNT_MISMATCH', mandate.amount_atomic, observation.amount_atomic, normalizeAtomicAmount, 'amount in atomic units')
+    compare('ASSET_MISMATCH', mandate.asset, observation.asset, normalizeAsset, 'asset identity')
+    compare('RECIPIENT_MISMATCH', mandate.recipient, observation.recipient, normalizeEvmAddress, 'recipient address')
+    compare('NETWORK_MISMATCH', mandate.network, observation.network, normalizeNetwork, 'network identifier')
+  }
 
   // Explicit policy only. ALLOW on its own never enters this rule.
-  if (facts.policy && (facts.policy.max_amount_atomic !== undefined || facts.policy.recipient_allowlist !== undefined || facts.policy.allowed_networks !== undefined)) {
+  if (facts.observation && facts.policy && (facts.policy.max_amount_atomic !== undefined || facts.policy.recipient_allowlist !== undefined || facts.policy.allowed_networks !== undefined)) {
     const unavailable = unresolvedForComparison(facts, facts.policy, observation)
     if (unavailable) output.push(unavailable)
     else {
@@ -217,7 +223,7 @@ export function deriveTaxonomyFindings(facts: ReconciliationFacts): TaxonomyFind
 
   const claimedSettlement = facts.executor_claim?.settlement_status
   const observedSettlement = facts.independent?.settlement_status
-  if (claimedSettlement === 'CONFIRMED') {
+  if (claimedSettlement === 'CONFIRMED' || claimedSettlement === 'NOT_CONFIRMED') {
     if (!observedSettlement || observedSettlement === 'UNVERIFIED') {
       output.push(finding('INSUFFICIENT_EVIDENCE', 'SETTLEMENT_NOT_INDEPENDENTLY_CONFIRMED', claimedSettlement, observedSettlement ?? null, ['EXECUTOR_CLAIM', 'SETTLEMENT_OBSERVATION'], 'Claimed settlement cannot yet be independently confirmed.', facts))
     } else if (incompatibleTerminal(claimedSettlement, observedSettlement)) {

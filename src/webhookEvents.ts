@@ -45,6 +45,7 @@ import {
   listActiveWebhookEndpointsForAccount,
   getExecutionBindingsForOperation,
   listCommerceObservations,
+  listProviderEvidenceForOperation,
   getLifecycleStep,
   type CommerceOperationRecord,
   type CommerceObservationRecord,
@@ -78,6 +79,7 @@ export interface EmitFindingsUpdatedDependencies extends EmitOperationEventDepen
   getCommerceOperation?: typeof getCommerceOperation
   getExecutionBindingsForOperation?: typeof getExecutionBindingsForOperation
   listCommerceObservations?: typeof listCommerceObservations
+  listProviderEvidenceForOperation?: typeof listProviderEvidenceForOperation
   getLifecycleStep?: typeof getLifecycleStep
 }
 
@@ -230,16 +232,18 @@ export async function emitFindingsUpdated(operationId: string, deps: EmitFinding
     const getOperation = deps.getCommerceOperation ?? getCommerceOperation
     const getBindings = deps.getExecutionBindingsForOperation ?? getExecutionBindingsForOperation
     const getObservations = deps.listCommerceObservations ?? listCommerceObservations
+    const getProviderEvidence = deps.listProviderEvidenceForOperation ?? listProviderEvidenceForOperation
     const getPreflightStep = deps.getLifecycleStep ?? getLifecycleStep
     const op = await getOperation(operationId)
     if (!op?.ownerId) return
 
-    const [bindings, observations, preflightStep] = await Promise.all([
+    const [bindings, observations, providerEvidence, preflightStep] = await Promise.all([
       getBindings(operationId),
       getObservations(operationId),
+      getProviderEvidence(operationId),
       getPreflightStep(operationId, 'preflight'),
     ])
-    const findingSet = deriveD33ReconciliationFindings(op, preflightStep, bindings, observations)
+    const findingSet = deriveD33ReconciliationFindings(op, preflightStep, bindings, observations, providerEvidence)
     if (!findingSet?.evaluated) return
 
     const contradictionCount = findingSet.findings.filter((finding) => finding.finding_class === 'CONTRADICTION').length

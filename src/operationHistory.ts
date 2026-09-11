@@ -27,6 +27,7 @@ import {
   type CommerceOperationRecord,
   type ExecutionBindingRecord,
   type CommerceObservationRecord,
+  type ProviderEvidenceRecord,
 } from './db.js'
 import { verifyReceipt } from './receiptTools.js'
 import type { PublicActionReceiptEnvelope } from './receipts.js'
@@ -90,12 +91,14 @@ export function deriveD33ReconciliationFindings(
   op: CommerceOperationRecord,
   preflight: { frozenInput: unknown } | null | undefined,
   bindings: ExecutionBindingRecord[],
-  observations: CommerceObservationRecord[]
+  observations: CommerceObservationRecord[],
+  providerEvidence: ProviderEvidenceRecord[] = []
 ): ReconciliationFindingSet | null {
   if (!preflight) return null
   const latestBinding = bindings.length > 0 ? bindings[bindings.length - 1] : null
   const latestObservation = observations.length > 0 ? observations[observations.length - 1] : null
-  const evaluated = op.preflightState === 'completed' && latestObservation !== null && hasFrozenReconciliationInput(preflight.frozenInput)
+  const latestProviderClaim = providerEvidence.length > 0 ? providerEvidence[providerEvidence.length - 1] : null
+  const evaluated = op.preflightState === 'completed' && (latestObservation !== null || latestProviderClaim !== null) && hasFrozenReconciliationInput(preflight.frozenInput)
   if (!evaluated) return { evaluated: false, findings: [] }
 
   const investigation: Omit<Investigation, 'findings'> = {
@@ -128,6 +131,15 @@ export function deriveD33ReconciliationFindings(
     receipts: { preflight: null, commerce: null, verification: null },
     recovery: { needs_attention: false, may_already_have_paid: false, summary: '', safe_next_action: '' },
     merchant_response: { evidence: [] },
+    provider_evidence: { evidence: providerEvidence.map((claim) => ({
+      evidence_id: claim.evidenceId, provider: claim.provider, provider_version: claim.providerVersion,
+      provider_execution_id: claim.providerExecutionId, correlation_reference: claim.correlationReference,
+      x402_version: claim.x402Version, claimed_state: claim.claimedState, transaction_hash: claim.transactionHash,
+      network: claim.network, payer: claim.payer, amount_atomic: claim.amountAtomic, asset: claim.asset,
+      recipient: claim.recipient, failure_code: claim.failureCode, source_authentication: claim.sourceAuthentication,
+      raw_reference_digest: claim.rawReferenceDigest, execution_request_id: claim.executionRequestId,
+      provider_event_id: claim.providerEventId, provider_timestamp: claim.providerTimestamp, recorded_at: claim.recordedAt,
+    })) },
   }
   return { evaluated: true, findings: detectContradictions(investigation, { frozenPreflightInput: preflight.frozenInput }) }
 }
@@ -136,9 +148,10 @@ export function deriveFindingsSummary(
   op: CommerceOperationRecord,
   preflight: { frozenInput: unknown } | null | undefined,
   bindings: ExecutionBindingRecord[],
-  observations: CommerceObservationRecord[]
+  observations: CommerceObservationRecord[],
+  providerEvidence: ProviderEvidenceRecord[] = []
 ): FindingsSummary | null {
-  const set = deriveD33ReconciliationFindings(op, preflight, bindings, observations)
+  const set = deriveD33ReconciliationFindings(op, preflight, bindings, observations, providerEvidence)
   if (!set) return null
   return {
     contradiction_count: set.findings.filter((finding) => finding.finding_class === 'CONTRADICTION').length,

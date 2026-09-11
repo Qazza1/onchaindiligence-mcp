@@ -19,7 +19,7 @@ import { getOperationDetailForOwner, type OperationDetail } from './operationHis
 import { contentId } from './receipts.js'
 import { verifyReceipt } from './receiptTools.js'
 import { getStepState } from './lifecycleSteps.js'
-import { listMerchantEvidenceForOperation } from './db.js'
+import { listMerchantEvidenceForOperation, listProviderEvidenceForOperation } from './db.js'
 import { deriveFindings, summarizeFindings, type Finding } from './findings.js'
 
 export interface Investigation {
@@ -115,6 +115,31 @@ export interface Investigation {
       recorded_at: string
     }>
   }
+  /** Normalized provider claims; never upgraded into OCD observation. */
+  provider_evidence?: {
+    evidence: Array<{
+      evidence_id: string
+      provider: string
+      provider_version: string | null
+      provider_execution_id: string | null
+      correlation_reference: string | null
+      x402_version: string | null
+      claimed_state: 'SUCCEEDED' | 'FAILED'
+      transaction_hash: string | null
+      network: string | null
+      payer: string | null
+      amount_atomic: string | null
+      asset: string | null
+      recipient: string | null
+      failure_code: string | null
+      source_authentication: 'CALLER_REPORTED_PROVIDER_RESPONSE'
+      raw_reference_digest: string | null
+      execution_request_id: string | null
+      provider_event_id: string | null
+      provider_timestamp: string | null
+      recorded_at: string
+    }>
+  }
   /** D2.8A: deterministic findings derived from the fields above -- see findings.ts. Computed, never persisted; the export digest below naturally covers it since it's part of this same object. */
   findings: Finding[]
 }
@@ -127,6 +152,7 @@ export interface GetInvestigationDependencies {
   verifyReceipt?: typeof verifyReceipt
   getStepState?: typeof getStepState
   listMerchantEvidenceForOperation?: typeof listMerchantEvidenceForOperation
+  listProviderEvidenceForOperation?: typeof listProviderEvidenceForOperation
 }
 
 export async function getInvestigationForOwner(operationId: string, accountId: string, deps: GetInvestigationDependencies = {}): Promise<InvestigationResult> {
@@ -134,6 +160,7 @@ export async function getInvestigationForOwner(operationId: string, accountId: s
   const doVerifyReceipt = deps.verifyReceipt ?? verifyReceipt
   const doGetStepState = deps.getStepState ?? getStepState
   const doListMerchantEvidence = deps.listMerchantEvidenceForOperation ?? listMerchantEvidenceForOperation
+  const doListProviderEvidence = deps.listProviderEvidenceForOperation ?? listProviderEvidenceForOperation
   const result = await doGetDetail(operationId, accountId)
   if (!result.found) return { found: false }
   const detail = result.detail
@@ -150,7 +177,7 @@ export async function getInvestigationForOwner(operationId: string, accountId: s
   // to compute whether a CALLER_REPORTED transaction_hash matches
   // something OCD has independently observed -- never to upgrade the
   // evidence's own source away from CALLER_REPORTED.
-  const merchantEvidenceRows = await doListMerchantEvidence(operationId)
+  const [merchantEvidenceRows, providerEvidenceRows] = await Promise.all([doListMerchantEvidence(operationId), doListProviderEvidence(operationId)])
   const knownTransactionHashes = new Set(detail.observations.map((o) => o.transaction_hash.toLowerCase()))
 
   // "Current" binding/observation: the most recent of each -- D2.4 allows
@@ -237,6 +264,17 @@ export async function getInvestigationForOwner(operationId: string, accountId: s
         provider_reference: e.providerReference,
         transaction_hash: e.transactionHash,
         transaction_hash_matches_known_observation: e.transactionHash ? knownTransactionHashes.has(e.transactionHash.toLowerCase()) : null,
+        recorded_at: e.recordedAt,
+      })),
+    },
+    provider_evidence: {
+      evidence: providerEvidenceRows.map((e) => ({
+        evidence_id: e.evidenceId, provider: e.provider, provider_version: e.providerVersion,
+        provider_execution_id: e.providerExecutionId, correlation_reference: e.correlationReference,
+        x402_version: e.x402Version, claimed_state: e.claimedState, transaction_hash: e.transactionHash,
+        network: e.network, payer: e.payer, amount_atomic: e.amountAtomic, asset: e.asset, recipient: e.recipient,
+        failure_code: e.failureCode, source_authentication: e.sourceAuthentication, raw_reference_digest: e.rawReferenceDigest,
+        execution_request_id: e.executionRequestId, provider_event_id: e.providerEventId, provider_timestamp: e.providerTimestamp,
         recorded_at: e.recordedAt,
       })),
     },

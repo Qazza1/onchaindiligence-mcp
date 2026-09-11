@@ -1187,3 +1187,87 @@ export async function listMerchantEvidenceForOperation(operationId: string): Pro
   ])) as unknown as any[]
   return rows.map(mapMerchantEvidenceRow)
 }
+
+// ---------------------------------------------------------------------
+// D3.4C1 -- provider-reported execution/facilitator claims.
+// ---------------------------------------------------------------------
+
+export interface ProviderEvidenceRecord {
+  evidenceId: string
+  operationId: string
+  provider: string
+  providerVersion: string | null
+  providerExecutionId: string | null
+  correlationReference: string | null
+  x402Version: string | null
+  claimedState: 'SUCCEEDED' | 'FAILED'
+  transactionHash: string | null
+  network: string | null
+  payer: string | null
+  amountAtomic: string | null
+  asset: string | null
+  recipient: string | null
+  failureCode: string | null
+  failureDigest: string | null
+  sourceAuthentication: 'CALLER_REPORTED_PROVIDER_RESPONSE'
+  rawReferenceDigest: string | null
+  executionRequestId: string | null
+  providerEventId: string | null
+  providerTimestamp: string | null
+  recordedAt: string
+}
+
+function mapProviderEvidenceRow(row: any): ProviderEvidenceRecord {
+  const iso = (value: unknown): string | null => value ? (value instanceof Date ? value.toISOString() : String(value)) : null
+  return {
+    evidenceId: row.evidence_id,
+    operationId: row.operation_id,
+    provider: row.provider,
+    providerVersion: row.provider_version ?? null,
+    providerExecutionId: row.provider_execution_id ?? null,
+    correlationReference: row.correlation_reference ?? null,
+    x402Version: row.x402_version ?? null,
+    claimedState: row.claimed_state,
+    transactionHash: row.transaction_hash ?? null,
+    network: row.network ?? null,
+    payer: row.payer ?? null,
+    amountAtomic: row.amount_atomic ?? null,
+    asset: row.asset ?? null,
+    recipient: row.recipient ?? null,
+    failureCode: row.failure_code ?? null,
+    failureDigest: row.failure_digest ?? null,
+    sourceAuthentication: row.source_authentication,
+    rawReferenceDigest: row.raw_reference_digest ?? null,
+    executionRequestId: row.execution_request_id ?? null,
+    providerEventId: row.provider_event_id ?? null,
+    providerTimestamp: iso(row.provider_timestamp),
+    recordedAt: iso(row.recorded_at)!,
+  }
+}
+
+/** Idempotent by content-derived evidence_id. Provider claims never mutate or supersede an independent commerce observation. */
+export async function createProviderEvidence(params: Omit<ProviderEvidenceRecord, 'recordedAt'>): Promise<{ created: boolean; evidence: ProviderEvidenceRecord }> {
+  const columns = `evidence_id, operation_id, provider, provider_version, provider_execution_id, correlation_reference,
+    x402_version, claimed_state, transaction_hash, network, payer, amount_atomic, asset, recipient, failure_code,
+    failure_digest, source_authentication, raw_reference_digest, execution_request_id, provider_event_id, provider_timestamp`
+  const values = [
+    params.evidenceId, params.operationId, params.provider, params.providerVersion, params.providerExecutionId, params.correlationReference,
+    params.x402Version, params.claimedState, params.transactionHash, params.network, params.payer, params.amountAtomic, params.asset,
+    params.recipient, params.failureCode, params.failureDigest, params.sourceAuthentication, params.rawReferenceDigest,
+    params.executionRequestId, params.providerEventId, params.providerTimestamp,
+  ]
+  const inserted = (await sql().query(
+    `INSERT INTO provider_evidence (${columns}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+     ON CONFLICT (evidence_id) DO NOTHING RETURNING *`, values
+  )) as unknown as any[]
+  if (inserted[0]) return { created: true, evidence: mapProviderEvidenceRow(inserted[0]) }
+  const existing = (await sql().query('SELECT * FROM provider_evidence WHERE evidence_id = $1', [params.evidenceId])) as unknown as any[]
+  if (!existing[0]) throw new Error('provider evidence disappeared between insert and read -- this should never happen')
+  return { created: false, evidence: mapProviderEvidenceRow(existing[0]) }
+}
+
+/** Oldest-first append-only provider claims; callers may display the final item as the latest claim without treating it as observation. */
+export async function listProviderEvidenceForOperation(operationId: string): Promise<ProviderEvidenceRecord[]> {
+  const rows = (await sql().query('SELECT * FROM provider_evidence WHERE operation_id = $1 ORDER BY recorded_at ASC', [operationId])) as unknown as any[]
+  return rows.map(mapProviderEvidenceRow)
+}

@@ -337,3 +337,34 @@ CREATE TABLE IF NOT EXISTS merchant_evidence (
   recorded_at             TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS merchant_evidence_operation_idx ON merchant_evidence (operation_id, recorded_at ASC);
+
+-- D3.4C1 provider claims. These are append-only, content-addressed records of
+-- what an execution/facilitator provider reported. They are deliberately NOT
+-- commerce_observations: an x402 `success` response is not independent Base
+-- settlement observation. Raw response material is never stored here; only
+-- a caller-provided digest/reference that can be retained safely.
+CREATE TABLE IF NOT EXISTS provider_evidence (
+  evidence_id              TEXT PRIMARY KEY,
+  operation_id             TEXT NOT NULL REFERENCES commerce_operations (operation_id),
+  provider                 TEXT NOT NULL,
+  provider_version         TEXT,
+  provider_execution_id    TEXT,
+  correlation_reference    TEXT,
+  x402_version             TEXT,
+  claimed_state            TEXT NOT NULL CHECK (claimed_state IN ('SUCCEEDED', 'FAILED')),
+  transaction_hash         TEXT,
+  network                  TEXT,
+  payer                    TEXT,
+  amount_atomic            TEXT,
+  asset                    TEXT,
+  recipient                TEXT,
+  failure_code             TEXT,
+  failure_digest           TEXT,
+  source_authentication    TEXT NOT NULL CHECK (source_authentication IN ('CALLER_REPORTED_PROVIDER_RESPONSE')),
+  raw_reference_digest     TEXT,
+  execution_request_id     TEXT REFERENCES execution_bindings (execution_request_id),
+  provider_event_id        TEXT,
+  provider_timestamp       TIMESTAMPTZ,
+  recorded_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS provider_evidence_operation_idx ON provider_evidence (operation_id, recorded_at ASC);

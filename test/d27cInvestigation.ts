@@ -89,6 +89,11 @@ function fakeListMerchantEvidence() {
   return Promise.resolve([])
 }
 
+/** No provider claims -- provider evidence has focused D3.4C1 coverage. */
+function fakeListProviderEvidence() {
+  return Promise.resolve([])
+}
+
 function app(deps: AccountHistoryDependencies) {
   const a = new Hono()
   mountAccountHistory(a, deps)
@@ -103,14 +108,14 @@ let ownerInvestigation!: Investigation
   const getOperationDetailForOwner = async (operationId: string, accountId: string): Promise<OperationDetailResult> =>
     operationId === OPERATION_ID && accountId === ACCOUNT_A.accountId ? { found: true, detail } : { found: false }
 
-  const result = await getInvestigationForOwner(OPERATION_ID, ACCOUNT_A.accountId, { getOperationDetailForOwner, verifyReceipt: fakeVerifyReceipt as any, getStepState: fakeGetStepState as any, listMerchantEvidenceForOperation: fakeListMerchantEvidence as any })
+  const result = await getInvestigationForOwner(OPERATION_ID, ACCOUNT_A.accountId, { getOperationDetailForOwner, verifyReceipt: fakeVerifyReceipt as any, getStepState: fakeGetStepState as any, listMerchantEvidenceForOperation: fakeListMerchantEvidence as any, listProviderEvidenceForOperation: fakeListProviderEvidence as any })
   assert.equal(result.found, true)
   if (result.found) ownerInvestigation = result.investigation
 
   // Route-level: the owning account gets 200 with the assembled object.
   const res = await app({
     authenticateAccount: fakeAuthenticateAccount as any,
-    getInvestigationForOwner: async (operationId, accountId) => getInvestigationForOwner(operationId, accountId, { getOperationDetailForOwner, verifyReceipt: fakeVerifyReceipt as any, getStepState: fakeGetStepState as any, listMerchantEvidenceForOperation: fakeListMerchantEvidence as any }),
+    getInvestigationForOwner: async (operationId, accountId) => getInvestigationForOwner(operationId, accountId, { getOperationDetailForOwner, verifyReceipt: fakeVerifyReceipt as any, getStepState: fakeGetStepState as any, listMerchantEvidenceForOperation: fakeListMerchantEvidence as any, listProviderEvidenceForOperation: fakeListProviderEvidence as any }),
   }).request(`/me/operations/${OPERATION_ID}/investigation`, { headers: { authorization: 'Bearer key-a' } })
   assert.equal(res.status, 200)
   const body = (await res.json()) as any
@@ -128,7 +133,7 @@ console.log('ok  the owning account can fetch the assembled investigation packag
 
   const deps: AccountHistoryDependencies = {
     authenticateAccount: fakeAuthenticateAccount as any,
-    getInvestigationForOwner: async (operationId, accountId) => getInvestigationForOwner(operationId, accountId, { getOperationDetailForOwner, verifyReceipt: fakeVerifyReceipt as any, getStepState: fakeGetStepState as any, listMerchantEvidenceForOperation: fakeListMerchantEvidence as any }),
+    getInvestigationForOwner: async (operationId, accountId) => getInvestigationForOwner(operationId, accountId, { getOperationDetailForOwner, verifyReceipt: fakeVerifyReceipt as any, getStepState: fakeGetStepState as any, listMerchantEvidenceForOperation: fakeListMerchantEvidence as any, listProviderEvidenceForOperation: fakeListProviderEvidence as any }),
   }
 
   const asOther = await app(deps).request(`/me/operations/${OPERATION_ID}/investigation`, { headers: { authorization: 'Bearer key-b' } })
@@ -211,7 +216,7 @@ console.log('ok  the exported investigation package (onchaindiligence.investigat
   // @ts-expect-error -- deliberately simulating a record missing a field real DB rows always have, to prove the export path tolerates it
   delete sparseDetail.observations[0].block_hash
   const getOperationDetailForOwner = async (): Promise<OperationDetailResult> => ({ found: true, detail: sparseDetail })
-  const result = await getInvestigationForOwner(OPERATION_ID, ACCOUNT_A.accountId, { getOperationDetailForOwner, verifyReceipt: fakeVerifyReceipt as any, getStepState: fakeGetStepState as any, listMerchantEvidenceForOperation: fakeListMerchantEvidence as any })
+  const result = await getInvestigationForOwner(OPERATION_ID, ACCOUNT_A.accountId, { getOperationDetailForOwner, verifyReceipt: fakeVerifyReceipt as any, getStepState: fakeGetStepState as any, listMerchantEvidenceForOperation: fakeListMerchantEvidence as any, listProviderEvidenceForOperation: fakeListProviderEvidence as any })
   assert.equal(result.found, true)
   if (result.found) {
     const exported = buildInvestigationExport({ accountId: ACCOUNT_A.accountId, investigation: result.investigation })
