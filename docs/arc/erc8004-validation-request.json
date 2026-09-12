@@ -1,0 +1,17 @@
+{
+  "schema": "onchaindiligence.arc.erc8004.validation-request.v1",
+  "network": "eip155:5042002",
+  "registry": "0x8004Cb1BF31DAf7788923b405b754f57acEB4272",
+  "agentId": "894557",
+  "owner": "0xb8624E695C361F0c54F61B465dd15AF63C2c5D8E",
+  "validator": "0xF8Ce4187870aB0517d44E5CE59B35698dE182f19",
+  "tag": "ocd_testnet_observer_reachable",
+  "claim": "Verify that the registered OnChainDiligence Verification Agent metadata is readable and its owner matches the expected Arc Testnet owner at the observed chain state.",
+  "metadataUri": "https://raw.githubusercontent.com/Qazza1/onchaindiligence-mcp/1500d781b6262e7d963a382d100233a991bc4c75/docs/arc/onchaindiligence-verification-agent.json",
+  "registration": {
+    "transactionHash": "0x6a4ff1cedacdcdc4868d4ae7432acf99f67754ac01c1bf00f029917f12f51d32",
+    "blockNumber": "61748735",
+    "blockHash": "0x3b8a662c8bdc9921fd6f26738256e924f3b9a1f2a6399193ff051dae651f3d53"
+  },
+  "limitations": "A response records the validator's narrow registry assertion. It is not an OnChainDiligence VALID result and does not establish broader safety, compliance, or service delivery."
+}
