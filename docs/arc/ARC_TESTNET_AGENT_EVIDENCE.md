@@ -1,5 +1,7 @@
 # Arc Testnet agent evidence — D3.5C3-PRE
 
+Status: **D3.5C3-PRE — ARC TESTNET VALIDATED**
+
 Observed on 2026-09-12 through the official Arc Testnet RPC, `https://rpc.testnet.arc.io`. Network: `eip155:5042002`. Explorer links below are public. This is Testnet evidence only.
 
 ## ERC-8004 identity
