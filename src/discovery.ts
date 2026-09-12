@@ -993,7 +993,20 @@ export function mountDiscovery(app: Hono): void {
   // is ever requested or charged on this path.
   app.use('/x402/*', async (c, next) => {
     try {
-      await x402PaymentMiddleware(c, next)
+      // CRITICAL FIX (found during D3.6D staking pricing verification):
+      // this must RETURN the inner middleware's result. `x402PaymentMiddleware`
+      // is itself Hono-middleware-shaped: on a "payment-error" (no payment
+      // header yet -- the normal first call of every x402 flow) it directly
+      // `return`s a Response rather than calling `next()`. Only awaiting it
+      // without returning left this wrapper implicitly resolve to `undefined`,
+      // which Hono treats as "context not finalized" and turns into a 500 --
+      // breaking the 402 payment-challenge path for every paid HTTP route
+      // (confirmed in production: GET /x402/screen/:address and POST
+      // /x402/preflight-bridge with a valid unsigned request both 500'd
+      // instead of 402ing). No test caught this because every existing
+      // pre-payment test intentionally sends an INVALID body, which is
+      // rejected by validation middleware before ever reaching this wrapper.
+      return await x402PaymentMiddleware(c, next)
     } catch (err) {
       if (err instanceof FacilitatorTimeoutError || (err instanceof Error && /no supported payment kinds loaded/i.test(err.message))) {
         c.header('Retry-After', '5')
