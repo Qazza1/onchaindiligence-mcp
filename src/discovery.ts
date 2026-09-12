@@ -62,7 +62,7 @@ import { parseSwapInput, SwapInputError } from './swap.js'
 import { PREFLIGHT_SWAP_DESCRIPTION, preflightSwap } from './swapRoute.js'
 import { parseBridgeInput, BridgeInputError } from './bridge.js'
 import { PREFLIGHT_BRIDGE_DESCRIPTION, preflightBridge } from './bridgeRoute.js'
-import { StakingInputError } from './staking.js'
+import { parseStakingInput, StakingInputError } from './staking.js'
 import { PREFLIGHT_STAKING_DESCRIPTION, preflightStaking } from './stakingRoute.js'
 
 /**
@@ -233,6 +233,23 @@ export const X402_ROUTES: X402RoutesConfig = {
           input: { action: { kind: 'BRIDGE', protocol: 'circle-cctp-v2', source_network: 'eip155:8453', destination_network: 'eip155:1', source_asset: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', destination_asset: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', max_source_atomic: '1000000', min_destination_atomic: '990000', recipient: '0x000000000000000000000000000000000000dEaD' }, policy: { allowed_source_networks: ['eip155:8453'], allowed_destination_networks: ['eip155:1'] } },
           inputSchema: { properties: { action: { type: 'object' }, policy: { type: 'object' } } },
           output: { example: { decision: { status: 'ALLOW' }, artifact: { data: { schema: 'onchaindiligence.bridge-action.v1', artifact_type: 'PREFLIGHT' }, attestation: { signed: true, key_id: 'ed25519-EXAMPLEKEY000000', algorithm: 'ed25519', signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg' } } }, schema: { type: 'object', properties: { decision: { type: 'object' }, artifact: { type: 'object' } } } },
+        }),
+      },
+    },
+    // D3.6D: same paid preflight rail, a distinct strict Lido stETH staking
+    // artifact. Was live and reachable but NOT charging -- paymentMiddleware
+    // only gates paths with an X402_ROUTES entry, and this route had none,
+    // so preflight-staking silently returned a full result for free.
+    'POST /x402/preflight-staking': {
+      accepts: { scheme: 'exact', price: usd(config.prices.preflight), network: CAIP2, payTo: config.x402.recipient },
+      description: PREFLIGHT_STAKING_DESCRIPTION,
+      mimeType: 'application/json',
+      extensions: {
+        ...declareDiscoveryExtension({
+          bodyType: 'json',
+          input: { action: { kind: 'STAKE', protocol: 'lido-steth-submit', network: 'eip155:1', input_asset: 'eip155:1/slip44:60', staker: '0x000000000000000000000000000000000000dEaD', max_amount_wei: '1000000000000000000' }, policy: { allowed_networks: ['eip155:1'], allowed_protocols: ['lido-steth-submit'] } },
+          inputSchema: { properties: { action: { type: 'object' }, policy: { type: 'object' } } },
+          output: { example: { decision: { status: 'ALLOW' }, artifact: { data: { schema: 'onchaindiligence.staking-action.v1', artifact_type: 'PREFLIGHT' }, attestation: { signed: true, key_id: 'ed25519-EXAMPLEKEY000000', algorithm: 'ed25519', signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg' } } }, schema: { type: 'object', properties: { decision: { type: 'object' }, artifact: { type: 'object' } } } },
         }),
       },
     },
@@ -950,6 +967,12 @@ export function mountDiscovery(app: Hono): void {
     let body: unknown
     try { body = await c.req.raw.clone().json() } catch { return c.json({ error: 'body must be valid JSON' }, 400) }
     try { parseBridgeInput(body) } catch (err: any) { return c.json({ error: err instanceof BridgeInputError ? err.message : 'invalid bridge input' }, 400) }
+    await next()
+  })
+  app.use('/x402/preflight-staking', async (c, next) => {
+    let body: unknown
+    try { body = await c.req.raw.clone().json() } catch { return c.json({ error: 'body must be valid JSON' }, 400) }
+    try { parseStakingInput(body) } catch (err: any) { return c.json({ error: err instanceof StakingInputError ? err.message : 'invalid staking input' }, 400) }
     await next()
   })
 

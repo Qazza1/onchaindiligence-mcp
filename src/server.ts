@@ -66,6 +66,7 @@ import { inspectBridge, observeBridge, preflightBridge, INSPECT_BRIDGE_DESCRIPTI
 import { inspectStaking, observeStaking, preflightStaking, INSPECT_STAKING_DESCRIPTION, OBSERVE_STAKING_DESCRIPTION, PREFLIGHT_STAKING_DESCRIPTION } from './stakingRoute.js'
 export { PREFLIGHT_ALLOWANCE_DESCRIPTION } from './allowanceRoute.js'
 export { PREFLIGHT_BRIDGE_DESCRIPTION } from './bridgeRoute.js'
+export { PREFLIGHT_STAKING_DESCRIPTION } from './stakingRoute.js'
 
 // Fail fast if misconfigured — same discipline as the HTTP API.
 assertConfigured()
