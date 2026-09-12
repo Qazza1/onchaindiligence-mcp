@@ -32,6 +32,7 @@ import { ExactEvmScheme } from '@x402/evm/exact/server'
 import { HTTPFacilitatorClient } from '@x402/core/server'
 import { declareDiscoveryExtension } from '@x402/extensions/bazaar'
 import { createFacilitatorConfig } from '@coinbase/x402'
+import { FacilitatorTimeoutError } from './facilitatorResilience.js'
 
 import { config } from './config.js'
 import { screenAddress, buildAttribution } from './chainalysis.js'
@@ -956,7 +957,32 @@ export function mountDiscovery(app: Hono): void {
   // paths initialise the CDP facilitator for nothing. Scoping keeps the paid
   // machinery on the paid namespace; paid behaviour is unchanged because every
   // priced route already lives under /x402/.
-  app.use('/x402/*', paymentMiddleware(X402_ROUTES, resourceServer))
+  const x402PaymentMiddleware = paymentMiddleware(X402_ROUTES, resourceServer)
+  // OPS-V2: `paymentMiddleware(...)`'s facilitator bootstrap (triggered at
+  // construction time, above, via its default syncFacilitatorOnStart) is now
+  // bounded by facilitatorResilience.ts's global fetch timeout, but the
+  // resulting rejection is still a plain Error the package doesn't classify
+  // as a FacilitatorResponseError -- it would otherwise surface as a bare
+  // 500. Map it to an explicit 503 here so a caller can tell "facilitator
+  // temporarily unavailable, retry" apart from a real server bug. No payment
+  // is ever requested or charged on this path.
+  app.use('/x402/*', async (c, next) => {
+    try {
+      await x402PaymentMiddleware(c, next)
+    } catch (err) {
+      if (err instanceof FacilitatorTimeoutError || (err instanceof Error && /no supported payment kinds loaded/i.test(err.message))) {
+        c.header('Retry-After', '5')
+        return c.json(
+          {
+            error: 'x402 facilitator temporarily unavailable',
+            detail: 'No payment was requested. Retry shortly.',
+          },
+          503
+        )
+      }
+      throw err
+    }
+  })
 
   // Paid handler: Payment Preflight (D2.1). Evaluates the proposed action
   // against the caller's structured policy and returns a signed PREFLIGHT
