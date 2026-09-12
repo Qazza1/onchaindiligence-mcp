@@ -9,7 +9,8 @@
 import { getExecutionBinding } from './executionBinding.js'
 import { createProviderEvidence, type ProviderEvidenceRecord } from './db.js'
 import { contentId } from './receipts.js'
-import { isValidTransactionHash } from './settlement.js'
+import { isValidTransactionHash, getSupportedAsset } from './settlement.js'
+import { decimalAmountToAtomicUnits } from './money.js'
 
 export const PROVIDER_EVIDENCE_SOURCE = 'CALLER_REPORTED_PROVIDER_RESPONSE' as const
 export class ProviderEvidenceInputError extends Error {}
@@ -565,16 +566,24 @@ function parseCdpProviderEvidenceInput(body: Record<string, unknown>, rawClaim: 
 // FIELD HONESTY: Circle's transaction object DOES document
 // `sourceAddress`/`destinationAddress` as its own asserted claim, so
 // `payer`/`recipient` are populated here (same discipline as Crossmint).
-// `amount`/`asset` are deliberately left null in this milestone: Circle's
-// `amounts` field shape (decimal vs atomic units, single value vs array)
-// was not confirmed with enough precision from available documentation to
-// populate an atomic-unit claim without risking an incorrect one -- see
-// docs/PROVIDER_EVIDENCE.md's Circle section for the exact reasoning and
-// the follow-up needed to add it safely.
+//
+// AMOUNT/ASSET (hardened, D3.4C6 pass 2): Circle's current Get Transaction
+// schema confirms `amounts: string[]` ("transfer amounts in decimal number
+// format, at least one element is required") and a separate
+// `contractAddress` field ("the blockchain address of the contract") --
+// distinct from the opaque `tokenId` UUID. This module maps amount/asset
+// ONLY when the payload ITSELF truthfully establishes canonical Base USDC:
+// `blockchain === 'BASE'`, `contractAddress` resolves via the SAME
+// settlement.ts registry the independent Base observer trusts
+// (getSupportedAsset -- never a value copied from the OCD mandate), and
+// exactly one `amounts` entry is present. If any of those don't hold, both
+// fields stay null rather than guessing -- a Circle-managed non-USDC
+// token, a multi-amount transaction, or an unrecognized contract address
+// all fall through to null, never a wrong value.
 // ---------------------------------------------------------------------
 export const CIRCLE_EXECUTOR_IDENTITY = 'circle-base-usdc'
 
-export type CircleTransactionState = 'INITIATED' | 'QUEUED' | 'SENT' | 'CONFIRMED' | 'COMPLETE' | 'FAILED' | 'CANCELLED' | 'DENIED'
+export type CircleTransactionState = 'INITIATED' | 'QUEUED' | 'SENT' | 'CLEARED' | 'STUCK' | 'CONFIRMED' | 'COMPLETE' | 'FAILED' | 'CANCELLED' | 'DENIED'
 
 /** Chain identifiers Circle documents for its wallet/transaction objects, mapped conservatively to CAIP-2 only where unambiguous. Anything else stays null -- never guessed. */
 const CIRCLE_CHAIN_TO_CAIP2: Readonly<Record<string, string>> = {
@@ -620,6 +629,25 @@ export function parseCircleWebhookEvidenceInput(body: unknown): ProviderEvidence
   const blockchain = optionalString(notification.blockchain, 'notification.blockchain', 64)
   const network = blockchain ? (CIRCLE_CHAIN_TO_CAIP2[blockchain] ?? null) : null
 
+  // Amount/asset: mapped ONLY when the payload itself truthfully establishes
+  // canonical Base USDC -- see this section's header. `contractAddress` is
+  // checked against the SAME registry the independent Base observer uses
+  // (getSupportedAsset), never a value copied from the OCD mandate.
+  let amountAtomic: string | null = null
+  let asset: string | null = null
+  if (network) {
+    const contractAddress = optionalAddress(notification.contractAddress, 'notification.contractAddress')
+    const amounts = Array.isArray(notification.amounts) ? notification.amounts : null
+    const supported = contractAddress ? getSupportedAsset(network, contractAddress) : null
+    if (supported && amounts && amounts.length === 1 && typeof amounts[0] === 'string') {
+      const atomic = decimalAmountToAtomicUnits(amounts[0], supported.decimals)
+      if (atomic !== null) {
+        asset = contractAddress
+        amountAtomic = atomic.toString()
+      }
+    }
+  }
+
   const failureCode = state === 'FAILED' || state === 'CANCELLED' || state === 'DENIED' ? state : null
   const notificationId = optionalString(body.notificationId, 'notificationId', 200)
   const timestamp = optionalString(body.timestamp, 'timestamp', 64)
@@ -635,9 +663,8 @@ export function parseCircleWebhookEvidenceInput(body: unknown): ProviderEvidence
     network,
     payer: optionalAddress(notification.sourceAddress, 'notification.sourceAddress'),
     recipient: optionalAddress(notification.destinationAddress, 'notification.destinationAddress'),
-    // Deliberately null -- see this section's header on amounts/asset uncertainty.
-    amountAtomic: null,
-    asset: null,
+    amountAtomic,
+    asset,
     failureCode,
     failureDigest: failureCode ? contentId({ state, transaction_id: transactionId }) : null,
     rawReferenceDigest: contentId({ transaction_id: transactionId, state, blockchain, subscription_id: optionalString(body.subscriptionId, 'subscriptionId', 200), notification_id: notificationId }),

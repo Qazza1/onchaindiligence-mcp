@@ -330,18 +330,27 @@ per `keyId`, per Circle's own documented guidance that it is static.
 **A verified signature means "Circle authored this claim." It never means
 "the payment settled."**
 
-**Two honest, flagged gaps in current documentation, neither papered
-over:**
-- Circle's docs give no replay-window/timestamp-tolerance guidance for v2
-  webhooks (unlike Turnkey's explicit 5-minute window) — this module does
-  not invent one; correlation plus content-addressed idempotency is what
-  actually protects against a stale or replayed delivery mattering.
-- The exact byte encoding of the `X-Circle-Signature` header value
-  (base64 vs hex) was not confirmed from any page fetched during
-  implementation; this module assumes base64
-  (`src/circleWebhookVerification.ts`'s `CIRCLE_SIGNATURE_ENCODING`
-  constant is the one place to change) and this must be confirmed against
-  Circle's own code sample or a live test delivery before production use.
+`X-Circle-Signature` is base64-encoded — confirmed directly from Circle's
+own published Node.js verification sample (which calls
+`verifier.verify(publicKey, signature, "base64")` with no alternative
+path), not an assumption. This module never falls back to another
+encoding; a signature that isn't validly base64-shaped is rejected
+fail-closed before any cryptographic check runs.
+
+**One honest, flagged gap remains in current documentation, not papered
+over:** Circle's docs give no replay-window/timestamp-tolerance guidance
+for v2 webhooks (unlike Turnkey's explicit 5-minute window) — this module
+does not invent one. The actual security model here is deliberately: a
+valid Circle signature, plus `notificationId`-driven delivery dedup (via
+the existing content-addressed provider-evidence store — Circle's own
+docs confirm at-least-once delivery with `notificationId` reused on
+retries and no ordering guarantee), plus the durable execution-binding
+correlation a delivery must match. A late, out-of-order, or retried
+delivery can never regress or duplicate already-recorded terminal
+evidence: retries produce the identical content-addressed `evidenceId`
+(a safe no-op), and a non-terminal state (e.g. a `CONFIRMED` arriving
+after a `COMPLETE`) is never persisted as evidence in the first place,
+regardless of delivery order.
 
 Only `transactions.outbound` is accepted as a provider execution claim;
 `transactions.inbound` and any other notification type are acknowledged
@@ -351,13 +360,23 @@ but never parsed as OCD execution evidence, mirroring D3.4C4's
 **Field mapping:** Circle's transaction object does document
 `sourceAddress`/`destinationAddress` as its own claim, so `payer`/
 `recipient` are populated (same discipline as Crossmint). `amount`/`asset`
-are deliberately left null this milestone — Circle's `amounts` field shape
-(decimal vs atomic units, single value vs array) was not confirmed with
-enough precision to populate an atomic-unit claim without risking an
-incorrect one; adding it is a safe, small follow-up once confirmed against
-a real sandbox response, not a redesign. `network` maps only Circle's
-documented `"BASE"` blockchain value to `eip155:8453`; anything else stays
-null.
+are populated only when the payload itself truthfully establishes
+canonical Base USDC: `blockchain === "BASE"`, the payload's own
+`contractAddress` field (confirmed distinct from the opaque `tokenId`
+UUID) resolves via the same `getSupportedAsset()` registry the
+independent Base observer trusts, and exactly one `amounts` entry (Circle's
+documented `string[]`, "decimal number format") is present. Any of those
+not holding — an unrecognized contract, a non-Base chain, more than one
+amount — leaves both fields null rather than guessing; this is never
+inferred from the OCD mandate. `network` maps only Circle's documented
+`"BASE"` blockchain value to `eip155:8453`; anything else stays null.
+
+`notification.id` (Circle's transaction/resource identity) and the
+envelope's own `notificationId` (the webhook delivery identity) are kept
+strictly distinct: `providerExecutionId`/`correlationReference` are always
+derived from `notification.id`, never `notificationId`; `notificationId`
+is used only as `provider_event_id`, exactly mirroring Turnkey's/
+Crossmint's delivery-identity discipline.
 
 A Circle claim alone never raises binding strength past
 `TRANSFER_MATCH_ONLY`. `PAYMENT_IDENTITY_LINKED` still requires the same

@@ -1,41 +1,40 @@
 /**
  * circleWebhookVerification.ts — D3.4C6.
  *
- * Verifies an inbound Circle v2 wallet-notification webhook delivery,
- * confirmed against current official Circle documentation
- * (developers.circle.com) at implementation time:
+ * Verifies an inbound Circle v2 wallet-notification webhook delivery, per
+ * Circle's current official webhook-signature-verification documentation
+ * and its own published Node.js verification sample
+ * (developers.circle.com/api-reference/verify-webhook-signatures),
+ * re-confirmed directly against that sample for this hardening pass:
  *
  *   - signed bytes: the EXACT raw request body (Circle's own docs warn
  *     that "parsing the JSON and re-serializing it changes the byte
  *     order, so the signature no longer matches")
- *   - algorithm: ECDSA_SHA_256, `X-Circle-Signature` header
+ *   - algorithm: `ECDSA_SHA_256`, verified as SHA-256 over the raw body
+ *     against an EC (SPKI/DER) public key
+ *   - `X-Circle-Signature`: base64-encoded -- this is Circle's own
+ *     documented encoding (their official sample calls
+ *     `verifier.verify(publicKey, signature, "base64")` with no
+ *     alternative path), not an assumption. This module therefore never
+ *     falls back to hex or tries multiple encodings -- a signature that
+ *     doesn't decode as valid base64 is fail-closed rejected outright.
  *   - key source: `GET https://api.circle.com/v2/notifications/publicKey/<X-Circle-Key-Id>`
- *     -- UNLIKE Turnkey's fully public JWKS or Crossmint's shared Svix
+ *     -- unlike Turnkey's fully public JWKS or Crossmint's shared Svix
  *     secret, this endpoint itself requires `Authorization: Bearer
  *     <CIRCLE_API_KEY>` (an authenticated Circle API credential, not a
- *     webhook-specific secret). Confirmed, not assumed. The returned
- *     public key is a base64-encoded DER (SPKI) key, cacheable
- *     indefinitely per `keyId` per Circle's own documented guidance
- *     ("the public key for a given keyId is static, so cache the
- *     result").
+ *     webhook-specific secret). The returned public key is a
+ *     base64-encoded DER (SPKI) key, cacheable indefinitely per `keyId`
+ *     per Circle's own documented guidance ("the public key for a given
+ *     keyId is static, so cache the result").
  *
  * DOCUMENTED GAP (kept honest, not papered over): current Circle
  * documentation for v2 webhook verification gives no replay-window or
  * timestamp-tolerance guidance of any kind (unlike Turnkey's explicit
- * 5-minute window). This module does not invent one -- verification here
- * is signature-validity only. See docs/PROVIDER_EVIDENCE.md's Circle
- * section for how this is handled (correlation + content-addressed
- * idempotency, not a timestamp check).
- *
- * UNCONFIRMED DETAIL, FLAGGED: the exact encoding of the
- * `X-Circle-Signature` header value (base64 vs hex) was not found in any
- * fetched official page during this implementation. This module assumes
- * base64 (the same encoding Circle uses for the public key itself, and
- * the most common convention for this class of API) -- this MUST be
- * confirmed against Circle's own official code sample or a live test
- * delivery before this path is trusted with a real Circle webhook
- * endpoint. See this file's `CIRCLE_SIGNATURE_ENCODING` constant, the one
- * place to change if this assumption is wrong.
+ * 5-minute window). This module does not invent one. The actual security
+ * model here is deliberately: valid Circle signature + `notificationId`
+ * idempotency (via the existing content-addressed provider-evidence store)
+ * + the durable execution-binding correlation this webhook must match --
+ * not a timestamp check. See docs/PROVIDER_EVIDENCE.md's Circle section.
  *
  * A verified signature proves ONLY "Circle authored this claim" -- it is
  * attributable provider evidence, never independent settlement evidence
@@ -45,8 +44,10 @@ import { createPublicKey, verify as cryptoVerify } from 'node:crypto'
 
 export const CIRCLE_PUBLIC_KEY_URL_PREFIX = 'https://api.circle.com/v2/notifications/publicKey/'
 export const CIRCLE_SIGNATURE_ALGORITHM = 'ECDSA_SHA_256'
-/** UNCONFIRMED assumption -- see this file's header. The one place to change if Circle's real encoding turns out to be hex. */
-export const CIRCLE_SIGNATURE_ENCODING: 'base64' | 'hex' = 'base64'
+/** Circle's own documented encoding for X-Circle-Signature (confirmed via Circle's official verification sample) -- not an assumption, never a fallback to another encoding. */
+export const CIRCLE_SIGNATURE_ENCODING = 'base64' as const
+
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+=*$/
 
 export class CircleWebhookVerificationError extends Error {}
 
@@ -112,12 +113,16 @@ export async function verifyCircleWebhook(rawBody: string, headers: CircleWebhoo
     throw new CircleWebhookVerificationError(`unsupported Circle notification signature algorithm "${key.algorithm}"`)
   }
 
-  let signatureBytes: Buffer
-  try {
-    signatureBytes = Buffer.from(signature, CIRCLE_SIGNATURE_ENCODING)
-  } catch {
-    throw new CircleWebhookVerificationError('X-Circle-Signature could not be decoded')
+  // Node's Buffer.from(..., 'base64') is lenient and silently drops
+  // invalid characters rather than throwing -- an explicit shape check is
+  // what actually makes a malformed signature fail closed here, rather
+  // than relying on cryptoVerify() to reject whatever garbage bytes a
+  // lenient decode produced (which it still would, but this is the
+  // precise, intended rejection point).
+  if (!BASE64_PATTERN.test(signature)) {
+    throw new CircleWebhookVerificationError('X-Circle-Signature is not validly base64-encoded')
   }
+  const signatureBytes = Buffer.from(signature, CIRCLE_SIGNATURE_ENCODING)
 
   const publicKey = createPublicKey({ key: key.publicKeyDer, format: 'der', type: 'spki' })
   const ok = cryptoVerify('sha256', Buffer.from(rawBody, 'utf8'), publicKey, signatureBytes)

@@ -1,4 +1,11 @@
-/** Focused D3.4C6 Circle webhook verification + provider-evidence + reconciliation tests. Fully offline -- no live Circle account, no live authenticated public-key fetch (a fake fetchPublicKey dependency is injected). */
+/**
+ * Focused D3.4C6 Circle webhook verification + provider-evidence +
+ * reconciliation tests. Fully offline -- no live Circle account, no live
+ * authenticated public-key fetch (a fake fetchPublicKey dependency is
+ * injected). Signature verification uses base64 throughout -- Circle's
+ * own documented encoding (confirmed via its official verification
+ * sample), not an assumption.
+ */
 import assert from 'node:assert/strict'
 import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto'
 import { Hono } from 'hono'
@@ -109,6 +116,39 @@ resetCircleKeyCache()
   }
   assert.throws(() => parseCircleWebhookEvidenceInput(JSON.parse(outboundBody({}, { state: 'CONFIRMED', txHash: undefined }))), /non-terminal/)
   console.log('ok  CONFIRMED (included, awaiting finality per Circle\'s own docs) is never accepted as terminal provider evidence, matching COMPLETE\'s stronger finality guarantee')
+
+  // CLEARED and STUCK (documented additional Circle states) are also non-terminal, by the same whitelist discipline.
+  assert.equal(isTerminalCircleState('CLEARED'), false)
+  assert.equal(isTerminalCircleState('STUCK'), false)
+  console.log('ok  CLEARED and STUCK are also treated as non-terminal, consistent with the terminal-state whitelist')
+}
+
+// --- amount/asset mapping: only when the payload itself truthfully establishes canonical Base USDC ---
+{
+  const positive = parseCircleWebhookEvidenceInput(JSON.parse(outboundBody({}, { contractAddress: USDC, amounts: ['1.5'] })))
+  assert.equal(positive.asset, USDC)
+  assert.equal(positive.amountAtomic, '1500000')
+  console.log('ok  amount/asset are mapped when Circle asserts blockchain=BASE, a recognized canonical-USDC contractAddress, and exactly one amounts entry')
+
+  const wrongContract = parseCircleWebhookEvidenceInput(JSON.parse(outboundBody({}, { contractAddress: '0x' + '9'.repeat(40), amounts: ['1.5'] })))
+  assert.equal(wrongContract.asset, null)
+  assert.equal(wrongContract.amountAtomic, null)
+  console.log('ok  an unrecognized contractAddress leaves amount/asset null rather than guessing')
+
+  const wrongChain = parseCircleWebhookEvidenceInput(JSON.parse(outboundBody({}, { blockchain: 'ETH', contractAddress: USDC, amounts: ['1.5'], txHash: undefined })))
+  assert.equal(wrongChain.asset, null)
+  assert.equal(wrongChain.amountAtomic, null)
+  console.log('ok  a non-Base blockchain leaves amount/asset null even with a valid-looking contractAddress')
+
+  const multipleAmounts = parseCircleWebhookEvidenceInput(JSON.parse(outboundBody({}, { contractAddress: USDC, amounts: ['1.5', '2.0'] })))
+  assert.equal(multipleAmounts.asset, null)
+  assert.equal(multipleAmounts.amountAtomic, null)
+  console.log('ok  more than one amounts entry leaves amount/asset null rather than guessing which one applies')
+
+  const noContractAddress = parseCircleWebhookEvidenceInput(JSON.parse(outboundBody({}, { amounts: ['1.5'] })))
+  assert.equal(noContractAddress.asset, null)
+  assert.equal(noContractAddress.amountAtomic, null)
+  console.log('ok  a missing contractAddress leaves amount/asset null -- never inferred from the OCD mandate')
 }
 
 // --- 3: invalid / tampered signature is rejected ---
@@ -141,6 +181,58 @@ resetCircleKeyCache()
   })
   assert.equal(badResponse.status, 401)
   console.log('ok  the webhook route itself rejects an invalid signature (401) before any correlation or evidence recording is attempted')
+
+  // A signature that isn't validly base64-encoded at all must fail closed, never silently decoded leniently.
+  await assert.rejects(
+    () => verifyCircleWebhook(body, { signature: 'not-valid-base64!!! ###', keyId: KEY_ID }, { fetchPublicKey: fakeFetchPublicKey }),
+    /not validly base64-encoded/
+  )
+  console.log('ok  a malformed (non-base64) X-Circle-Signature is rejected fail-closed, per Circle\'s own documented base64 encoding -- no fallback to another encoding')
+}
+
+// --- delivery semantics: at-least-once, notificationId reused on retry, no ordering guarantee ---
+{
+  resetCircleKeyCache()
+  const binding: ExecutionBindingRecord = { executionRequestId: EXEC, operationId: OP, clientSubmissionKey: 'key', executorIdentity: CIRCLE_EXECUTOR_IDENTITY, executorVersion: 'v2', recoveryCapabilityClass: 'stable-payment-identity', frozenPreflightReceiptId: 'r', frozenPreflightReceiptDigest: 'd', expectedPayer: null, providerReference: `circle:${TXN_ID}`, submissionState: 'transaction_known' }
+  const rows = new Map<string, ProviderEvidenceRecord>()
+  const store = {
+    getExecutionBinding: async (id: string) => (id === EXEC ? binding : null),
+    getExecutionBindingByProviderReference: async () => binding,
+    createProviderEvidence: async (params: any) => {
+      const existing = rows.get(params.evidenceId)
+      if (existing) return { created: false, evidence: existing }
+      const evidence: ProviderEvidenceRecord = { ...params, recordedAt: '2026-09-11T00:00:00.000Z' }
+      rows.set(params.evidenceId, evidence)
+      return { created: true, evidence }
+    },
+    emitFindingsUpdated: async () => {},
+  }
+  const app = new Hono()
+  mountCircleWebhook(app, { fetchPublicKey: fakeFetchPublicKey, ...store } as any)
+
+  // First delivery: COMPLETE, terminal, recorded.
+  const completeBody = outboundBody()
+  const completeResponse = await app.request('/webhooks/circle/transaction-status', { method: 'POST', headers: { 'x-circle-signature': sign(completeBody), 'x-circle-key-id': KEY_ID }, body: completeBody })
+  assert.equal(completeResponse.status, 201)
+  assert.equal(rows.size, 1)
+  console.log('ok  a COMPLETE delivery is recorded as terminal provider evidence')
+
+  // Circle retries the SAME delivery (at-least-once semantics, same notificationId, identical content) -- must not create a second logical record.
+  const retryResponse = await app.request('/webhooks/circle/transaction-status', { method: 'POST', headers: { 'x-circle-signature': sign(completeBody), 'x-circle-key-id': KEY_ID }, body: completeBody })
+  assert.equal(retryResponse.status, 200)
+  const retryJson = (await retryResponse.json()) as { idempotent_replay: boolean }
+  assert.equal(retryJson.idempotent_replay, true)
+  assert.equal(rows.size, 1, 'a retried delivery with the same notificationId must not create a second logical evidence record')
+  console.log('ok  a retried delivery (Circle\'s documented at-least-once semantics, same notificationId) is idempotent')
+
+  // A late-arriving CONFIRMED for the SAME transaction (delivery order is not guaranteed) must never regress or overwrite the already-recorded terminal COMPLETE evidence.
+  const lateConfirmedBody = outboundBody({ notificationId: 'notif-late' }, { state: 'CONFIRMED', txHash: undefined })
+  const lateResponse = await app.request('/webhooks/circle/transaction-status', { method: 'POST', headers: { 'x-circle-signature': sign(lateConfirmedBody), 'x-circle-key-id': KEY_ID }, body: lateConfirmedBody })
+  assert.equal(lateResponse.status, 202, 'a non-terminal CONFIRMED must be acknowledged, never recorded, even if it arrives after a terminal COMPLETE for the same transaction')
+  assert.equal(rows.size, 1, 'the existing terminal COMPLETE evidence must be untouched by a later non-terminal delivery')
+  const [existingRecord] = rows.values()
+  assert.equal(existingRecord.claimedState, 'SUCCEEDED', 'the original COMPLETE-derived evidence must remain exactly as recorded')
+  console.log('ok  a late, out-of-order non-terminal CONFIRMED notification can never regress or overwrite already-recorded terminal evidence')
 }
 
 // --- 4/5: reconciliation reuses existing D3.3 codes, no Circle-specific taxonomy ---
