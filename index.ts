@@ -128,8 +128,13 @@ const recordHttpFunnel = async (c: any, next: () => Promise<void>) => {
 // terminate here deterministically without ANY outbound network call --
 // not just the facilitator's -- and never reach the x402/payment handler.
 app.use('/mcp', async (c, next) => {
-  if (c.req.method === 'OPTIONS') return c.body(null, 204, { Allow: 'POST' })
-  if (c.req.method === 'HEAD') return c.body(null, 405, { Allow: 'POST' })
+  // Content-Length: 0 is set explicitly -- without it, a zero-body non-204
+  // response leaves body framing ambiguous over HTTP/1.1 keep-alive, which
+  // was observed hanging real clients (curl) against the deployed Preview
+  // even though this handler itself returned instantly (confirmed via
+  // Vercel response headers arriving immediately, framing was the only gap).
+  if (c.req.method === 'OPTIONS') return c.body(null, 204, { Allow: 'POST', 'Content-Length': '0' })
+  if (c.req.method === 'HEAD') return c.body(null, 405, { Allow: 'POST', 'Content-Length': '0' })
   await next()
 })
 

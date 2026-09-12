@@ -171,9 +171,14 @@ process.env.ATTESTATION_SERVICE_TOKEN = 'test-service-token-that-is-at-least-32-
     const elapsed = Date.now() - started
     assert.equal(res.status, 405)
     assert.equal(res.headers.get('allow'), 'POST')
+    // Content-Length: 0 must be explicit -- a zero-body 405 with neither
+    // Content-Length nor Transfer-Encoding was observed hanging real HTTP/1.1
+    // clients (curl) against the deployed Preview despite Hono/Vercel
+    // returning the response instantly server-side.
+    assert.equal(res.headers.get('content-length'), '0')
     assert.equal(fetchCalls.length, 0, `expected no network calls, got: ${fetchCalls.join(', ')}`)
     assert.ok(elapsed < 2000, `expected a prompt response, took ${elapsed}ms`)
-    console.log(`ok  HEAD /mcp returns 405 promptly (${elapsed}ms) with no facilitator/network call`)
+    console.log(`ok  HEAD /mcp returns 405 promptly (${elapsed}ms) with Content-Length: 0 and no facilitator/network call`)
   }
 
   // B: OPTIONS /mcp returns promptly, deterministically, and never touches
@@ -185,6 +190,7 @@ process.env.ATTESTATION_SERVICE_TOKEN = 'test-service-token-that-is-at-least-32-
     const elapsed = Date.now() - started
     assert.equal(res.status, 204)
     assert.equal(res.headers.get('allow'), 'POST')
+    assert.equal(res.headers.get('content-length'), '0')
     assert.equal(fetchCalls.length, 0, `expected no network calls, got: ${fetchCalls.join(', ')}`)
     assert.ok(elapsed < 2000, `expected a prompt response, took ${elapsed}ms`)
     console.log(`ok  OPTIONS /mcp returns 204 promptly (${elapsed}ms) with no facilitator/network call`)
