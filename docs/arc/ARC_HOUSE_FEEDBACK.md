@@ -17,5 +17,15 @@ OnChainDiligence is evaluating Arc Testnet as a read-only evidence and reconcili
 1. Publish versioned, machine-readable ABI/address manifests for each Testnet reference contract, including ERC-8183 status semantics.
 2. Keep one canonical RPC hostname in quickstarts and network references, with a deprecation notice during endpoint migrations.
 3. Include a public historical transaction for every quickstart stage so independent observers can test decoding without creating testnet state.
+4. Document the accounting relationship between native USDC gas balances and the canonical ERC-20 USDC interface. During this run, both views moved consistently but exposed different decimal precision, which is easy for integrations to mislabel.
+5. State prominently that ERC-8004 validation values are validator assertions and ERC-8183 completion is evaluator-controlled protocol state. Neither alone establishes objective truth or off-chain delivery.
+
+## Observed beta behaviour
+
+- The official RPC returned chain ID `5042002`, standard EVM receipts, logs and contract reads.
+- Identity registration, validation request/response, and the six-step ERC-8183 flow each finalized after one committed receipt in this run.
+- The documented ERC-8004 and ERC-8183 contract addresses and read shapes matched the live deployments used here.
+- `getClients(894557)` returned no reputation submitters. No reputation was manufactured.
+- The controlled `0.10 USDC` job progressed through all documented states and released escrow on evaluator completion.
 
 Beta feedback may earn points only when Arc explicitly approves it. Testnet transactions are not treated as automatic points.
