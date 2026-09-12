@@ -171,6 +171,7 @@ console.log('ok  usd() formats canonical prices exactly')
 // --- 3. Invalid input is rejected BEFORE any payment challenge -------------
 
 const PRE_PAYMENT_REJECTIONS = [
+  '/x402/screen/notanaddress',
   '/x402/screen-name',
   '/x402/screen-name?name=x',
   '/x402/uk-company/not-a-company-number',

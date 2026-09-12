@@ -910,6 +910,16 @@ export const preflightPostHandler = createPreflightPostHandler()
  * handler, as Hono requires.
  */
 export function mountDiscovery(app: Hono): void {
+  // A malformed EVM address can never be screened. Reject it before the
+  // broad payment middleware so a caller is not challenged for a request
+  // that the terminal handler would deterministically reject.
+  app.use('/x402/screen/:address', async (c, next) => {
+    if (!isValidEvmAddress(c.req.param('address') ?? '')) {
+      return c.json({ error: 'invalid EVM address parameter' }, 400)
+    }
+    await next()
+  })
+
   // Reject malformed verdict identifiers before the payment middleware can
   // present a challenge. ENS-like names are accepted because the canonical API
   // resolves them; all other inputs must be 20-byte EVM addresses.
