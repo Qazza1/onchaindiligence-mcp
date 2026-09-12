@@ -1,0 +1,18 @@
+{
+  "schema": "onchaindiligence.arc.erc8004.validation-response.v1",
+  "network": "eip155:5042002",
+  "requestHash": "0x77e3c7cc28e218628c0386da6942b085041acb3f2353bf0d74609cd98d88e808",
+  "agentId": "894557",
+  "validator": "0xF8Ce4187870aB0517d44E5CE59B35698dE182f19",
+  "tag": "ocd_testnet_observer_reachable",
+  "response": 100,
+  "check": {
+    "ownerMatches": true,
+    "metadataUriMatches": true,
+    "metadataReadable": true,
+    "metadataName": "OnChainDiligence Verification Agent",
+    "observedBlockNumber": "61748949",
+    "observedBlockHash": "0xe9f0eaa6d5778b3aa296cbd62a31014bc73828faba2f5d2480912b9fb4597ca9"
+  },
+  "interpretation": "The validator confirmed only the narrow registry owner and readable immutable metadata claim. Response 100 is ERC-8004 registry evidence, not an OnChainDiligence VALID result, safety finding, compliance finding, or service-delivery proof."
+}
