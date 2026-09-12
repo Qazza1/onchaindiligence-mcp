@@ -1,1 +1,18 @@
-{"name":"OnChainDiligence Verification Agent","description":"Arc Testnet ERC-8004 identity for OnChainDiligence independent evidence and reconciliation research. Testnet research only; no Mainnet support, custody, partnership, safety, or service-delivery claim."}
+{
+  "name": "OnChainDiligence Verification Agent",
+  "description": "Arc Testnet ERC-8004 identity for OnChainDiligence independent evidence and reconciliation research.",
+  "version": "d3.5c3-pre",
+  "network": "eip155:5042002",
+  "capabilities": [
+    "read_only_erc8004_identity_observation",
+    "read_only_erc8004_validation_observation",
+    "read_only_erc8183_job_observation"
+  ],
+  "limitations": [
+    "Testnet research only",
+    "No Mainnet support or production deployment",
+    "No custody, payment-provider partnership, safety, compliance, or service-delivery claim",
+    "ERC-8004 registry responses are not OnChainDiligence verification states"
+  ],
+  "documentation": "https://github.com/Qazza1/onchaindiligence-mcp/tree/feat/d35c3-pre-arc-agentic-testnet/docs/arc"
+}
