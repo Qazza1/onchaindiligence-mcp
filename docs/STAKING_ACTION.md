@@ -1,5 +1,7 @@
 # D3.6D Lido stETH staking action profile
 
+**Roadmap status:** D3.6D — COMPLETE / LIVE.
+
 `onchaindiligence.staking-action.v1` is a signed portable artifact for one narrow consequential action: an Ethereum Mainnet ETH submission to Lido's canonical stETH proxy using its `submit(address)` flow.
 
 The action is strict: `kind: STAKE`, `protocol: lido-steth-submit`, `network: eip155:1`, `input_asset: eip155:1/slip44:60`, exact `staker`, and a positive wei-string ceiling. Policies can constrain only network, protocol, exact staker, and maximum wei amount. An unconstrained policy must explicitly acknowledge that fact.
