@@ -43,6 +43,8 @@ import {
 } from './discovery.js'
 import { INSPECT_DESCRIPTION } from './inspectRoute.js'
 import { PREFLIGHT_ALLOWANCE_DESCRIPTION } from './allowanceRoute.js'
+import { PREFLIGHT_SWAP_DESCRIPTION } from './swapRoute.js'
+import { PREFLIGHT_BRIDGE_DESCRIPTION } from './bridgeRoute.js'
 
 const BASE_URL = 'https://mcp.onchaindiligence.com'
 
@@ -76,6 +78,10 @@ interface ResourceSpec {
 }
 
 const RESOURCES: ResourceSpec[] = [
+  {
+    path: '/x402/preflight-swap', method: 'POST', operationId: 'preflightSwap', summary: 'Evaluate a narrow Base USDC-to-WETH swap before execution', description: PREFLIGHT_SWAP_DESCRIPTION, priceUsd: config.prices.preflight,
+    requestBody: { description: 'Direct Uniswap V3 SwapRouter02 exactInputSingle Base USDC-to-WETH action and policy.', example: { action: { kind: 'SWAP', network: 'eip155:8453', input_asset: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', max_input_atomic: '1000000', output_asset: '0x4200000000000000000000000000000000000006', min_output_atomic: '1', recipient: '0x000000000000000000000000000000000000dEaD', router: '0x2626664c2603336e57b271c5c0b26f421741e481', deadline: null, payer: '0x000000000000000000000000000000000000dEaD' }, policy: { allowed_networks: ['eip155:8453'] } }, schema: { type: 'object' } }, responseSchema: { type: 'object', properties: { decision: { type: 'object' }, artifact: { type: 'object' } } },
+  },
   {
     path: '/x402/screen/{address}',
     operationId: 'screenWallet',
@@ -262,6 +268,11 @@ const RESOURCES: ResourceSpec[] = [
         },
       },
     },
+  },
+  {
+    path: '/x402/preflight-bridge', method: 'POST', operationId: 'preflightBridge', summary: 'Evaluate a Circle CCTP V2 Base-to-Ethereum native-USDC bridge before execution', description: PREFLIGHT_BRIDGE_DESCRIPTION, priceUsd: config.prices.preflight,
+    requestBody: { description: 'Strict Base-to-Ethereum canonical-USDC Circle CCTP V2 bridge action and deterministic policy. Amounts are atomic-unit strings.', example: { action: { kind: 'BRIDGE', protocol: 'circle-cctp-v2', source_network: 'eip155:8453', destination_network: 'eip155:1', source_asset: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', destination_asset: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', max_source_atomic: '1000000', min_destination_atomic: '990000', recipient: '0x000000000000000000000000000000000000dEaD' }, policy: { allowed_source_networks: ['eip155:8453'], allowed_destination_networks: ['eip155:1'] } }, schema: { type: 'object' } },
+    responseSchema: { type: 'object', properties: { decision: { type: 'object' }, artifact: { type: 'object' } } },
   },
   {
     path: '/x402/preflight-allowance',

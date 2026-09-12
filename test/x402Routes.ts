@@ -62,6 +62,8 @@ const PAID_ROUTES: Array<{ key: string; priceUsd: number }> = [
   { key: 'GET /x402/diligence', priceUsd: config.prices.diligence },
   { key: 'GET /x402/verdict/:address', priceUsd: config.prices.screen },
   { key: 'POST /x402/preflight-allowance', priceUsd: config.prices.preflight },
+  { key: 'POST /x402/preflight-swap', priceUsd: config.prices.preflight },
+  { key: 'POST /x402/preflight-bridge', priceUsd: config.prices.preflight },
   { key: 'POST /x402/preflight-payment', priceUsd: config.prices.preflight },
   { key: 'POST /x402/lifecycle/preflight-payment', priceUsd: config.prices.preflight },
 ]

@@ -35,6 +35,7 @@ const {
   DILIGENCE_TOOL_DESCRIPTION,
   PREFLIGHT_PAYMENT_TOOL_DESCRIPTION,
   PREFLIGHT_ALLOWANCE_DESCRIPTION,
+  PREFLIGHT_BRIDGE_DESCRIPTION,
 } = await import('../src/server.js')
 
 const CDP_FACILITATOR_HARD_LIMIT = 500
@@ -48,6 +49,7 @@ const descriptions: Record<string, string> = {
   diligence: DILIGENCE_TOOL_DESCRIPTION,
   preflight_payment: PREFLIGHT_PAYMENT_TOOL_DESCRIPTION,
   preflight_allowance: PREFLIGHT_ALLOWANCE_DESCRIPTION,
+  preflight_bridge: PREFLIGHT_BRIDGE_DESCRIPTION,
 }
 
 for (const [tool, description] of Object.entries(descriptions)) {

@@ -61,7 +61,10 @@ import { preflightPayment, inspectPayment } from './preflight.js'
 import { INSPECT_DESCRIPTION } from './inspectRoute.js'
 import { getReceiptById, verifyReceipt, VerifyReceiptInputError } from './receiptTools.js'
 import { inspectAllowance, observeAllowance, preflightAllowance, INSPECT_ALLOWANCE_DESCRIPTION, OBSERVE_ALLOWANCE_DESCRIPTION, PREFLIGHT_ALLOWANCE_DESCRIPTION } from './allowanceRoute.js'
+import { inspectSwap, observeSwapAction, preflightSwap, INSPECT_SWAP_DESCRIPTION, OBSERVE_SWAP_DESCRIPTION, PREFLIGHT_SWAP_DESCRIPTION } from './swapRoute.js'
+import { inspectBridge, observeBridge, preflightBridge, INSPECT_BRIDGE_DESCRIPTION, OBSERVE_BRIDGE_DESCRIPTION, PREFLIGHT_BRIDGE_DESCRIPTION } from './bridgeRoute.js'
 export { PREFLIGHT_ALLOWANCE_DESCRIPTION } from './allowanceRoute.js'
+export { PREFLIGHT_BRIDGE_DESCRIPTION } from './bridgeRoute.js'
 
 // Fail fast if misconfigured — same discipline as the HTTP API.
 assertConfigured()
@@ -502,6 +505,31 @@ export const handler = createPaidMcpHandler(
     server.tool('observe_allowance', OBSERVE_ALLOWANCE_DESCRIPTION, { artifact: z.unknown(), transaction_hash: z.string() }, { readOnlyHint: true, openWorldHint: true }, async (args) => {
       try { return { content: [{ type: 'text', text: JSON.stringify(await observeAllowance(args), null, 2) }] } }
       catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Allowance observation failed.' }] } }
+    })
+    const swapSchema = { action: z.object({ kind: z.literal('SWAP'), network: z.string(), input_asset: z.string(), max_input_atomic: z.string(), output_asset: z.string(), min_output_atomic: z.string(), recipient: z.string(), router: z.string(), deadline: z.string().nullable().optional(), payer: z.string() }), policy: z.object({ allowed_networks: z.array(z.string()).nullable().optional(), allowed_input_assets: z.array(z.string()).nullable().optional(), allowed_output_assets: z.array(z.string()).nullable().optional(), allowed_routers: z.array(z.string()).nullable().optional(), max_input_atomic: z.string().nullable().optional(), min_output_atomic: z.string().nullable().optional(), exact_recipient: z.string().nullable().optional(), acknowledge_unconstrained: z.boolean().optional() }) }
+    server.tool('inspect_swap', INSPECT_SWAP_DESCRIPTION, swapSchema, { readOnlyHint: true, openWorldHint: false }, async (args) => { try { return { content: [{ type: 'text', text: JSON.stringify(await inspectSwap(args), null, 2) }] } } catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Swap inspection failed.' }] } } })
+    server.paidTool('preflight_swap', PREFLIGHT_SWAP_DESCRIPTION, { price: config.prices.preflight }, swapSchema, { readOnlyHint: true, openWorldHint: true }, async (args) => { try { return { content: [{ type: 'text', text: JSON.stringify(await preflightSwap(args), null, 2) }] } } catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Swap preflight failed.' }] } } })
+    server.tool('observe_swap', OBSERVE_SWAP_DESCRIPTION, { artifact: z.unknown(), transaction_hash: z.string() }, { readOnlyHint: true, openWorldHint: true }, async (args) => { try { return { content: [{ type: 'text', text: JSON.stringify(await observeSwapAction(args), null, 2) }] } } catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Swap observation failed.' }] } } })
+
+    // D3.6C: Circle CCTP V2 Base -> Ethereum native-USDC bridge. Two-chain
+    // observation is distinct from a single-chain swap/allowance/payment;
+    // bridgeRoute.ts's inspect/preflight/observe functions are the shared
+    // authority both this MCP surface and the HTTP routes call into.
+    const bridgeSchema = {
+      action: z.object({ kind: z.literal('BRIDGE'), protocol: z.string(), source_network: z.string(), destination_network: z.string(), source_asset: z.string(), destination_asset: z.string(), max_source_atomic: z.string(), min_destination_atomic: z.string(), recipient: z.string() }),
+      policy: z.object({ allowed_source_networks: z.array(z.string()).nullable().optional(), allowed_destination_networks: z.array(z.string()).nullable().optional(), allowed_source_assets: z.array(z.string()).nullable().optional(), allowed_destination_assets: z.array(z.string()).nullable().optional(), allowed_protocols: z.array(z.string()).nullable().optional(), max_source_atomic: z.string().nullable().optional(), min_destination_atomic: z.string().nullable().optional(), exact_recipient: z.string().nullable().optional(), acknowledge_unconstrained: z.boolean().optional() }),
+    }
+    server.tool('inspect_bridge', INSPECT_BRIDGE_DESCRIPTION, bridgeSchema, { readOnlyHint: true, openWorldHint: false }, async (args) => {
+      try { return { content: [{ type: 'text', text: JSON.stringify(await inspectBridge(args), null, 2) }] } }
+      catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Bridge inspection failed.' }] } }
+    })
+    server.paidTool('preflight_bridge', PREFLIGHT_BRIDGE_DESCRIPTION, { price: config.prices.preflight }, bridgeSchema, { readOnlyHint: true, openWorldHint: true }, async (args) => {
+      try { return { content: [{ type: 'text', text: JSON.stringify(await preflightBridge(args), null, 2) }] } }
+      catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Bridge preflight failed.' }] } }
+    })
+    server.tool('observe_bridge', OBSERVE_BRIDGE_DESCRIPTION, { artifact: z.unknown(), source_transaction_hash: z.string(), destination_transaction_hash: z.string().optional() }, { readOnlyHint: true, openWorldHint: true }, async (args) => {
+      try { return { content: [{ type: 'text', text: JSON.stringify(await observeBridge(args), null, 2) }] } }
+      catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Bridge observation failed.' }] } }
     })
 
     // --- get_receipt (D2.5, deferred from D2.3) -- FREE, no payment wrapper ---

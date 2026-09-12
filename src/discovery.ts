@@ -57,6 +57,10 @@ import {
 } from './preflight.js'
 import { parseAllowanceInput, AllowanceInputError } from './allowance.js'
 import { PREFLIGHT_ALLOWANCE_DESCRIPTION, preflightAllowance } from './allowanceRoute.js'
+import { parseSwapInput, SwapInputError } from './swap.js'
+import { PREFLIGHT_SWAP_DESCRIPTION, preflightSwap } from './swapRoute.js'
+import { parseBridgeInput, BridgeInputError } from './bridge.js'
+import { PREFLIGHT_BRIDGE_DESCRIPTION, preflightBridge } from './bridgeRoute.js'
 
 /**
  * Price strings for the x402 middleware, derived from the SAME canonical
@@ -182,6 +186,23 @@ export const DILIGENCE_DESCRIPTION =
  * there is exactly one definition of what this server charges for.
  */
 export const X402_ROUTES: X402RoutesConfig = {
+    // Not yet advertised as a live Bazaar listing (no real agent integration
+    // uses it yet), but the discovery extension itself is still declared so
+    // the shape is consistent and testable ahead of that -- same discipline
+    // as the allowance/bridge entries below.
+    'POST /x402/preflight-swap': {
+      accepts: { scheme: 'exact', price: usd(config.prices.preflight), network: CAIP2, payTo: config.x402.recipient },
+      description: PREFLIGHT_SWAP_DESCRIPTION,
+      mimeType: 'application/json',
+      extensions: {
+        ...declareDiscoveryExtension({
+          bodyType: 'json',
+          input: { action: { kind: 'SWAP', network: 'eip155:8453', input_asset: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', max_input_atomic: '1000000', output_asset: '0x4200000000000000000000000000000000000006', min_output_atomic: '1', recipient: '0x000000000000000000000000000000000000dEaD', router: '0x2626664c2603336e57b271c5c0b26f421741e481', deadline: null, payer: '0x000000000000000000000000000000000000dEaD' }, policy: { allowed_networks: ['eip155:8453'] } },
+          inputSchema: { properties: { action: { type: 'object' }, policy: { type: 'object' } } },
+          output: { example: { decision: { status: 'ALLOW' }, artifact: { data: { schema: 'onchaindiligence.swap-action.v1', artifact_type: 'PREFLIGHT' }, attestation: { signed: true, key_id: 'ed25519-EXAMPLEKEY000000', algorithm: 'ed25519', signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg' } } }, schema: { type: 'object', properties: { decision: { type: 'object' }, artifact: { type: 'object' } } } },
+        }),
+      },
+    },
     // D3.6A: same paid preflight rail as payments, but a separate strict
     // allowance artifact. It is intentionally not advertised as a Bazaar
     // resource until a real agent integration exists.
@@ -195,6 +216,20 @@ export const X402_ROUTES: X402RoutesConfig = {
           input: { action: { kind: 'ERC20_ALLOWANCE', network: 'eip155:8453', token: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', owner: null, spender: '0x000000000000000000000000000000000000dEaD', amount_atomic: '1000000', intent: 'SET_ALLOWANCE' }, policy: { allowed_networks: ['eip155:8453'], allowed_tokens: ['0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'], allowed_spenders: ['0x000000000000000000000000000000000000dEaD'], max_allowance_atomic: '1000000' } },
           inputSchema: { properties: { action: { type: 'object' }, policy: { type: 'object' }, options: { type: 'object' } } },
           output: { example: { decision: { status: 'ALLOW' }, artifact: { data: { schema: 'onchaindiligence.erc20-allowance-action.v1', artifact_type: 'PREFLIGHT' }, attestation: { signed: true, key_id: 'ed25519-EXAMPLEKEY000000', algorithm: 'ed25519', signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg' } } }, schema: { type: 'object', properties: { decision: { type: 'object' }, artifact: { type: 'object' } } } },
+        }),
+      },
+    },
+    // D3.6C: same paid preflight rail, a distinct strict bridge artifact.
+    'POST /x402/preflight-bridge': {
+      accepts: { scheme: 'exact', price: usd(config.prices.preflight), network: CAIP2, payTo: config.x402.recipient },
+      description: PREFLIGHT_BRIDGE_DESCRIPTION,
+      mimeType: 'application/json',
+      extensions: {
+        ...declareDiscoveryExtension({
+          bodyType: 'json',
+          input: { action: { kind: 'BRIDGE', protocol: 'circle-cctp-v2', source_network: 'eip155:8453', destination_network: 'eip155:1', source_asset: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', destination_asset: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', max_source_atomic: '1000000', min_destination_atomic: '990000', recipient: '0x000000000000000000000000000000000000dEaD' }, policy: { allowed_source_networks: ['eip155:8453'], allowed_destination_networks: ['eip155:1'] } },
+          inputSchema: { properties: { action: { type: 'object' }, policy: { type: 'object' } } },
+          output: { example: { decision: { status: 'ALLOW' }, artifact: { data: { schema: 'onchaindiligence.bridge-action.v1', artifact_type: 'PREFLIGHT' }, attestation: { signed: true, key_id: 'ed25519-EXAMPLEKEY000000', algorithm: 'ed25519', signature: 'UN4TzBvkRsf0eGm4…ZFyElhq1Cg' } } }, schema: { type: 'object', properties: { decision: { type: 'object' }, artifact: { type: 'object' } } } },
         }),
       },
     },
@@ -902,6 +937,18 @@ export function mountDiscovery(app: Hono): void {
     try { parseAllowanceInput(body) } catch (err: any) { return c.json({ error: err instanceof AllowanceInputError ? err.message : 'invalid allowance input' }, 400) }
     await next()
   })
+  app.use('/x402/preflight-swap', async (c, next) => {
+    let body: unknown
+    try { body = await c.req.raw.clone().json() } catch { return c.json({ error: 'body must be valid JSON' }, 400) }
+    try { parseSwapInput(body) } catch (err: any) { return c.json({ error: err instanceof SwapInputError ? err.message : 'invalid swap input' }, 400) }
+    await next()
+  })
+  app.use('/x402/preflight-bridge', async (c, next) => {
+    let body: unknown
+    try { body = await c.req.raw.clone().json() } catch { return c.json({ error: 'body must be valid JSON' }, 400) }
+    try { parseBridgeInput(body) } catch (err: any) { return c.json({ error: err instanceof BridgeInputError ? err.message : 'invalid bridge input' }, 400) }
+    await next()
+  })
 
   // Scoped to /x402/* deliberately. The middleware only gates the routes in
   // X402_ROUTES, but an unscoped `app.use` still RUNS it on every request —
@@ -919,6 +966,14 @@ export function mountDiscovery(app: Hono): void {
   app.post('/x402/preflight-allowance', async (c) => {
     try { return c.json(await preflightAllowance(await c.req.json()), 200) }
     catch (err: any) { return c.json({ error: err?.message || 'allowance preflight failed' }, err instanceof AllowanceInputError ? 400 : 502) }
+  })
+  app.post('/x402/preflight-swap', async (c) => {
+    try { return c.json(await preflightSwap(await c.req.json()), 200) }
+    catch (err: any) { return c.json({ error: err?.message || 'swap preflight failed' }, err instanceof SwapInputError ? 400 : 502) }
+  })
+  app.post('/x402/preflight-bridge', async (c) => {
+    try { return c.json(await preflightBridge(await c.req.json()), 200) }
+    catch (err: any) { return c.json({ error: err?.message || 'bridge preflight failed' }, err instanceof BridgeInputError ? 400 : 502) }
   })
 
   // Paid handler — only runs after payment verifies and settles.

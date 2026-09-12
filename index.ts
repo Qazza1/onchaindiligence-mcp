@@ -45,6 +45,8 @@ import { mountCrossmintWebhook } from './src/crossmintWebhookRoute.js'
 import { mountWorkspace } from './src/workspaceRoute.js'
 import { mountDashboardCors } from './src/dashboardCors.js'
 import { mountAllowanceRoutes } from './src/allowanceRoute.js'
+import { mountSwapRoutes } from './src/swapRoute.js'
+import { mountBridgeRoutes } from './src/bridgeRoute.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
 import { outcomeForStatus, readMcpEnvelope, recordEvent } from './src/telemetry.js'
 
@@ -115,6 +117,8 @@ app.use('/x402/*', recordHttpFunnel)
 app.use('/mcp', requireSigningReadiness)
 app.use('/x402/*', requireSigningReadiness)
 app.use('/allowances/observe', requireSigningReadiness)
+app.use('/swaps/observe', requireSigningReadiness)
+app.use('/bridges/observe', requireSigningReadiness)
 app.use('/x402/verdict/:address', requireCanonicalVerdictReadiness)
 
 /**
@@ -155,6 +159,8 @@ mountDiscovery(app)
 // D3.6A: portable ERC-20 allowance inspection/observation. The paid
 // preflight terminal route itself is mounted by discovery after its x402 gate.
 mountAllowanceRoutes(app)
+mountSwapRoutes(app)
+mountBridgeRoutes(app)
 
 // D2.4: mounts the TERMINAL POST /x402/lifecycle/preflight-payment handler.
 // Must be registered AFTER mountDiscovery (immediately above) so that call's
