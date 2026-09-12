@@ -26,7 +26,7 @@
  * the rest of the server. START ON base-sepolia: the one settle needed to
  * trigger indexing then costs free testnet USDC, not real money.
  */
-import type { Context, Hono } from 'hono'
+import type { Context, Hono, Next } from 'hono'
 import { paymentMiddleware, x402ResourceServer } from '@x402/hono'
 import { ExactEvmScheme } from '@x402/evm/exact/server'
 import { HTTPFacilitatorClient } from '@x402/core/server'
@@ -106,6 +106,23 @@ const resourceServer = new x402ResourceServer(facilitatorClient).register(
 // (see the regression test in test/x402Routes.ts, which checks every
 // X402_ROUTES description against the real facilitator's 500-char limit).
 export const MAX_X402_DESCRIPTION_LENGTH = 480
+
+/**
+ * Preserve a terminal Response returned directly by the x402 middleware.
+ *
+ * Hono middleware may either call `next()` or return a Response. In
+ * particular, the normal first x402 request (without a payment header)
+ * returns the 402 challenge directly. This small adapter is deliberately
+ * exported so its response-forwarding contract has an offline regression
+ * test without constructing a real facilitator.
+ */
+export async function forwardX402MiddlewareResponse(
+  middleware: (context: Context, next: Next) => Response | void | Promise<Response | void>,
+  context: Context,
+  next: Next
+): Promise<Response | void> {
+  return await middleware(context, next)
+}
 
 // Keyword-rich description — this is what agents search on in the Bazaar.
 export const DESCRIPTION =
@@ -1006,7 +1023,7 @@ export function mountDiscovery(app: Hono): void {
       // instead of 402ing). No test caught this because every existing
       // pre-payment test intentionally sends an INVALID body, which is
       // rejected by validation middleware before ever reaching this wrapper.
-      return await x402PaymentMiddleware(c, next)
+      return await forwardX402MiddlewareResponse(x402PaymentMiddleware, c, next)
     } catch (err) {
       if (err instanceof FacilitatorTimeoutError || (err instanceof Error && /no supported payment kinds loaded/i.test(err.message))) {
         c.header('Retry-After', '5')

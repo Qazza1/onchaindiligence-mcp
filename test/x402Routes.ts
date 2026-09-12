@@ -42,7 +42,14 @@ process.on('unhandledRejection', (error: unknown) => {
 
 const { Hono } = await import('hono')
 const { config } = await import('../src/config.js')
-const { mountDiscovery, CAIP2, usd, X402_ROUTES, MAX_X402_DESCRIPTION_LENGTH } = await import('../src/discovery.js')
+const {
+  mountDiscovery,
+  CAIP2,
+  usd,
+  X402_ROUTES,
+  MAX_X402_DESCRIPTION_LENGTH,
+  forwardX402MiddlewareResponse,
+} = await import('../src/discovery.js')
 const { buildOpenApiDocument, buildWellKnownManifest, mountPublicMetadata } = await import(
   '../src/publicMetadata.js'
 )
@@ -225,6 +232,26 @@ for (const body of PREFLIGHT_PRE_PAYMENT_REJECTIONS) {
 console.log(
   `ok  ${PREFLIGHT_PRE_PAYMENT_REJECTIONS.length} invalid preflight bodies rejected before any payment challenge`
 )
+
+// The x402 middleware's ordinary unpaid path returns the 402 response
+// directly instead of calling next(). Preserve that terminal response: losing
+// it leaves Hono with an unfinalized context and turns a payment challenge
+// into a 500. This stays offline by modeling only the documented middleware
+// shape, not a real CDP facilitator.
+const directResponseApp = new Hono()
+directResponseApp.use('/x402/*', (c, next) =>
+  forwardX402MiddlewareResponse(
+    async () => new Response('payment required', { status: 402, headers: { 'payment-required': 'test-challenge' } }),
+    c,
+    next
+  )
+)
+directResponseApp.get('/x402/valid', () => new Response('paid handler must not run'))
+
+const unpaid = await directResponseApp.request('/x402/valid')
+assert.equal(unpaid.status, 402, 'a direct x402 middleware response must remain a 402, never become a 500')
+assert.equal(unpaid.headers.get('payment-required'), 'test-challenge')
+console.log('ok  direct unpaid x402 middleware response remains a 402 payment challenge')
 
 // --- 4. Free discovery documents are genuinely free -------------------------
 

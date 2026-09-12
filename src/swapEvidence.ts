@@ -1,13 +1,73 @@
 import { createPublicKey, verify as verifyEd25519 } from 'node:crypto'
 import { attest, type SignedEnvelope } from './attest.js'
 import { contentId, fetchAttestationKeyRegistry, receiptAttestationSigningInput, type ReceiptVerificationState } from './receipts.js'
-import { SWAP_ACTION_SCHEMA, SWAP_ATTESTATION_PURPOSE, generateSwapOperationId, type SwapAction, type SwapCheck, type SwapPolicy } from './swap.js'
+import { SWAP_ACTION_SCHEMA, SWAP_ATTESTATION_PURPOSE, generateSwapOperationId, type SwapAction, type SwapCheck, type SwapDecisionResult, type SwapPolicy } from './swap.js'
 import type { SwapObservation } from './swapObservation.js'
-import type { TaxonomyFinding } from './contradictionTaxonomy.js'
-export interface SwapPreflightArtifact { schema:typeof SWAP_ACTION_SCHEMA; artifact_type:'PREFLIGHT'; artifact_digest:string; operation_id:string; created_at:string; action:SwapAction; policy:SwapPolicy; decision:any; checks:SwapCheck[]; limitations:string[] }
-export interface SwapObservationArtifact { schema:typeof SWAP_ACTION_SCHEMA; artifact_type:'OBSERVATION'; artifact_digest:string; operation_id:string; preflight_artifact_digest:string; observed_at:string; action:SwapAction; observation:SwapObservation; findings:TaxonomyFinding[]; limitations:string[] }
-const digest=<T extends Record<string,unknown>>(x:T)=>({...x,artifact_digest:contentId(x)})
-export const signSwapPreflight=(p:{action:SwapAction;policy:SwapPolicy;decision:any;checks:SwapCheck[];created_at?:string;operation_id?:string})=>attest(digest({schema:SWAP_ACTION_SCHEMA,artifact_type:'PREFLIGHT' as const,operation_id:p.operation_id??generateSwapOperationId(),created_at:p.created_at??new Date().toISOString(),action:p.action,policy:p.policy,decision:p.decision,checks:p.checks,limitations:['Policy ALLOW is not wallet authority and OCD does not execute a swap.','This is a portable swap artifact, not an Action Receipt v1 or payment record.']}),{purpose:SWAP_ATTESTATION_PURPOSE}) as Promise<SignedEnvelope<SwapPreflightArtifact>>
-export function deriveSwapFindings(action:SwapAction,o:SwapObservation):TaxonomyFinding[]{ const ref=o.input_transfer? [`${o.input_transfer.transaction_hash}:${o.input_transfer.log_index}`]:[]; const f=(finding_class:any,code:any,expected:any,observed:any,explanation:string):TaxonomyFinding=>({finding_class,code,expected,observed,evidence_refs:ref,evidence_sources:['MANDATE','CHAIN_OBSERVATION'],explanation}); if(o.state!=='success'||o.finality?.state!=='safe')return[f('INSUFFICIENT_EVIDENCE','SETTLEMENT_NOT_INDEPENDENTLY_CONFIRMED',{transaction_hash:o.transaction_hash},{state:o.state,finality:o.finality?.state??null},'Submitted swap has no independently finalized supported swap evidence.')]; const out:TaxonomyFinding[]=[];if(o.router!==action.router)out.push(f('CONTRADICTION','ROUTER_MISMATCH',action.router,o.router,'Authorized router and transaction executor differ.')); if(!o.decoded_parameters||o.decoded_parameters.input_asset.toLowerCase()!==action.input_asset)out.push(f('CONTRADICTION','ASSET_MISMATCH',action.input_asset,o.decoded_parameters?.input_asset??null,'Authorized input asset and decoded router input asset differ.')); if(!o.decoded_parameters||o.decoded_parameters.output_asset.toLowerCase()!==action.output_asset)out.push(f('CONTRADICTION','OUTPUT_ASSET_MISMATCH',action.output_asset,o.decoded_parameters?.output_asset??null,'Authorized output asset and decoded router output asset differ.')); if(!o.decoded_parameters||o.decoded_parameters.recipient.toLowerCase()!==action.recipient)out.push(f('CONTRADICTION','RECIPIENT_MISMATCH',action.recipient,o.decoded_parameters?.recipient??null,'Authorized recipient and decoded router recipient differ.')); if(!o.input_transfer||BigInt(o.input_transfer.amount_atomic)>BigInt(action.max_input_atomic))out.push(f('CONTRADICTION','AMOUNT_MISMATCH',action.max_input_atomic,o.input_transfer?.amount_atomic??null,'Observed input exceeds the authorized maximum.')); if(!o.output_transfer||BigInt(o.output_transfer.amount_atomic)<BigInt(action.min_output_atomic))out.push(f('CONTRADICTION','MINIMUM_OUTPUT_NOT_MET',action.min_output_atomic,o.output_transfer?.amount_atomic??null,'Observed output is below the authorized minimum.')); return out.sort((a,b)=>a.code.localeCompare(b.code)) }
-export const signSwapObservation=(preflight:SwapPreflightArtifact,observation:SwapObservation)=>attest(digest({schema:SWAP_ACTION_SCHEMA,artifact_type:'OBSERVATION' as const,operation_id:preflight.operation_id,preflight_artifact_digest:preflight.artifact_digest,observed_at:new Date().toISOString(),action:preflight.action,observation,findings:deriveSwapFindings(preflight.action,observation),limitations:['Chain observation establishes a narrow direct-router transfer profile, not price fairness, service delivery, or objective safety.','Payment binding vocabulary is not applicable to a swap action.']}),{purpose:SWAP_ATTESTATION_PURPOSE}) as Promise<SignedEnvelope<SwapObservationArtifact>>
-export async function verifySwapArtifact(envelope:unknown):Promise<{state:ReceiptVerificationState;code:string;message:string}>{if(!envelope||typeof envelope!=='object'||Array.isArray(envelope))return{state:'INVALID',code:'envelope-invalid',message:'expected a signed swap artifact envelope'};const e=envelope as SignedEnvelope<any>,d=e.data,p=e.attestation;if(!d||d.schema!==SWAP_ACTION_SCHEMA||typeof d.artifact_digest!=='string')return{state:'INVALID',code:'artifact-schema-invalid',message:'swap artifact schema or digest is invalid'};const {artifact_digest,...core}=d;if(contentId(core)!==artifact_digest)return{state:'INVALID',code:'artifact-digest-mismatch',message:'artifact digest does not match content'};if(!p?.signed||p.purpose!==SWAP_ATTESTATION_PURPOSE||p.algorithm!=='ed25519'||p.canonicalization!=='RFC8785'||!p.key_id||!p.issued_at||!p.signature)return{state:'INVALID',code:'proof-invalid',message:'swap artifact proof metadata is invalid'};let keys;try{keys=await fetchAttestationKeyRegistry()}catch{return{state:'UNVERIFIABLE',code:'key-registry-unavailable',message:'public signing-key registry unavailable'}};const key=keys.find(k=>k.key_id===p.key_id);if(!key)return{state:'UNVERIFIABLE',code:'key-not-trusted',message:'signing key absent from registry'};if(key.status==='revoked'||key.status==='compromised')return{state:'INVALID',code:`key-${key.status}`,message:`signing key is ${key.status}`};try{const valid=verifyEd25519(null,Buffer.from(receiptAttestationSigningInput(d,{issuer:p.issuer!,purpose:p.purpose!,issuedAt:p.issued_at!,keyId:p.key_id!})),createPublicKey(key.public_key_pem),Buffer.from(p.signature,'base64url'));return valid?{state:'VALID',code:'ok',message:'swap artifact signature and content verify against public key registry'}:{state:'INVALID',code:'signature-invalid',message:'swap artifact signature is invalid'}}catch{return{state:'INVALID',code:'signature-invalid',message:'swap artifact signature could not be verified'}}}
+import type { FindingClass, TaxonomyFinding, TaxonomyFindingCode } from './contradictionTaxonomy.js'
+
+export interface SwapPreflightArtifact {
+  schema: typeof SWAP_ACTION_SCHEMA; artifact_type: 'PREFLIGHT'; artifact_digest: string; operation_id: string; created_at: string
+  action: SwapAction; policy: SwapPolicy; decision: SwapDecisionResult; checks: SwapCheck[]; limitations: string[]
+}
+export interface SwapObservationArtifact {
+  schema: typeof SWAP_ACTION_SCHEMA; artifact_type: 'OBSERVATION'; artifact_digest: string; operation_id: string; preflight_artifact_digest: string; observed_at: string
+  action: SwapAction; observation: SwapObservation; findings: TaxonomyFinding[]; limitations: string[]
+}
+type SwapArtifact = SwapPreflightArtifact | SwapObservationArtifact
+
+function withDigest<T extends Record<string, unknown>>(artifact: T): T & { artifact_digest: string } {
+  return { ...artifact, artifact_digest: contentId(artifact) }
+}
+
+export const signSwapPreflight = (input: { action: SwapAction; policy: SwapPolicy; decision: SwapDecisionResult; checks: SwapCheck[]; created_at?: string; operation_id?: string }) =>
+  attest(withDigest({
+    schema: SWAP_ACTION_SCHEMA, artifact_type: 'PREFLIGHT' as const, operation_id: input.operation_id ?? generateSwapOperationId(), created_at: input.created_at ?? new Date().toISOString(),
+    action: input.action, policy: input.policy, decision: input.decision, checks: input.checks,
+    limitations: ['Policy ALLOW is not wallet authority and OCD does not execute a swap.', 'This is a portable swap artifact, not an Action Receipt v1 or payment record.'],
+  }), { purpose: SWAP_ATTESTATION_PURPOSE }) as Promise<SignedEnvelope<SwapPreflightArtifact>>
+
+function finding(findingClass: FindingClass, code: TaxonomyFindingCode, expected: unknown, observed: unknown, evidenceRefs: string[], explanation: string): TaxonomyFinding {
+  return { finding_class: findingClass, code, expected, observed, evidence_refs: evidenceRefs, evidence_sources: ['MANDATE', 'CHAIN_OBSERVATION'], explanation }
+}
+
+export function deriveSwapFindings(action: SwapAction, observation: SwapObservation): TaxonomyFinding[] {
+  const evidenceRefs = observation.input_transfer ? [`${observation.input_transfer.transaction_hash}:${observation.input_transfer.log_index}`] : []
+  if (observation.state !== 'success' || observation.finality?.state !== 'safe') {
+    return [finding('INSUFFICIENT_EVIDENCE', 'SETTLEMENT_NOT_INDEPENDENTLY_CONFIRMED', { transaction_hash: observation.transaction_hash }, { state: observation.state, finality: observation.finality?.state ?? null }, evidenceRefs, 'Submitted swap has no independently finalized supported swap evidence.')]
+  }
+  const findings: TaxonomyFinding[] = []
+  if (observation.router !== action.router) findings.push(finding('CONTRADICTION', 'ROUTER_MISMATCH', action.router, observation.router, evidenceRefs, 'Authorized router and transaction executor differ.'))
+  if (!observation.decoded_parameters || observation.decoded_parameters.input_asset.toLowerCase() !== action.input_asset) findings.push(finding('CONTRADICTION', 'ASSET_MISMATCH', action.input_asset, observation.decoded_parameters?.input_asset ?? null, evidenceRefs, 'Authorized input asset and decoded router input asset differ.'))
+  if (!observation.decoded_parameters || observation.decoded_parameters.output_asset.toLowerCase() !== action.output_asset) findings.push(finding('CONTRADICTION', 'OUTPUT_ASSET_MISMATCH', action.output_asset, observation.decoded_parameters?.output_asset ?? null, evidenceRefs, 'Authorized output asset and decoded router output asset differ.'))
+  if (!observation.decoded_parameters || observation.decoded_parameters.recipient.toLowerCase() !== action.recipient) findings.push(finding('CONTRADICTION', 'RECIPIENT_MISMATCH', action.recipient, observation.decoded_parameters?.recipient ?? null, evidenceRefs, 'Authorized recipient and decoded router recipient differ.'))
+  if (!observation.input_transfer || BigInt(observation.input_transfer.amount_atomic) > BigInt(action.max_input_atomic)) findings.push(finding('CONTRADICTION', 'AMOUNT_MISMATCH', action.max_input_atomic, observation.input_transfer?.amount_atomic ?? null, evidenceRefs, 'Observed input exceeds the authorized maximum.'))
+  if (!observation.output_transfer || BigInt(observation.output_transfer.amount_atomic) < BigInt(action.min_output_atomic)) findings.push(finding('CONTRADICTION', 'MINIMUM_OUTPUT_NOT_MET', action.min_output_atomic, observation.output_transfer?.amount_atomic ?? null, evidenceRefs, 'Observed output is below the authorized minimum.'))
+  return findings.sort((left, right) => left.code.localeCompare(right.code))
+}
+
+export const signSwapObservation = (preflight: SwapPreflightArtifact, observation: SwapObservation) =>
+  attest(withDigest({
+    schema: SWAP_ACTION_SCHEMA, artifact_type: 'OBSERVATION' as const, operation_id: preflight.operation_id, preflight_artifact_digest: preflight.artifact_digest, observed_at: new Date().toISOString(),
+    action: preflight.action, observation, findings: deriveSwapFindings(preflight.action, observation),
+    limitations: ['Chain observation establishes a narrow direct-router transfer profile, not price fairness, service delivery, or objective safety.', 'Payment binding vocabulary is not applicable to a swap action.'],
+  }), { purpose: SWAP_ATTESTATION_PURPOSE }) as Promise<SignedEnvelope<SwapObservationArtifact>>
+
+export async function verifySwapArtifact(envelope: unknown): Promise<{ state: ReceiptVerificationState; code: string; message: string }> {
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return { state: 'INVALID', code: 'envelope-invalid', message: 'expected a signed swap artifact envelope' }
+  const parsed = envelope as SignedEnvelope<SwapArtifact>
+  const artifact = parsed.data
+  const proof = parsed.attestation
+  if (!artifact || artifact.schema !== SWAP_ACTION_SCHEMA || typeof artifact.artifact_digest !== 'string') return { state: 'INVALID', code: 'artifact-schema-invalid', message: 'swap artifact schema or digest is invalid' }
+  const { artifact_digest, ...unsignedArtifact } = artifact
+  if (contentId(unsignedArtifact) !== artifact_digest) return { state: 'INVALID', code: 'artifact-digest-mismatch', message: 'artifact digest does not match content' }
+  if (!proof?.signed || proof.purpose !== SWAP_ATTESTATION_PURPOSE || proof.algorithm !== 'ed25519' || proof.canonicalization !== 'RFC8785' || !proof.key_id || !proof.issued_at || !proof.signature) return { state: 'INVALID', code: 'proof-invalid', message: 'swap artifact proof metadata is invalid' }
+  let keys
+  try { keys = await fetchAttestationKeyRegistry() } catch { return { state: 'UNVERIFIABLE', code: 'key-registry-unavailable', message: 'public signing-key registry unavailable' } }
+  const key = keys.find((candidate) => candidate.key_id === proof.key_id)
+  if (!key) return { state: 'UNVERIFIABLE', code: 'key-not-trusted', message: 'signing key absent from registry' }
+  if (key.status === 'revoked' || key.status === 'compromised') return { state: 'INVALID', code: `key-${key.status}`, message: `signing key is ${key.status}` }
+  try {
+    const valid = verifyEd25519(null, Buffer.from(receiptAttestationSigningInput(artifact, { issuer: proof.issuer!, purpose: proof.purpose!, issuedAt: proof.issued_at!, keyId: proof.key_id! })), createPublicKey(key.public_key_pem), Buffer.from(proof.signature, 'base64url'))
+    return valid ? { state: 'VALID', code: 'ok', message: 'swap artifact signature and content verify against public key registry' } : { state: 'INVALID', code: 'signature-invalid', message: 'swap artifact signature is invalid' }
+  } catch { return { state: 'INVALID', code: 'signature-invalid', message: 'swap artifact signature could not be verified' } }
+}
