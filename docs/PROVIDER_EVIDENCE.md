@@ -295,3 +295,94 @@ A CDP claim alone never raises binding strength past `TRANSFER_MATCH_ONLY`.
 `PAYMENT_IDENTITY_LINKED` still requires the same independently-decoded
 on-chain authorizer match every other executor needs; `commerceLifecycle.ts`
 is unmodified.
+
+## Circle Developer-Controlled Wallets evidence (D3.4C6)
+
+Confirmed directly against current official Circle documentation
+(developers.circle.com): there is **no distinct "Agent Wallet" product** —
+programmatic/agent use goes through the same Developer-Controlled Wallets
+API as any server-side wallet. This integrates there.
+
+**Identity discipline:** Circle's transaction object carries `id` (Circle's
+own durable transaction identity, returned immediately on creation) and
+`txHash` (the eventual on-chain hash) as two clearly distinct, separately-
+documented fields. `providerExecutionId` is always `notification.id`,
+never `txHash`.
+
+**State discipline (unusually well-documented among this project's
+providers):** Circle's own docs explicitly separate `CONFIRMED`
+("included in a block, awaiting finality") from `COMPLETE` ("finalized
+on-chain, irreversible") — a stronger, more conservative distinction than
+Turnkey's `INCLUDED` or Crossmint's `succeeded`. Only `COMPLETE` (success)
+and `FAILED`/`CANCELLED`/`DENIED` (failure) are terminal; `INITIATED`,
+`QUEUED`, `SENT`, and `CONFIRMED` are all non-terminal and never persisted
+as a claim — mirroring Turnkey's `BROADCASTING`.
+
+`POST /webhooks/circle/transaction-status` receives Circle's v2 direct-
+HTTPS-POST notification. Every delivery is verified over the **raw request
+body** using `ECDSA_SHA_256` (`X-Circle-Signature`) against a public key
+fetched by `X-Circle-Key-Id` from
+`GET https://api.circle.com/v2/notifications/publicKey/<keyId>` — an
+endpoint that itself requires `Authorization: Bearer <CIRCLE_API_KEY>`
+(an authenticated Circle API credential, unlike Turnkey's fully public
+JWKS or Crossmint's shared Svix secret). The key is cached indefinitely
+per `keyId`, per Circle's own documented guidance that it is static.
+**A verified signature means "Circle authored this claim." It never means
+"the payment settled."**
+
+`X-Circle-Signature` is base64-encoded — confirmed directly from Circle's
+own published Node.js verification sample (which calls
+`verifier.verify(publicKey, signature, "base64")` with no alternative
+path), not an assumption. This module never falls back to another
+encoding; a signature that isn't validly base64-shaped is rejected
+fail-closed before any cryptographic check runs.
+
+**One honest, flagged gap remains in current documentation, not papered
+over:** Circle's docs give no replay-window/timestamp-tolerance guidance
+for v2 webhooks (unlike Turnkey's explicit 5-minute window) — this module
+does not invent one. The actual security model here is deliberately: a
+valid Circle signature, plus `notificationId`-driven delivery dedup (via
+the existing content-addressed provider-evidence store — Circle's own
+docs confirm at-least-once delivery with `notificationId` reused on
+retries and no ordering guarantee), plus the durable execution-binding
+correlation a delivery must match. A late, out-of-order, or retried
+delivery can never regress or duplicate already-recorded terminal
+evidence: retries produce the identical content-addressed `evidenceId`
+(a safe no-op), and a non-terminal state (e.g. a `CONFIRMED` arriving
+after a `COMPLETE`) is never persisted as evidence in the first place,
+regardless of delivery order.
+
+Only `transactions.outbound` is accepted as a provider execution claim;
+`transactions.inbound` and any other notification type are acknowledged
+but never parsed as OCD execution evidence, mirroring D3.4C4's
+`wallets.transfer.out`-only scoping of Crossmint.
+
+**Field mapping:** Circle's transaction object does document
+`sourceAddress`/`destinationAddress` as its own claim, so `payer`/
+`recipient` are populated (same discipline as Crossmint). `amount`/`asset`
+are populated only when the payload itself truthfully establishes
+canonical Base USDC: `blockchain === "BASE"`, the payload's own
+`contractAddress` field (confirmed distinct from the opaque `tokenId`
+UUID) resolves via the same `getSupportedAsset()` registry the
+independent Base observer trusts, and exactly one `amounts` entry (Circle's
+documented `string[]`, "decimal number format") is present. Any of those
+not holding — an unrecognized contract, a non-Base chain, more than one
+amount — leaves both fields null rather than guessing; this is never
+inferred from the OCD mandate. `network` maps only Circle's documented
+`"BASE"` blockchain value to `eip155:8453`; anything else stays null.
+
+`notification.id` (Circle's transaction/resource identity) and the
+envelope's own `notificationId` (the webhook delivery identity) are kept
+strictly distinct: `providerExecutionId`/`correlationReference` are always
+derived from `notification.id`, never `notificationId`; `notificationId`
+is used only as `provider_event_id`, exactly mirroring Turnkey's/
+Crossmint's delivery-identity discipline.
+
+A Circle claim alone never raises binding strength past
+`TRANSFER_MATCH_ONLY`. `PAYMENT_IDENTITY_LINKED` still requires the same
+independently-decoded on-chain authorizer match every other executor
+needs; `commerceLifecycle.ts` is unmodified.
+
+**Relationship context:** this integration is built entirely from Circle's
+public, current API documentation. It is not built on, and does not imply,
+any partnership, endorsement, or approval by Circle.

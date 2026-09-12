@@ -95,3 +95,6 @@ jobs:
       # D3.4C5: Coinbase/CDP caller-reported provider-evidence normalization,
       # correlation, and reconciliation reuse.
       - run: npx --no-install tsx test/d34c5CdpProviderEvidence.ts
+      # D3.4C6: Circle v2 notification signature verification (ECDSA_SHA_256),
+      # provider-evidence normalization/correlation, and reconciliation reuse.
+      - run: npx --no-install tsx test/d34c6CircleProviderEvidence.ts
