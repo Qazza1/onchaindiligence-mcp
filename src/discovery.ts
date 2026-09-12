@@ -62,6 +62,8 @@ import { parseSwapInput, SwapInputError } from './swap.js'
 import { PREFLIGHT_SWAP_DESCRIPTION, preflightSwap } from './swapRoute.js'
 import { parseBridgeInput, BridgeInputError } from './bridge.js'
 import { PREFLIGHT_BRIDGE_DESCRIPTION, preflightBridge } from './bridgeRoute.js'
+import { StakingInputError } from './staking.js'
+import { PREFLIGHT_STAKING_DESCRIPTION, preflightStaking } from './stakingRoute.js'
 
 /**
  * Price strings for the x402 middleware, derived from the SAME canonical
@@ -1000,6 +1002,10 @@ export function mountDiscovery(app: Hono): void {
   app.post('/x402/preflight-bridge', async (c) => {
     try { return c.json(await preflightBridge(await c.req.json()), 200) }
     catch (err: any) { return c.json({ error: err?.message || 'bridge preflight failed' }, err instanceof BridgeInputError ? 400 : 502) }
+  })
+  app.post('/x402/preflight-staking', async (c) => {
+    try { return c.json(await preflightStaking(await c.req.json()), 200) }
+    catch (err: any) { return c.json({ error: err?.message || 'staking preflight failed' }, err instanceof StakingInputError ? 400 : 502) }
   })
 
   // Paid handler — only runs after payment verifies and settles.

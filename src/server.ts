@@ -63,6 +63,7 @@ import { getReceiptById, verifyReceipt, VerifyReceiptInputError } from './receip
 import { inspectAllowance, observeAllowance, preflightAllowance, INSPECT_ALLOWANCE_DESCRIPTION, OBSERVE_ALLOWANCE_DESCRIPTION, PREFLIGHT_ALLOWANCE_DESCRIPTION } from './allowanceRoute.js'
 import { inspectSwap, observeSwapAction, preflightSwap, INSPECT_SWAP_DESCRIPTION, OBSERVE_SWAP_DESCRIPTION, PREFLIGHT_SWAP_DESCRIPTION } from './swapRoute.js'
 import { inspectBridge, observeBridge, preflightBridge, INSPECT_BRIDGE_DESCRIPTION, OBSERVE_BRIDGE_DESCRIPTION, PREFLIGHT_BRIDGE_DESCRIPTION } from './bridgeRoute.js'
+import { inspectStaking, observeStaking, preflightStaking, INSPECT_STAKING_DESCRIPTION, OBSERVE_STAKING_DESCRIPTION, PREFLIGHT_STAKING_DESCRIPTION } from './stakingRoute.js'
 export { PREFLIGHT_ALLOWANCE_DESCRIPTION } from './allowanceRoute.js'
 export { PREFLIGHT_BRIDGE_DESCRIPTION } from './bridgeRoute.js'
 
@@ -530,6 +531,23 @@ export const handler = createPaidMcpHandler(
     server.tool('observe_bridge', OBSERVE_BRIDGE_DESCRIPTION, { artifact: z.unknown(), source_transaction_hash: z.string(), destination_transaction_hash: z.string().optional() }, { readOnlyHint: true, openWorldHint: true }, async (args) => {
       try { return { content: [{ type: 'text', text: JSON.stringify(await observeBridge(args), null, 2) }] } }
       catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Bridge observation failed.' }] } }
+    })
+
+    const stakingSchema = {
+      action: z.object({ kind: z.literal('STAKE'), protocol: z.literal('lido-steth-submit'), network: z.string(), input_asset: z.string(), staker: z.string(), max_amount_wei: z.string() }),
+      policy: z.object({ allowed_networks: z.array(z.string()).nullable().optional(), allowed_protocols: z.array(z.string()).nullable().optional(), exact_staker: z.string().nullable().optional(), max_amount_wei: z.string().nullable().optional(), acknowledge_unconstrained: z.boolean().optional() }),
+    }
+    server.tool('inspect_staking', INSPECT_STAKING_DESCRIPTION, stakingSchema, { readOnlyHint: true, openWorldHint: false }, async (args) => {
+      try { return { content: [{ type: 'text', text: JSON.stringify(await inspectStaking(args), null, 2) }] } }
+      catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Staking inspection failed.' }] } }
+    })
+    server.paidTool('preflight_staking', PREFLIGHT_STAKING_DESCRIPTION, { price: config.prices.preflight }, stakingSchema, { readOnlyHint: true, openWorldHint: true }, async (args) => {
+      try { return { content: [{ type: 'text', text: JSON.stringify(await preflightStaking(args), null, 2) }] } }
+      catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Staking preflight failed.' }] } }
+    })
+    server.tool('observe_staking', OBSERVE_STAKING_DESCRIPTION, { artifact: z.unknown(), transaction_hash: z.string() }, { readOnlyHint: true, openWorldHint: true }, async (args) => {
+      try { return { content: [{ type: 'text', text: JSON.stringify(await observeStaking(args), null, 2) }] } }
+      catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Staking observation failed.' }] } }
     })
 
     // --- get_receipt (D2.5, deferred from D2.3) -- FREE, no payment wrapper ---

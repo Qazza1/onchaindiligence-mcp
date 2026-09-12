@@ -35,6 +35,9 @@ export const CONTRADICTION_CODES = [
   // identities disagree" -- PAYMENT_IDENTITY_MISMATCH is payment-specific
   // and would misdescribe a cross-chain message-passing bridge.
   'BRIDGE_MESSAGE_MISMATCH',
+  // D3.6D: Lido pooled staking has no user-selected validator/operator;
+  // this code is strictly the observed Submitted.sender versus mandate.
+  'STAKER_MISMATCH',
 ] as const
 
 export const INSUFFICIENT_EVIDENCE_CODES = [

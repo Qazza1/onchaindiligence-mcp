@@ -55,6 +55,7 @@ import { mountDashboardCors } from './src/dashboardCors.js'
 import { mountAllowanceRoutes } from './src/allowanceRoute.js'
 import { mountSwapRoutes } from './src/swapRoute.js'
 import { mountBridgeRoutes } from './src/bridgeRoute.js'
+import { mountStakingRoutes } from './src/stakingRoute.js'
 import { attestationReady, canonicalVerdictReady } from './src/attest.js'
 import { outcomeForStatus, readMcpEnvelope, recordEvent } from './src/telemetry.js'
 
@@ -146,6 +147,7 @@ app.use('/x402/*', requireSigningReadiness)
 app.use('/allowances/observe', requireSigningReadiness)
 app.use('/swaps/observe', requireSigningReadiness)
 app.use('/bridges/observe', requireSigningReadiness)
+app.use('/stakes/observe', requireSigningReadiness)
 app.use('/x402/verdict/:address', requireCanonicalVerdictReadiness)
 
 /**
@@ -192,6 +194,7 @@ mountDiscovery(app)
 mountAllowanceRoutes(app)
 mountSwapRoutes(app)
 mountBridgeRoutes(app)
+mountStakingRoutes(app)
 
 // D2.4: mounts the TERMINAL POST /x402/lifecycle/preflight-payment handler.
 // Must be registered AFTER mountDiscovery (immediately above) so that call's
