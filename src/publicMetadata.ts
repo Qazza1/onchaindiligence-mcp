@@ -44,6 +44,7 @@ import {
 import { INSPECT_DESCRIPTION } from './inspectRoute.js'
 import { PREFLIGHT_ALLOWANCE_DESCRIPTION } from './allowanceRoute.js'
 import { PREFLIGHT_SWAP_DESCRIPTION } from './swapRoute.js'
+import { PREFLIGHT_BRIDGE_DESCRIPTION } from './bridgeRoute.js'
 
 const BASE_URL = 'https://mcp.onchaindiligence.com'
 
@@ -267,6 +268,11 @@ const RESOURCES: ResourceSpec[] = [
         },
       },
     },
+  },
+  {
+    path: '/x402/preflight-bridge', method: 'POST', operationId: 'preflightBridge', summary: 'Evaluate a Circle CCTP V2 Base-to-Ethereum native-USDC bridge before execution', description: PREFLIGHT_BRIDGE_DESCRIPTION, priceUsd: config.prices.preflight,
+    requestBody: { description: 'Strict Base-to-Ethereum canonical-USDC Circle CCTP V2 bridge action and deterministic policy. Amounts are atomic-unit strings.', example: { action: { kind: 'BRIDGE', protocol: 'circle-cctp-v2', source_network: 'eip155:8453', destination_network: 'eip155:1', source_asset: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', destination_asset: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', max_source_atomic: '1000000', min_destination_atomic: '990000', recipient: '0x000000000000000000000000000000000000dEaD' }, policy: { allowed_source_networks: ['eip155:8453'], allowed_destination_networks: ['eip155:1'] } }, schema: { type: 'object' } },
+    responseSchema: { type: 'object', properties: { decision: { type: 'object' }, artifact: { type: 'object' } } },
   },
   {
     path: '/x402/preflight-allowance',

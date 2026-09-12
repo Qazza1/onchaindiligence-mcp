@@ -31,6 +31,10 @@ export const CONTRADICTION_CODES = [
   'ROUTER_MISMATCH',
   'OUTPUT_ASSET_MISMATCH',
   'MINIMUM_OUTPUT_NOT_MET',
+  // D3.6C: no existing code expresses "the two observed CCTP message
+  // identities disagree" -- PAYMENT_IDENTITY_MISMATCH is payment-specific
+  // and would misdescribe a cross-chain message-passing bridge.
+  'BRIDGE_MESSAGE_MISMATCH',
 ] as const
 
 export const INSUFFICIENT_EVIDENCE_CODES = [
