@@ -1,0 +1,2 @@
+export interface ArcErc8004ValidationEvidence{kind:'erc8004.validation';requestHash:string;validator:string;agentId:string;response:number;responseHash:string;tag:string;lastUpdate:string;registry:string;network:string}
+export const modelValidation=(v:ArcErc8004ValidationEvidence)=>({...v,interpretation:'ERC-8004 registry response only; not OCD verification state and not evidence of underlying behavior.'})
