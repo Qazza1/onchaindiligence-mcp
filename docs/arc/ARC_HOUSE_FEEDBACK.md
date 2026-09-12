@@ -6,7 +6,7 @@ OnChainDiligence is evaluating Arc Testnet as a read-only evidence and reconcili
 
 ## Findings from the current official quickstarts
 
-- Arc documents standard EVM JSON-RPC methods, chain ID `5042002`, USDC as currency symbol, and Arcscan as the Testnet explorer.
+- Arc documents standard EVM JSON-RPC methods, chain ID `5042002`, USDC as currency symbol, and Arcscan as the Testnet explorer. On 2026-09-12, the official primary Testnet endpoint is `https://rpc.testnet.arc.io`; OCD's default was corrected from the earlier `.network` value while preserving `ARC_RPC_URL` override support. Endpoint names have drifted during this research, so integrations should verify this value at release time.
 - The documented ERC-8004 identity, reputation and validation registries are modeled as separate evidence sources. Identity ownership and metadata URI are independently readable; reputation and validation records remain registry/attester claims.
 - Validation response `100` is a registry response, not OCD `VALID`, a safety score, or proof of underlying behaviour.
 - The documented ERC-8183 reference flow is: create job, set budget, approve/fund USDC escrow, submit a deliverable hash, then complete. `Completed` is a contract lifecycle state, not independent proof of real-world service delivery.
