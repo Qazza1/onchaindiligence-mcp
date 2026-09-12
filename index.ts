@@ -24,6 +24,13 @@
  *   GET  /operations/:operationId       free (recovery-credential-protected): operation status (D2.4)
  *   POST /x402/lifecycle/preflight-payment  paid: operation-bound, resumable preflight (D2.4)
  */
+// OPS-V2: must import first. ESM evaluates each import's module graph fully,
+// in declaration order, before the next import even begins -- this guarantees
+// the global fetch timeout wrapper and unhandled-rejection guard are installed
+// before src/server.js and src/discovery.js's module-scope facilitator setup
+// (including discovery.js's eager, unawaited x402ResourceServer.initialize())
+// ever runs. See facilitatorResilience.ts's header for the full root cause.
+import './src/facilitatorResilience.js'
 import { Hono } from 'hono'
 import { handler } from './src/server.js'
 import { mountPublicMcp } from './src/publicMcp.js'
@@ -112,6 +119,25 @@ const recordHttpFunnel = async (c: any, next: () => Promise<void>) => {
   })
 }
 
+// OPS-V2: mcp-handler@1.1.0's Streamable HTTP dispatch only implements GET
+// (405), DELETE (405), and POST for /mcp -- HEAD and OPTIONS match none of
+// its branches and fall through with no response ever written, which hangs
+// the request until the platform's ~300s function timeout. This is
+// registered FIRST, before requireSigningReadiness (which itself makes a
+// network call to check attestation-service health), so HEAD/OPTIONS /mcp
+// terminate here deterministically without ANY outbound network call --
+// not just the facilitator's -- and never reach the x402/payment handler.
+app.use('/mcp', async (c, next) => {
+  // Content-Length: 0 is set explicitly -- without it, a zero-body non-204
+  // response leaves body framing ambiguous over HTTP/1.1 keep-alive, which
+  // was observed hanging real clients (curl) against the deployed Preview
+  // even though this handler itself returned instantly (confirmed via
+  // Vercel response headers arriving immediately, framing was the only gap).
+  if (c.req.method === 'OPTIONS') return c.body(null, 204, { Allow: 'POST', 'Content-Length': '0' })
+  if (c.req.method === 'HEAD') return c.body(null, 405, { Allow: 'POST', 'Content-Length': '0' })
+  await next()
+})
+
 // Registered before either payment implementation so a signing outage fails
 // before x402 verification/settlement can collect funds.
 app.use('/x402/*', recordHttpFunnel)
@@ -131,6 +157,10 @@ app.use('/x402/verdict/:address', requireCanonicalVerdictReadiness)
  * paid path must never break because telemetry could not parse something.
  */
 app.all('/mcp', async (c) => {
+  // OPS-V2: HEAD/OPTIONS are already short-circuited above, before
+  // requireSigningReadiness -- by the time a request reaches here it is
+  // always GET/POST/DELETE (GET and DELETE are themselves rejected with a
+  // clean 405 by the underlying mcp-handler transport).
   try {
     const envelope = readMcpEnvelope(await c.req.raw.clone().text())
     recordEvent('mcp.request', envelope)
