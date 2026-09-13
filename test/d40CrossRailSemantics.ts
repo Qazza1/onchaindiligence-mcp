@@ -66,7 +66,7 @@ x402.post('/x402/preflight-payment', createPreflightPostHandler({
   },
   fetchKeyRegistry: async () => registry,
   storeReceipt: async () => {},
-  mintCapability: async () => ({ token: 'd40-test-capability', expiresAt: '2026-01-01T00:00:00.000Z' }),
+  mintCapability: async () => ({ token: 'test', expiresAt: '2026-01-01T00:00:00.000Z' }),
 }))
 const x402Response = await x402.request('https://mcp.onchaindiligence.com/x402/preflight-payment', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) })
 assert.equal(x402Response.status, 200)
