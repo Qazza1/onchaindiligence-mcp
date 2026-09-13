@@ -99,19 +99,9 @@ jobs:
       # provider-evidence normalization/correlation, and reconciliation reuse.
       - run: npx --no-install tsx test/d34c6CircleProviderEvidence.ts
 
-      # M1 (trust-surface remediation): the newest production trust-boundary
-      # tests -- independent chain observers, action-evidence reconciliation,
-      # and OPS-V2 transport resilience -- were never wired into CI. This is
-      # an intentional critical-path subset, not the full 52-file suite: the
-      # production trust boundary this repo's evidence claims actually rest
-      # on, kept small so CI stays fast rather than a maintenance burden.
-      - run: npx --no-install tsx test/d33aContradictionTaxonomy.ts
-      - run: npx --no-install tsx test/d33bContradictionDetection.ts
-      - run: npx --no-install tsx test/d35c1EthereumSettlement.ts
-      - run: npx --no-install tsx test/d35c2TempoSettlement.ts
-      - run: npx --no-install tsx test/d35c4SolanaSettlement.ts
-      - run: npx --no-install tsx test/d36aAllowance.ts
-      - run: npx --no-install tsx test/d36bSwap.ts
-      - run: npx --no-install tsx test/d36cBridge.ts
-      - run: npx --no-install tsx test/d36dStaking.ts
-      - run: npx --no-install tsx test/ops2Resilience.ts
+      # D4.0 self-enforcing trust invariant gate. This intentionally bounded
+      # command covers independent settlement across Ethereum/Tempo/Solana,
+      # the four signed action families, contradiction rules, OPS-V2
+      # resilience, hostile upstream data, artifact disclosures, and
+      # HTTP/x402/MCP semantic parity. It is not the full repository suite.
+      - run: npm run test:trust-invariants

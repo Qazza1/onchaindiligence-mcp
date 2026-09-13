@@ -18,6 +18,7 @@ export interface StakingObservationArtifact {
 }
 const withDigest = <T extends Record<string, unknown>>(core: T): T & { artifact_digest: string } => ({ ...core, artifact_digest: contentId(core) })
 const limitations = [
+  'Policy ALLOW is not wallet authority and OCD does not submit the Lido transaction.',
   'This confirms only the observed Lido submission transaction, not current stETH value, yield, APY, economic safety, slashing risk, peg risk, or smart-contract risk.',
   'This action does not cover withdrawal, unstake, or claim flows.',
   'Minted shares and deposited ETH are different accounting quantities; shares_minted is corroborating evidence and is never compared numerically to the ETH deposit amount.',

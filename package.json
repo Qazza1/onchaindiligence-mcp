@@ -8,6 +8,7 @@
     "dev": "tsx watch src/local.ts",
     "start": "tsx src/local.ts",
     "typecheck": "tsc --noEmit",
+    "test:trust-invariants": "tsx test/d33aContradictionTaxonomy.ts && tsx test/d33bContradictionDetection.ts && tsx test/d35c1EthereumSettlement.ts && tsx test/d35c2TempoSettlement.ts && tsx test/d35c4SolanaSettlement.ts && tsx test/d36aAllowance.ts && tsx test/d36bSwap.ts && tsx test/d36cBridge.ts && tsx test/d36dStaking.ts && tsx test/ops2Resilience.ts && tsx test/d40Adversarial.ts && tsx test/d40ArtifactConformance.ts && tsx test/d40CrossRailSemantics.ts",
     "test:client": "tsx test/client.ts",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:check-d27": "tsx scripts/check-d27-schema.mjs",
