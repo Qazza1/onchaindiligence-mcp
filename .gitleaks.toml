@@ -40,6 +40,9 @@ regexes = [
   # to the exact thing it exists to catch. If a specific, known-public 64-hex
   # value (e.g. a documented example tx hash) trips the scan, add THAT exact
   # value here by hand, rather than the general pattern. High-signal by design.
+  # Historical D4.0 test-only capability fixture; it is not a credential.
+  # This allowlist is intentionally exact so real capability/API tokens remain detectable.
+  '''^d40-test-capability$''',
 ]
 
 # --- Known-public contract / wallet ADDRESSES (20-byte, 40 hex) ---
