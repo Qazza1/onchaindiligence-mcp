@@ -52,11 +52,16 @@ export interface StoredReceipt {
  * silent success (idempotent replay). Same receipt_id + a DIFFERENT
  * envelope/digest -> fails closed with ReceiptConflictError. Never UPDATEs
  * a receipt into different content.
+ *
+ * Returns whether this call performed a genuinely NEW insert (true) or was
+ * an idempotent replay of an already-stored receipt (false) — callers use
+ * this to fire a receipt-created telemetry event exactly once per receipt,
+ * never once per retry.
  */
 export async function putReceipt(
   envelope: PublicActionReceiptEnvelope,
   options: { isPublic: boolean }
-): Promise<void> {
+): Promise<boolean> {
   const receiptId = envelope.receipt.receipt_id
   const digest = envelope.receipt.receipt_digest
   const rows = (await sql().query(
@@ -67,7 +72,7 @@ export async function putReceipt(
     [receiptId, digest, envelope.receipt.receipt_type, JSON.stringify(envelope), options.isPublic]
   )) as unknown as Array<{ receipt_id: string }>
 
-  if (rows.length > 0) return // fresh insert
+  if (rows.length > 0) return true // fresh insert
 
   // Already present — verify it's the identical envelope (idempotent
   // replay), not a conflicting write to the same id.
@@ -75,6 +80,37 @@ export async function putReceipt(
   if (!existing || existing.envelope.receipt.receipt_digest !== digest) {
     throw new ReceiptConflictError(receiptId)
   }
+  return false
+}
+
+/**
+ * Best-effort durable write of one usage_events row (db/schema.sql). Explicit
+ * scalar columns only — no JSON blob — matching the same allowlist telemetry.ts
+ * enforces before this is ever called. Never called with request bodies, tool
+ * arguments, wallet addresses, amounts, tx hashes, signatures, or credentials;
+ * see telemetry.ts's FunnelFields for the complete, exhaustive field set.
+ */
+export async function recordUsageEvent(event: string, fields: Record<string, unknown> = {}): Promise<void> {
+  const asText = (value: unknown): string | null => (value === undefined || value === null ? null : String(value))
+  await sql().query(
+    `INSERT INTO usage_events
+       (event, surface, method, tool, outcome, status, client_name, client_version, transport, kind, publication, network)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+    [
+      event,
+      asText(fields.surface),
+      asText(fields.method),
+      asText(fields.tool),
+      asText(fields.outcome),
+      asText(fields.status),
+      asText(fields.client_name),
+      asText(fields.client_version),
+      asText(fields.transport),
+      asText(fields.kind),
+      asText(fields.publication),
+      asText(fields.network),
+    ]
+  )
 }
 
 async function getReceiptByIdInternal(receiptId: string): Promise<StoredReceipt | null> {
