@@ -157,6 +157,15 @@ app.use('/x402/verdict/:address', requireCanonicalVerdictReadiness)
  * arguments are never touched — from a CLONE, so the original body stream
  * still reaches the handler untouched. Any failure here is swallowed: the
  * paid path must never break because telemetry could not parse something.
+ * Tagged `surface: 'paid'` so this and the free /public/mcp surface (see
+ * src/publicMcp.ts) are distinguishable in the same event stream. Per-tool
+ * outcome (`mcp.tool_result`) is recorded separately, inside src/server.ts,
+ * where the actual tool callbacks are available. client identity
+ * (`mcp.session`) is recorded HERE, from the same cloned body, rather than
+ * from the paid McpServer instance after handling: mcp-handler's stateless
+ * POST path never exposes or closes that instance afterward, so there is no
+ * reliable post-handling hook to read the SDK's own clientInfo state from
+ * (see telemetry.ts's readMcpEnvelope for the full explanation).
  */
 app.all('/mcp', async (c) => {
   // OPS-V2: HEAD/OPTIONS are already short-circuited above, before
@@ -165,7 +174,15 @@ app.all('/mcp', async (c) => {
   // clean 405 by the underlying mcp-handler transport).
   try {
     const envelope = readMcpEnvelope(await c.req.raw.clone().text())
-    recordEvent('mcp.request', envelope)
+    recordEvent('mcp.request', { surface: 'paid', method: envelope.method, tool: envelope.tool })
+    if (envelope.clientName || envelope.clientVersion) {
+      recordEvent('mcp.session', {
+        surface: 'paid',
+        client_name: envelope.clientName,
+        client_version: envelope.clientVersion,
+        transport: 'streamable-http',
+      })
+    }
   } catch {
     // Best-effort only.
   }

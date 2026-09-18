@@ -58,6 +58,7 @@ import {
 } from './ofac.js'
 import { attest } from './attest.js'
 import { preflightPayment, inspectPayment } from './preflight.js'
+import { withToolTelemetry } from './telemetry.js'
 import { INSPECT_DESCRIPTION } from './inspectRoute.js'
 import { getReceiptById, verifyReceipt, VerifyReceiptInputError } from './receiptTools.js'
 import { inspectAllowance, observeAllowance, preflightAllowance, INSPECT_ALLOWANCE_DESCRIPTION, OBSERVE_ALLOWANCE_DESCRIPTION, PREFLIGHT_ALLOWANCE_DESCRIPTION } from './allowanceRoute.js'
@@ -171,6 +172,16 @@ const facilitator = createFacilitatorConfig(
  */
 export const handler = createPaidMcpHandler(
   (server) => {
+    // mcp.session (client_name/client_version) is emitted from index.ts's
+    // /mcp handler, not here: mcp-handler's stateless POST path never
+    // exposes or closes this per-request McpServer instance afterward (its
+    // `server.close()`/`onclose` machinery lives only in a separate,
+    // Redis-backed SSE session branch this deployment never uses), so
+    // reading getClientVersion() from inside this factory has no reliable
+    // completion point to run at. index.ts instead reads clientInfo
+    // straight from the same cloned request body it already parses for
+    // mcp.request -- see telemetry.ts's readMcpEnvelope.
+
     // --- screen_wallet -------------------------------------------------
     server.paidTool(
       'screen_wallet',
@@ -178,7 +189,7 @@ export const handler = createPaidMcpHandler(
       { price: config.prices.screen },
       { address: z.string().describe('EVM wallet address (0x + 40 hex) to sanctions-screen') },
       { readOnlyHint: true, openWorldHint: true },
-      async (args) => {
+      withToolTelemetry('paid', 'screen_wallet', async (args) => {
         try {
           const result = await screenAddress(args.address)
           const envelope = await attest({ ...result, ...sanctionsAttribution() })
@@ -200,7 +211,7 @@ export const handler = createPaidMcpHandler(
             ],
           }
         }
-      }
+      })
     )
 
     // --- screen_name ---------------------------------------------------
@@ -223,7 +234,7 @@ export const handler = createPaidMcpHandler(
           ),
       },
       { readOnlyHint: true, openWorldHint: true },
-      async (args) => {
+      withToolTelemetry('paid', 'screen_name', async (args) => {
         try {
           const result = await screenName(args.name, args.threshold ?? 0.85)
           const envelope = await attest({ ...result, ...buildOfacAttribution() })
@@ -239,7 +250,7 @@ export const handler = createPaidMcpHandler(
               : err?.message || 'Name screen failed.'
           return { isError: true, content: [{ type: 'text', text: msg }] }
         }
-      }
+      })
     )
 
     // --- verify_uk_company ---------------------------------------------
@@ -253,7 +264,7 @@ export const handler = createPaidMcpHandler(
           .describe('UK Companies House registration number to verify, e.g. 00000006'),
       },
       { readOnlyHint: true, openWorldHint: true },
-      async (args) => {
+      withToolTelemetry('paid', 'verify_uk_company', async (args) => {
         try {
           const result = await checkCompany(args.companyNumber)
           const envelope = await attest({ ...result, ...companyAttribution() })
@@ -269,7 +280,7 @@ export const handler = createPaidMcpHandler(
               : err?.message || 'Company lookup failed.'
           return { isError: true, content: [{ type: 'text', text: msg }] }
         }
-      }
+      })
     )
 
     // --- verify_us_company ---------------------------------------------
@@ -286,7 +297,7 @@ export const handler = createPaidMcpHandler(
           ),
       },
       { readOnlyHint: true, openWorldHint: true },
-      async (args) => {
+      withToolTelemetry('paid', 'verify_us_company', async (args) => {
         try {
           const result = await checkUSCompany(args.query)
           const envelope = await attest({ ...result, ...usCompanyAttribution() })
@@ -302,7 +313,7 @@ export const handler = createPaidMcpHandler(
               : err?.message || 'US company lookup failed.'
           return { isError: true, content: [{ type: 'text', text: msg }] }
         }
-      }
+      })
     )
 
     // --- diligence (combined) ------------------------------------------
@@ -315,7 +326,7 @@ export const handler = createPaidMcpHandler(
         company: z.string().describe('UK Companies House registration number to verify'),
       },
       { readOnlyHint: true, openWorldHint: true },
-      async (args) => {
+      withToolTelemetry('paid', 'diligence', async (args) => {
         try {
           const [wallet, company] = await Promise.all([
             screenAddress(args.wallet),
@@ -345,7 +356,7 @@ export const handler = createPaidMcpHandler(
             ],
           }
         }
-      }
+      })
     )
 
     // --- preflight_payment (D2.1) ---------------------------------------
@@ -422,9 +433,9 @@ export const handler = createPaidMcpHandler(
           .optional(),
       },
       { readOnlyHint: true, openWorldHint: true },
-      async (args) => {
+      withToolTelemetry('paid', 'preflight_payment', async (args) => {
         try {
-          const result = await preflightPayment(args)
+          const result = await preflightPayment(args, { surface: 'paid' })
           return {
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
           }
@@ -434,7 +445,7 @@ export const handler = createPaidMcpHandler(
             content: [{ type: 'text', text: err?.message || 'Preflight evaluation failed.' }],
           }
         }
-      }
+      })
     )
 
     // --- inspect_payment (D2.1A) -- FREE, no payment wrapper ------------
@@ -472,7 +483,7 @@ export const handler = createPaidMcpHandler(
         }),
       },
       { readOnlyHint: true, openWorldHint: false },
-      async (args) => {
+      withToolTelemetry('paid', 'inspect_payment', async (args) => {
         try {
           const result = await inspectPayment(args)
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
@@ -482,7 +493,7 @@ export const handler = createPaidMcpHandler(
             content: [{ type: 'text', text: err?.message || 'Inspection failed.' }],
           }
         }
-      }
+      })
     )
 
     // D3.6A: allowance is a distinct consequential action, not a PAYMENT
@@ -496,22 +507,22 @@ export const handler = createPaidMcpHandler(
       }),
       options: z.object({ observe_current_allowance: z.boolean().optional() }).optional(),
     }
-    server.tool('inspect_allowance', INSPECT_ALLOWANCE_DESCRIPTION, allowanceSchema, { readOnlyHint: true, openWorldHint: false }, async (args) => {
+    server.tool('inspect_allowance', INSPECT_ALLOWANCE_DESCRIPTION, allowanceSchema, { readOnlyHint: true, openWorldHint: false }, withToolTelemetry('paid', 'inspect_allowance', async (args) => {
       try { return { content: [{ type: 'text', text: JSON.stringify(await inspectAllowance(args), null, 2) }] } }
       catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Allowance inspection failed.' }] } }
-    })
-    server.paidTool('preflight_allowance', PREFLIGHT_ALLOWANCE_DESCRIPTION, { price: config.prices.preflight }, allowanceSchema, { readOnlyHint: true, openWorldHint: true }, async (args) => {
+    }))
+    server.paidTool('preflight_allowance', PREFLIGHT_ALLOWANCE_DESCRIPTION, { price: config.prices.preflight }, allowanceSchema, { readOnlyHint: true, openWorldHint: true }, withToolTelemetry('paid', 'preflight_allowance', async (args) => {
       try { return { content: [{ type: 'text', text: JSON.stringify(await preflightAllowance(args), null, 2) }] } }
       catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Allowance preflight failed.' }] } }
-    })
-    server.tool('observe_allowance', OBSERVE_ALLOWANCE_DESCRIPTION, { artifact: z.unknown(), transaction_hash: z.string() }, { readOnlyHint: true, openWorldHint: true }, async (args) => {
+    }))
+    server.tool('observe_allowance', OBSERVE_ALLOWANCE_DESCRIPTION, { artifact: z.unknown(), transaction_hash: z.string() }, { readOnlyHint: true, openWorldHint: true }, withToolTelemetry('paid', 'observe_allowance', async (args) => {
       try { return { content: [{ type: 'text', text: JSON.stringify(await observeAllowance(args), null, 2) }] } }
       catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Allowance observation failed.' }] } }
-    })
+    }))
     const swapSchema = { action: z.object({ kind: z.literal('SWAP'), network: z.string(), input_asset: z.string(), max_input_atomic: z.string(), output_asset: z.string(), min_output_atomic: z.string(), recipient: z.string(), router: z.string(), deadline: z.string().nullable().optional(), payer: z.string() }), policy: z.object({ allowed_networks: z.array(z.string()).nullable().optional(), allowed_input_assets: z.array(z.string()).nullable().optional(), allowed_output_assets: z.array(z.string()).nullable().optional(), allowed_routers: z.array(z.string()).nullable().optional(), max_input_atomic: z.string().nullable().optional(), min_output_atomic: z.string().nullable().optional(), exact_recipient: z.string().nullable().optional(), acknowledge_unconstrained: z.boolean().optional() }) }
-    server.tool('inspect_swap', INSPECT_SWAP_DESCRIPTION, swapSchema, { readOnlyHint: true, openWorldHint: false }, async (args) => { try { return { content: [{ type: 'text', text: JSON.stringify(await inspectSwap(args), null, 2) }] } } catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Swap inspection failed.' }] } } })
-    server.paidTool('preflight_swap', PREFLIGHT_SWAP_DESCRIPTION, { price: config.prices.preflight }, swapSchema, { readOnlyHint: true, openWorldHint: true }, async (args) => { try { return { content: [{ type: 'text', text: JSON.stringify(await preflightSwap(args), null, 2) }] } } catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Swap preflight failed.' }] } } })
-    server.tool('observe_swap', OBSERVE_SWAP_DESCRIPTION, { artifact: z.unknown(), transaction_hash: z.string() }, { readOnlyHint: true, openWorldHint: true }, async (args) => { try { return { content: [{ type: 'text', text: JSON.stringify(await observeSwapAction(args), null, 2) }] } } catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Swap observation failed.' }] } } })
+    server.tool('inspect_swap', INSPECT_SWAP_DESCRIPTION, swapSchema, { readOnlyHint: true, openWorldHint: false }, withToolTelemetry('paid', 'inspect_swap', async (args) => { try { return { content: [{ type: 'text', text: JSON.stringify(await inspectSwap(args), null, 2) }] } } catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Swap inspection failed.' }] } } }))
+    server.paidTool('preflight_swap', PREFLIGHT_SWAP_DESCRIPTION, { price: config.prices.preflight }, swapSchema, { readOnlyHint: true, openWorldHint: true }, withToolTelemetry('paid', 'preflight_swap', async (args) => { try { return { content: [{ type: 'text', text: JSON.stringify(await preflightSwap(args), null, 2) }] } } catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Swap preflight failed.' }] } } }))
+    server.tool('observe_swap', OBSERVE_SWAP_DESCRIPTION, { artifact: z.unknown(), transaction_hash: z.string() }, { readOnlyHint: true, openWorldHint: true }, withToolTelemetry('paid', 'observe_swap', async (args) => { try { return { content: [{ type: 'text', text: JSON.stringify(await observeSwapAction(args), null, 2) }] } } catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Swap observation failed.' }] } } }))
 
     // D3.6C: Circle CCTP V2 Base -> Ethereum native-USDC bridge. Two-chain
     // observation is distinct from a single-chain swap/allowance/payment;
@@ -521,35 +532,35 @@ export const handler = createPaidMcpHandler(
       action: z.object({ kind: z.literal('BRIDGE'), protocol: z.string(), source_network: z.string(), destination_network: z.string(), source_asset: z.string(), destination_asset: z.string(), max_source_atomic: z.string(), min_destination_atomic: z.string(), recipient: z.string() }),
       policy: z.object({ allowed_source_networks: z.array(z.string()).nullable().optional(), allowed_destination_networks: z.array(z.string()).nullable().optional(), allowed_source_assets: z.array(z.string()).nullable().optional(), allowed_destination_assets: z.array(z.string()).nullable().optional(), allowed_protocols: z.array(z.string()).nullable().optional(), max_source_atomic: z.string().nullable().optional(), min_destination_atomic: z.string().nullable().optional(), exact_recipient: z.string().nullable().optional(), acknowledge_unconstrained: z.boolean().optional() }),
     }
-    server.tool('inspect_bridge', INSPECT_BRIDGE_DESCRIPTION, bridgeSchema, { readOnlyHint: true, openWorldHint: false }, async (args) => {
+    server.tool('inspect_bridge', INSPECT_BRIDGE_DESCRIPTION, bridgeSchema, { readOnlyHint: true, openWorldHint: false }, withToolTelemetry('paid', 'inspect_bridge', async (args) => {
       try { return { content: [{ type: 'text', text: JSON.stringify(await inspectBridge(args), null, 2) }] } }
       catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Bridge inspection failed.' }] } }
-    })
-    server.paidTool('preflight_bridge', PREFLIGHT_BRIDGE_DESCRIPTION, { price: config.prices.preflight }, bridgeSchema, { readOnlyHint: true, openWorldHint: true }, async (args) => {
+    }))
+    server.paidTool('preflight_bridge', PREFLIGHT_BRIDGE_DESCRIPTION, { price: config.prices.preflight }, bridgeSchema, { readOnlyHint: true, openWorldHint: true }, withToolTelemetry('paid', 'preflight_bridge', async (args) => {
       try { return { content: [{ type: 'text', text: JSON.stringify(await preflightBridge(args), null, 2) }] } }
       catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Bridge preflight failed.' }] } }
-    })
-    server.tool('observe_bridge', OBSERVE_BRIDGE_DESCRIPTION, { artifact: z.unknown(), source_transaction_hash: z.string(), destination_transaction_hash: z.string().optional() }, { readOnlyHint: true, openWorldHint: true }, async (args) => {
+    }))
+    server.tool('observe_bridge', OBSERVE_BRIDGE_DESCRIPTION, { artifact: z.unknown(), source_transaction_hash: z.string(), destination_transaction_hash: z.string().optional() }, { readOnlyHint: true, openWorldHint: true }, withToolTelemetry('paid', 'observe_bridge', async (args) => {
       try { return { content: [{ type: 'text', text: JSON.stringify(await observeBridge(args), null, 2) }] } }
       catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Bridge observation failed.' }] } }
-    })
+    }))
 
     const stakingSchema = {
       action: z.object({ kind: z.literal('STAKE'), protocol: z.literal('lido-steth-submit'), network: z.string(), input_asset: z.string(), staker: z.string(), max_amount_wei: z.string() }),
       policy: z.object({ allowed_networks: z.array(z.string()).nullable().optional(), allowed_protocols: z.array(z.string()).nullable().optional(), exact_staker: z.string().nullable().optional(), max_amount_wei: z.string().nullable().optional(), acknowledge_unconstrained: z.boolean().optional() }),
     }
-    server.tool('inspect_staking', INSPECT_STAKING_DESCRIPTION, stakingSchema, { readOnlyHint: true, openWorldHint: false }, async (args) => {
+    server.tool('inspect_staking', INSPECT_STAKING_DESCRIPTION, stakingSchema, { readOnlyHint: true, openWorldHint: false }, withToolTelemetry('paid', 'inspect_staking', async (args) => {
       try { return { content: [{ type: 'text', text: JSON.stringify(await inspectStaking(args), null, 2) }] } }
       catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Staking inspection failed.' }] } }
-    })
-    server.paidTool('preflight_staking', PREFLIGHT_STAKING_DESCRIPTION, { price: config.prices.preflight }, stakingSchema, { readOnlyHint: true, openWorldHint: true }, async (args) => {
+    }))
+    server.paidTool('preflight_staking', PREFLIGHT_STAKING_DESCRIPTION, { price: config.prices.preflight }, stakingSchema, { readOnlyHint: true, openWorldHint: true }, withToolTelemetry('paid', 'preflight_staking', async (args) => {
       try { return { content: [{ type: 'text', text: JSON.stringify(await preflightStaking(args), null, 2) }] } }
       catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Staking preflight failed.' }] } }
-    })
-    server.tool('observe_staking', OBSERVE_STAKING_DESCRIPTION, { artifact: z.unknown(), transaction_hash: z.string() }, { readOnlyHint: true, openWorldHint: true }, async (args) => {
+    }))
+    server.tool('observe_staking', OBSERVE_STAKING_DESCRIPTION, { artifact: z.unknown(), transaction_hash: z.string() }, { readOnlyHint: true, openWorldHint: true }, withToolTelemetry('paid', 'observe_staking', async (args) => {
       try { return { content: [{ type: 'text', text: JSON.stringify(await observeStaking(args), null, 2) }] } }
       catch (err: any) { return { isError: true, content: [{ type: 'text', text: err?.message || 'Staking observation failed.' }] } }
-    })
+    }))
 
     // --- get_receipt (D2.5, deferred from D2.3) -- FREE, no payment wrapper ---
     server.tool(
@@ -557,13 +568,13 @@ export const handler = createPaidMcpHandler(
       GET_RECEIPT_DESCRIPTION,
       { receipt_id: z.string().describe('Exact receipt id, e.g. "OCD-RCP-EMG6-6KR4-PQSG-MZPQ".') },
       { readOnlyHint: true, openWorldHint: false },
-      async ({ receipt_id }) => {
+      withToolTelemetry('paid', 'get_receipt', async ({ receipt_id }) => {
         const result = await getReceiptById(receipt_id)
         if (!result.found) {
           return { content: [{ type: 'text', text: JSON.stringify({ found: false, reason: result.reason }, null, 2) }] }
         }
         return { content: [{ type: 'text', text: JSON.stringify(result.envelope, null, 2) }] }
-      }
+      })
     )
 
     // --- verify_receipt (D2.5, deferred from D2.3) -- FREE, no payment wrapper ---
@@ -578,7 +589,7 @@ export const handler = createPaidMcpHandler(
           .describe('A complete receipt envelope you already hold ({schema, receipt, proof}) to verify directly. Mutually exclusive with receipt_id.'),
       },
       { readOnlyHint: true, openWorldHint: false },
-      async (args) => {
+      withToolTelemetry('paid', 'verify_receipt', async (args) => {
         try {
           const result = await verifyReceipt(args)
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
@@ -588,7 +599,7 @@ export const handler = createPaidMcpHandler(
           }
           return { isError: true, content: [{ type: 'text', text: err?.message || 'Verification failed.' }] }
         }
-      }
+      })
     )
   },
   // serverOptions (mcp-handler) — keep defaults.

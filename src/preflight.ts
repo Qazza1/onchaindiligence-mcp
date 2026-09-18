@@ -28,6 +28,7 @@ import { isCanonicalDecimalAmount, isAmountWithinMax } from './money.js'
 import { attest } from './attest.js'
 import { putReceipt as putReceiptDurable } from './db.js'
 import { mintFinalizationCapability, type FinalizationCapability } from './capability.js'
+import { recordEvent } from './telemetry.js'
 import {
   buildReceiptCore,
   finalizeReceiptCore,
@@ -56,8 +57,10 @@ export interface PreflightDependencies {
   screenRecipient?: (address: string) => Promise<SanctionsResult>
   signReceipt?: (receipt: Receipt) => Promise<PublicActionReceiptEnvelope['proof']>
   fetchKeyRegistry?: () => Promise<Parameters<typeof verifyReceiptEnvelope>[1]>
-  storeReceipt?: (envelope: PublicActionReceiptEnvelope, options: { isPublic: boolean }) => Promise<void>
+  storeReceipt?: (envelope: PublicActionReceiptEnvelope, options: { isPublic: boolean }) => Promise<boolean | void>
   mintCapability?: (preflightReceiptId: string, preflightReceiptDigest: string, publishCommerce: boolean) => Promise<FinalizationCapability>
+  /** Which MCP surface (if any) this preflight was invoked from, for receipt.created telemetry only. Never affects behavior. */
+  surface?: 'public' | 'paid'
 }
 
 export class PreflightInputError extends Error {
@@ -685,7 +688,22 @@ export async function preflightPaymentFromInput(
   // VALID — never persist (let alone publish) a receipt whose own signature
   // doesn't check out. is_public reflects ONLY the caller's explicit
   // publication.preflight choice; default is private.
-  await (deps.storeReceipt ?? putReceiptDurable)(envelope, { isPublic: input.publication.preflight })
+  const wasFreshInsert = await (deps.storeReceipt ?? putReceiptDurable)(envelope, { isPublic: input.publication.preflight })
+
+  // receipt.created fires only for a genuinely NEW row -- never on an
+  // idempotent retry of the same receipt (see putReceipt's return contract).
+  // Never logs the receipt body, payer, sender, recipient, amount, tx hash,
+  // proof/signature, or policy contents -- only the static receipt kind, the
+  // caller's publication choice, the MCP surface (if any), and the CAIP-2
+  // network the action named.
+  if (wasFreshInsert === true) {
+    recordEvent('receipt.created', {
+      kind: envelope.receipt.receipt_type,
+      publication: input.publication.preflight ? 'public' : 'private',
+      surface: deps.surface,
+      network: envelope.receipt.action.network ?? undefined,
+    })
+  }
 
   // One finalization capability per successful preflight, regardless of
   // decision (ALLOW/REQUIRE_APPROVAL/BLOCK) — it authorizes creating a

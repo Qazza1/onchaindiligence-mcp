@@ -367,4 +367,32 @@ CREATE TABLE IF NOT EXISTS provider_evidence (
   provider_timestamp       TIMESTAMPTZ,
   recorded_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Usage telemetry (privacy-safe MCP funnel). Explicit scalar columns only,
+-- never an arbitrary JSON metadata column -- every value a row can hold is
+-- exactly one of this fixed, reviewed set, matching src/telemetry.ts's own
+-- field allowlist. Never contains a request body, tool arguments, wallet
+-- address, amount, tx hash, signature, or credential. client_name/version
+-- are the MCP client's own self-reported clientInfo -- attribution only,
+-- never verified, never personal data. Written best-effort from
+-- src/telemetry.ts's recordEvent(); a write failure here must never affect
+-- the request, tool, payment, or receipt path that produced the event.
+CREATE TABLE IF NOT EXISTS usage_events (
+  id               BIGSERIAL PRIMARY KEY,
+  occurred_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  event            TEXT NOT NULL,
+  surface          TEXT,
+  method           TEXT,
+  tool             TEXT,
+  outcome          TEXT,
+  status           TEXT,
+  client_name      TEXT,
+  client_version   TEXT,
+  transport        TEXT,
+  kind             TEXT,
+  publication      TEXT,
+  network          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS usage_events_event_occurred_idx ON usage_events (event, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS provider_evidence_operation_idx ON provider_evidence (operation_id, recorded_at ASC);
