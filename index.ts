@@ -19,6 +19,7 @@
  *   POST /x402/preflight-payment        paid: structured payment policy preflight (D2.1)
  *   POST /inspect/payment               free: unsigned deterministic policy inspection (D2.1A)
  *   GET  /receipts/:receiptId           free: public receipt resolver (D2.0A, durable+bundled D2.2)
+ *   GET  /public/activity               free: read-only usage_events aggregates for /live
  *   POST /receipts/finalize             free (capability-protected): Commerce Receipt finalization (D2.2)
  *   POST /operations                    free: create a durable operation (D2.4)
  *   GET  /operations/:operationId       free (recovery-credential-protected): operation status (D2.4)
@@ -34,6 +35,7 @@ import './src/facilitatorResilience.js'
 import { Hono } from 'hono'
 import { handler } from './src/server.js'
 import { mountPublicMcp } from './src/publicMcp.js'
+import { mountPublicActivity } from './src/activity.js'
 import { mountDiscovery } from './src/discovery.js'
 import { mountPublicMetadata } from './src/publicMetadata.js'
 import { mountReceipts } from './src/receiptsRoute.js'
@@ -70,6 +72,8 @@ mountDashboardCors(app)
 
 // D2.10C: separate free surface, outside paid/readiness/telemetry middleware.
 mountPublicMcp(app)
+// Read-only public aggregates of usage_events for onchaindiligence.com/live.
+mountPublicActivity(app)
 
 // Free, unauthenticated discovery documents: GET /openapi.json and
 // GET /.well-known/x402. Mounted before the paid middleware; neither path

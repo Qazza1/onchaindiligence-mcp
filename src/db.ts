@@ -113,6 +113,157 @@ export async function recordUsageEvent(event: string, fields: Record<string, unk
   )
 }
 
+export interface UsageActivityRows {
+  telemetrySince: string | null
+  totals: {
+    sessions: number
+    public_sessions: number
+    paid_sessions: number
+    initialized: number
+    tools_listed: number
+    tool_calls: number
+    successful_tool_calls: number
+    failed_tool_calls: number
+    x402_challenges: number
+    receipts: number
+  }
+  // Raw client_name is for server-side classification only; never serialized.
+  clients: Array<{ client_name: string | null; sessions: number }>
+  timeline: Array<{ bucket: string; sessions: number; tool_calls: number; successful_tool_calls: number; x402_challenges: number }>
+  recent: Array<{
+    occurred_at: string
+    event: string
+    surface: string | null
+    method: string | null
+    tool: string | null
+    outcome: string | null
+    status: string | null
+    client_name: string | null
+  }>
+}
+
+const toIso = (value: unknown): string => new Date(value as string).toISOString()
+
+// interval/stride come only from activity.ts's window allowlist. Timeline starts at the first event so pre-telemetry time isn't reported as zero.
+export async function loadUsageActivity(interval: string, stride: string): Promise<UsageActivityRows> {
+  const db = sql()
+  const [sinceRows, totalRows, clientRows, timelineRows, recentRows] = await Promise.all([
+    db.query('SELECT min(occurred_at) AS since FROM usage_events'),
+    db.query(
+      `SELECT
+         count(*) FILTER (WHERE event = 'mcp.session') AS sessions,
+         count(*) FILTER (WHERE event = 'mcp.session' AND surface = 'public') AS public_sessions,
+         count(*) FILTER (WHERE event = 'mcp.session' AND surface = 'paid') AS paid_sessions,
+         count(*) FILTER (WHERE event = 'mcp.request' AND method = 'initialize') AS initialized,
+         count(*) FILTER (WHERE event = 'mcp.request' AND method = 'tools/list') AS tools_listed,
+         count(*) FILTER (WHERE event = 'mcp.request' AND method = 'tools/call') AS tool_calls,
+         count(*) FILTER (WHERE event = 'mcp.tool_result' AND outcome = 'ok') AS successful_tool_calls,
+         count(*) FILTER (WHERE event = 'mcp.tool_result' AND outcome = 'error') AS failed_tool_calls,
+         count(*) FILTER (WHERE event = 'http.request' AND status = '402') AS x402_challenges,
+         count(*) FILTER (WHERE event = 'receipt.created') AS receipts
+       FROM usage_events
+       WHERE occurred_at > now() - $1::interval`,
+      [interval]
+    ),
+    db.query(
+      `SELECT client_name, count(*) AS sessions
+       FROM usage_events
+       WHERE event = 'mcp.session' AND occurred_at > now() - $1::interval
+       GROUP BY client_name
+       ORDER BY sessions DESC
+       LIMIT 500`,
+      [interval]
+    ),
+    db.query(
+      `WITH first_event AS (SELECT min(occurred_at) AS at FROM usage_events),
+       bounds AS (
+         SELECT
+           CASE WHEN first_event.at IS NULL THEN NULL
+                ELSE date_bin($2::interval, greatest(now() - $1::interval, first_event.at), TIMESTAMPTZ '2000-01-01')
+           END AS start_bucket,
+           date_bin($2::interval, now(), TIMESTAMPTZ '2000-01-01') AS end_bucket
+         FROM first_event
+       ),
+       buckets AS (
+         SELECT generate_series(start_bucket, end_bucket, $2::interval) AS bucket
+         FROM bounds WHERE start_bucket IS NOT NULL
+       ),
+       agg AS (
+         SELECT
+           date_bin($2::interval, occurred_at, TIMESTAMPTZ '2000-01-01') AS bucket,
+           count(*) FILTER (WHERE event = 'mcp.session') AS sessions,
+           count(*) FILTER (WHERE event = 'mcp.request' AND method = 'tools/call') AS tool_calls,
+           count(*) FILTER (WHERE event = 'mcp.tool_result' AND outcome = 'ok') AS successful_tool_calls,
+           count(*) FILTER (WHERE event = 'http.request' AND status = '402') AS x402_challenges
+         FROM usage_events
+         WHERE occurred_at > now() - $1::interval
+         GROUP BY 1
+       )
+       SELECT b.bucket,
+              coalesce(a.sessions, 0) AS sessions,
+              coalesce(a.tool_calls, 0) AS tool_calls,
+              coalesce(a.successful_tool_calls, 0) AS successful_tool_calls,
+              coalesce(a.x402_challenges, 0) AS x402_challenges
+       FROM buckets b LEFT JOIN agg a ON a.bucket = b.bucket
+       ORDER BY b.bucket`,
+      [interval, stride]
+    ),
+    db.query(
+      `SELECT occurred_at, event, surface, method, tool, outcome, status, client_name
+       FROM usage_events
+       WHERE occurred_at > now() - $1::interval
+         AND (
+           event IN ('mcp.session', 'mcp.tool_result', 'receipt.created')
+           OR (event = 'mcp.request' AND method IN ('tools/list', 'tools/call'))
+           OR (event = 'http.request' AND status = '402')
+         )
+       ORDER BY occurred_at DESC
+       LIMIT 20`,
+      [interval]
+    ),
+  ])
+
+  const n = (value: unknown): number => Number(value ?? 0)
+  const t = (totalRows as unknown as Array<Record<string, unknown>>)[0] ?? {}
+  const since = (sinceRows as unknown as Array<{ since: unknown }>)[0]?.since
+  return {
+    telemetrySince: since ? toIso(since) : null,
+    totals: {
+      sessions: n(t.sessions),
+      public_sessions: n(t.public_sessions),
+      paid_sessions: n(t.paid_sessions),
+      initialized: n(t.initialized),
+      tools_listed: n(t.tools_listed),
+      tool_calls: n(t.tool_calls),
+      successful_tool_calls: n(t.successful_tool_calls),
+      failed_tool_calls: n(t.failed_tool_calls),
+      x402_challenges: n(t.x402_challenges),
+      receipts: n(t.receipts),
+    },
+    clients: (clientRows as unknown as Array<{ client_name: string | null; sessions: unknown }>).map((row) => ({
+      client_name: row.client_name,
+      sessions: n(row.sessions),
+    })),
+    timeline: (timelineRows as unknown as Array<Record<string, unknown>>).map((row) => ({
+      bucket: toIso(row.bucket),
+      sessions: n(row.sessions),
+      tool_calls: n(row.tool_calls),
+      successful_tool_calls: n(row.successful_tool_calls),
+      x402_challenges: n(row.x402_challenges),
+    })),
+    recent: (recentRows as unknown as Array<Record<string, unknown>>).map((row) => ({
+      occurred_at: toIso(row.occurred_at),
+      event: String(row.event),
+      surface: (row.surface as string | null) ?? null,
+      method: (row.method as string | null) ?? null,
+      tool: (row.tool as string | null) ?? null,
+      outcome: (row.outcome as string | null) ?? null,
+      status: (row.status as string | null) ?? null,
+      client_name: (row.client_name as string | null) ?? null,
+    })),
+  }
+}
+
 async function getReceiptByIdInternal(receiptId: string): Promise<StoredReceipt | null> {
   const rows = (await sql().query('SELECT envelope_json, is_public FROM receipts WHERE receipt_id = $1', [
     receiptId,
